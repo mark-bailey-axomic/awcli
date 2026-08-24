@@ -50,6 +50,20 @@ contracts:
   # A CLI has no HTTP surface; `api` records command entry points, and exit codes
   # play the role of status codes (BR-018).
   api:
+    # Implemented by AWCLI-00. Listed because the manifest should describe the surface
+    # that exists, not only the surface that is planned.
+    - endpoint: version
+      method: CLI
+      path: awcli --version
+      request: ""
+      response: "installed version on stdout"
+      status_codes: [0]
+    - endpoint: help
+      method: CLI
+      path: awcli --help
+      request: ""
+      response: "usage on stdout"
+      status_codes: [0]
     - endpoint: run
       method: CLI
       path: awcli run <name-or-path>
@@ -155,7 +169,7 @@ tickets:
     points: 2
     work_breakdown: null  # project scaffolding — no WB entry
     depends_on: []
-    status: todo
+    status: done
   - id: AWCLI-01
     path: tickets/AWCLI-01-freeze-context-contract.md
     title: "[AWCLI] Freeze the context contract and assert the runtime against it"

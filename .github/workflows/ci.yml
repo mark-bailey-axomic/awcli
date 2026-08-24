@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: `npm ci` and `npm pack` run dependency lifecycle scripts, and this
+# workflow needs nothing beyond reading the tree.
+permissions:
+  contents: read
+
+# macOS and Linux only, and no windows-latest job. awcli's supported Windows path is
+# WSL2, which is a Linux runner (ADR-0007) — the startup refusal for native win32 is
+# implemented by the gate chain in AWCLI-06, so there is nothing here for a Windows job
+# to assert yet, and adding one would commit to the four subsystems that ADR prices.
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        # 20 is the floor declared in engines; 22 is what most people will run. Testing
+        # only the top of the range makes the floor a guess.
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+
+  gate-is-a-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Proves the typecheck gate rejects a deliberate error, rather than trusting it.
+      - run: npm run verify:typecheck-gate
+
+  global-install:
+    needs: gates
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The premise of the tool: it works from a global install, not from this checkout.
+      - run: npm run verify:global

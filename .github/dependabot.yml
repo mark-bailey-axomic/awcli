@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs for supply-chain reasons, which means nothing
+  # updates them unless something is watching. This is that something.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

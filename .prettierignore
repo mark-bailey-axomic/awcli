@@ -1,0 +1,13 @@
+dist
+node_modules
+*.md
+LICENSE
+
+# Fixtures are deliberately shaped — a formatter rewriting them changes what they test.
+test/fixtures
+
+# Design artifacts are approved documents, not source. A code formatter must never
+# rewrite them — a whitespace diff on an approved manifest is noise at best and an
+# unreviewed change at worst.
+.atelier
+docs
