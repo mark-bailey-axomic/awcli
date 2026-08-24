@@ -10,6 +10,7 @@
     "node": ">=20.11"
   },
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,7 +18,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify:global": "bash scripts/verify-global-install.sh",
-    "check": "npm run format:check && npm run typecheck && npm run test && npm run build"
+    "check": "npm run format:check && npm run typecheck && npm run test && npm run build",
+    "verify:typecheck-gate": "bash scripts/verify-typecheck-gate.sh"
   },
   "files": [
     "dist"
@@ -29,6 +31,6 @@
     "prettier": "^3.4.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.11"
   }
 }

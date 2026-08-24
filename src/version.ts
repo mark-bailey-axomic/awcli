@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /**
  * The installed version, read from the package manifest at run time.
@@ -18,7 +19,11 @@ export function readVersion(moduleUrl: string = import.meta.url): string {
     !("version" in parsed) ||
     typeof parsed.version !== "string"
   ) {
-    throw new Error(`Malformed package manifest at ${manifestUrl.pathname}: no version`);
+    // fileURLToPath, not .pathname: a path containing a space would otherwise be
+    // reported percent-encoded, which is not a path anyone can act on.
+    throw new Error(
+      `Malformed package manifest at ${fileURLToPath(manifestUrl)}: no version`,
+    );
   }
   return parsed.version;
 }
