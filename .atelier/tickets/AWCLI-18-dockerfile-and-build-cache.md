@@ -55,5 +55,5 @@ different base image, a second machine, an edit above the install line, or a pru
 
 ## Dependencies
 
-**Blocked by:** None
+**Blocked by:** AWCLI-00
 **Blocks:** AWCLI-19, AWCLI-22

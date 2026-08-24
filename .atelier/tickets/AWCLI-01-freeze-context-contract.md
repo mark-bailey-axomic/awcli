@@ -57,5 +57,5 @@ surface and its per-member rules are tabulated in the TDD's Contracts section.
 
 ## Dependencies
 
-**Blocked by:** None — this is the first unit.
+**Blocked by:** AWCLI-00
 **Blocks:** AWCLI-02, AWCLI-05, AWCLI-15

@@ -149,12 +149,19 @@ contracts:
 
 # Work breakdown units from the TDD's ## Work Breakdown section.
 tickets:
+  - id: AWCLI-00
+    path: tickets/AWCLI-00-project-scaffolding.md
+    title: "[AWCLI] Project scaffolding and a globally installable walking skeleton"
+    points: 2
+    work_breakdown: null  # project scaffolding — no WB entry
+    depends_on: []
+    status: todo
   - id: AWCLI-01
     path: tickets/AWCLI-01-freeze-context-contract.md
     title: "[AWCLI] Freeze the context contract and assert the runtime against it"
     points: 2
     work_breakdown: WB-1
-    depends_on: []
+    depends_on: [AWCLI-00]
     status: todo
   - id: AWCLI-02
     path: tickets/AWCLI-02-fake-rehearsal-driver.md
@@ -168,7 +175,7 @@ tickets:
     title: "[AWCLI] Build the disposal stack before anything registers with it"
     points: 3
     work_breakdown: WB-2
-    depends_on: []
+    depends_on: [AWCLI-00]
     status: todo
   - id: AWCLI-04
     path: tickets/AWCLI-04-cancellation-primitive.md
@@ -273,7 +280,7 @@ tickets:
     title: "[AWCLI] Generate a self-contained Dockerfile and build it on demand"
     points: 3
     work_breakdown: WB-11
-    depends_on: []
+    depends_on: [AWCLI-00]
     status: todo
   - id: AWCLI-19
     path: tickets/AWCLI-19-container-exec-target.md
