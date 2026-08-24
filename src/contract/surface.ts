@@ -34,10 +34,15 @@ export type ContextMember = (typeof CONTEXT_SURFACE)[number];
 /**
  * The surface as it was frozen for v1 — a fixed record, not a live list.
  *
- * It exists so that removing or renaming a member fails a test while adding one passes
- * (BR-033). That only works while this stays a copy nobody edits: the moment it is updated
- * to match a rename, it has stopped being evidence of anything. Editing it is declaring a
- * major version.
+ * What actually stops a member being removed or renamed is elsewhere: every one of the twelve
+ * is exercised by the frozen corpus, so removing one stops those fixtures compiling, and
+ * conformance.ts catches a member dropped from CONTEXT_SURFACE but left in the declaration.
+ * This copy adds the count that the version rule needs — the contract's minor must have moved
+ * once per member added since v1 — and a record of what v1 was that does not shift when
+ * CONTEXT_SURFACE does.
+ *
+ * That only works while nobody edits it to match a rename. Updating this list is not a way to
+ * make a test pass; it is a statement that the major version changed.
  */
 export const V1_SURFACE_BASELINE = [
   "agent",

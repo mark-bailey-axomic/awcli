@@ -56,23 +56,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Proves the typecheck gate rejects a deliberate error, rather than trusting it.
-      - run: npm run verify:typecheck-gate
-
-  contract-gate-is-a-gate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      # The declaration is the specification and the runtime is checked against it
-      # (ADR-0002), so the whole contract rests on that check failing when it should. It has
-      # already been wrong once in a way that passed everything, which is why this runs on
-      # every change rather than being trusted.
-      - run: npm run verify:contract-gate
+      # One job for every gate that has to be watched failing, rather than one job per gate: the
+      # checkout and install dominate, and a job per script would fork again with each ticket
+      # that adds one. Each script says which gate it proved and why that gate has been wrong
+      # before, so a failure here is still attributable to one of them.
+      - run: npm run check:gates
 
   global-install:
     needs: gates

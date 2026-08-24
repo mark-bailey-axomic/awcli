@@ -11,7 +11,7 @@
   },
   "scripts": {
     "prepare": "npm run build",
-    "check:contract": "tsc --noEmit -p tsconfig.contract.json",
+    "check:contract": "tsc --noEmit",
     "build": "npm run check:contract && tsup",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -20,6 +20,7 @@
     "format:check": "prettier --check .",
     "verify:global": "bash scripts/verify-global-install.sh",
     "check": "npm run format:check && npm run typecheck && npm run test && npm run build",
+    "check:gates": "npm run verify:typecheck-gate && npm run verify:contract-gate",
     "verify:typecheck-gate": "bash scripts/verify-typecheck-gate.sh",
     "verify:contract-gate": "bash scripts/verify-contract-gate.sh"
   },

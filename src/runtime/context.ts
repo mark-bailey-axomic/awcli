@@ -1,17 +1,21 @@
 import { CONTEXT_SURFACE, type ContextMember } from "../contract/surface.js";
-import { CONTRACT_VERSION } from "../contract/version.js";
+import { CONTRACT_VERSION } from "../contract/contract-version.js";
 import { readVersion } from "../version.js";
 import { NotYetImplementedError } from "./not-implemented.js";
 
 /**
- * Which ticket delivers each declared-but-unbuilt member, so a refusal can say so.
+ * The members this awcli declares but has not built, and the unit that delivers each.
  *
- * Typed against the surface rather than loosely, which makes it exhaustive: adding a member
- * to CONTEXT_SURFACE fails to compile here until someone says who builds it. `version` is
- * absent because it is built — it is the member that lets a workflow avoid the others.
+ * Maintainer-facing only — the ids never reach an operator's error message (see
+ * NotYetImplementedError). Two members have no owning unit in the current breakdown; saying so
+ * is more useful than attributing them to a ticket whose requirements do not mention them.
  *
- * This is also the source of truth for what ctx.version.supports() answers: a member is
- * supported exactly when it is not in here.
+ * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
+ * one that surprises people. Adding a member to CONTEXT_SURFACE fails to compile here until
+ * someone says who builds it — but *implementing* a member means deleting its entry, and that
+ * fails here too, because Record requires every key. That error is the reminder to add the
+ * member to the implemented list below and to drop its stub; loosening this type to make it go
+ * away is how the exhaustiveness gets lost.
  */
 const DELIVERED_BY = {
   agent: "AWCLI-02",
@@ -21,54 +25,30 @@ const DELIVERED_BY = {
   project: "AWCLI-06",
   git: "AWCLI-13",
   exec: "AWCLI-19",
-  fs: "AWCLI-13",
+  fs: "unassigned",
   log: "AWCLI-21",
-  env: "AWCLI-19",
+  env: "unassigned",
   schema: "AWCLI-09",
 } as const satisfies Record<Exclude<ContextMember, "version">, string>;
 
-/** The members a workflow can actually call on this build. */
-const IMPLEMENTED_MEMBERS: readonly string[] = CONTEXT_SURFACE.filter(
-  (member) => !(member in DELIVERED_BY),
-);
-
-function refusal(
-  member: keyof typeof DELIVERED_BY,
-  method?: string,
-): NotYetImplementedError {
-  return new NotYetImplementedError(
-    method === undefined ? member : `${member}.${method}`,
-    DELIVERED_BY[member],
-  );
-}
-
-/** Refuse a member that answers synchronously. Never returns. */
-function unbuilt(member: keyof typeof DELIVERED_BY, method?: string): never {
-  throw refusal(member, method);
-}
-
 /**
- * Refuse a member declared to return a promise.
+ * The members a workflow can actually call on this build — what supports() answers from.
  *
- * Rejecting rather than throwing, because the declared type is what callers write against:
- * `.catch()` and `Promise.all([ctx.agent(a), ctx.agent(b)])` — the fan-out BR-013 exists for
- * — handle a rejection and do not handle a synchronous throw. A stub that fails through a
- * different channel from the member that replaces it is a stub that teaches the wrong shape.
+ * Object.hasOwn rather than `in`: `in` walks the prototype chain, so a future member named
+ * toString or constructor would be treated as unbuilt and supports() would answer false for a
+ * member that works. That is the one direction BR-033 says must never happen.
  */
-function unbuiltAsync(
-  member: keyof typeof DELIVERED_BY,
-  method?: string,
-): Promise<never> {
-  return Promise.reject(refusal(member, method));
-}
+const IMPLEMENTED_MEMBERS: readonly string[] = CONTEXT_SURFACE.filter(
+  (member) => !Object.hasOwn(DELIVERED_BY, member),
+);
 
 /**
  * Everything the context factory reads from outside itself, so the surface stays testable
  * without a real run (ADR-0001) — the same shape of seam as Io in cli.ts.
  *
- * `implemented` is separate from the contract version because they answer different
- * questions: the version says which contract this is, `implemented` says which of its
- * members this build can actually run. A test for BR-033 needs to move them independently.
+ * `implemented` is separate from the contract version because they answer different questions:
+ * the version says which contract this is, `implemented` says which of its members this build
+ * can actually run. A test for BR-033 needs to move them independently.
  */
 export interface ContextEnvironment {
   readonly contract: string;
@@ -85,6 +65,18 @@ export function runningEnvironment(): ContextEnvironment {
   };
 }
 
+function refusal(
+  environment: ContextEnvironment,
+  member: keyof typeof DELIVERED_BY,
+  method?: string,
+): NotYetImplementedError {
+  return new NotYetImplementedError(
+    method === undefined ? member : `${member}.${method}`,
+    DELIVERED_BY[member],
+    environment.awcli,
+  );
+}
+
 /**
  * The context handed to a workflow.
  *
@@ -93,29 +85,41 @@ export function runningEnvironment(): ContextEnvironment {
  * pass forever. Two independent statements of one shape is the cost ADR-0002 accepts in
  * exchange for a declaration that leads the implementation instead of following it.
  *
- * Every member carrying a function is restated structurally, down to the sub-APIs. Naming
- * the declared interface instead — `git: GitApi` — would make the conformance check
- * tautological for that member and leave nothing for the gate script to perturb. Pure data
- * is named, because a value has no signature to drift and the object below cannot produce a
- * shape other than the one annotated.
+ * What that does and does not reach: each member's own signature is restated here, so a
+ * parameter or return type drifting from the declaration is caught. The types those signatures
+ * mention — AgentOptions, AgentResult, Scope, Project, ExecResult — are the contract's own and
+ * are necessarily shared, so conformance compares member shapes and not the interiors of those
+ * interfaces. Deleting or narrowing a field inside one is invisible here; the
+ * construction-position fixtures in test/fixtures/v1-corpus are what catch that.
  *
- * Every member except version refuses. Reaching one is safe — a workflow may hold a
- * reference to ctx.git and never call it — but calling it refuses by name, asynchronously
- * where the declared type is a promise and synchronously where it is not.
+ * How a member refuses depends on what the declaration says it returns. A member typed to
+ * return a promise rejects; one that answers synchronously throws. A member that is data
+ * refuses at the property read, which is earlier than either — so `const { state } = ctx`
+ * throws at the destructure, and nothing reachable through ctx.state, including its save(),
+ * can be called at all on this build. Only the members carrying functions can be held without
+ * being invoked.
  */
-export function createContext(environment: ContextEnvironment = runningEnvironment()): {
+export function createContext<State = Record<string, unknown>>(
+  environment: ContextEnvironment = runningEnvironment(),
+): {
   agent: <T = string>(options: AgentOptions<T>) => Promise<AgentResult<T>>;
-  sandbox: (options?: SandboxOptions) => Promise<Scope>;
-  state: Record<string, unknown> & { save: () => Promise<void> };
+  sandbox: (options?: SandboxOptions) => Promise<Scope<State>>;
+  state: State & { save: () => Promise<void> };
   args: Readonly<Record<string, string | undefined>>;
   project: Project;
   git: {
+    readonly dir: string;
     branch: () => Promise<string>;
+    head: () => Promise<string>;
+    dirty: () => Promise<boolean>;
     log: () => Promise<readonly Commit[]>;
     diff: () => Promise<string>;
     commit: (message: string) => Promise<Commit>;
   };
-  exec: (command: string) => Promise<ExecResult>;
+  exec: (
+    command: string | readonly string[],
+    options?: ExecOptions,
+  ) => Promise<ExecResult>;
   fs: {
     read: (path: string) => Promise<string>;
     write: (path: string, contents: string) => Promise<void>;
@@ -135,55 +139,71 @@ export function createContext(environment: ContextEnvironment = runningEnvironme
     ) => void;
   };
   env: Readonly<Record<string, string | undefined>>;
-  schema: {
-    check: <T>(schema: Schema<T>, value: unknown) => SchemaCheck<T>;
-    storable: (value: unknown) => SchemaCheck<Storable>;
-  };
+  schema: { storable: (value: unknown) => SchemaCheck<Storable> };
   version: { contract: string; awcli: string; supports: (member: string) => boolean };
 } {
+  /** Refuse a member that answers synchronously. Never returns. */
+  const sync = (member: keyof typeof DELIVERED_BY, method?: string): never => {
+    throw refusal(environment, member, method);
+  };
+
+  /**
+   * Refuse a member declared to return a promise, by rejecting rather than throwing.
+   *
+   * The declared type is what callers write against: `.catch()` and
+   * `Promise.all([ctx.agent(a), ctx.agent(b)])` — the fan-out BR-013 exists for — handle a
+   * rejection and do not handle a synchronous throw. A stub that fails through a different
+   * channel from the member replacing it teaches the wrong shape.
+   */
+  const async = (member: keyof typeof DELIVERED_BY, method?: string): Promise<never> =>
+    Promise.reject(refusal(environment, member, method));
+
   return {
-    agent: () => unbuiltAsync("agent"),
-    sandbox: () => unbuiltAsync("sandbox"),
+    agent: () => async("agent"),
+    sandbox: () => async("sandbox"),
     get state() {
-      return unbuilt("state");
+      return sync("state");
     },
     get args() {
-      return unbuilt("args");
+      return sync("args");
     },
     get project() {
-      return unbuilt("project");
+      return sync("project");
     },
     git: {
-      branch: () => unbuiltAsync("git", "branch"),
-      log: () => unbuiltAsync("git", "log"),
-      diff: () => unbuiltAsync("git", "diff"),
-      commit: () => unbuiltAsync("git", "commit"),
+      get dir() {
+        return sync("git", "dir");
+      },
+      branch: () => async("git", "branch"),
+      head: () => async("git", "head"),
+      dirty: () => async("git", "dirty"),
+      log: () => async("git", "log"),
+      diff: () => async("git", "diff"),
+      commit: () => async("git", "commit"),
     },
-    exec: () => unbuiltAsync("exec"),
+    exec: () => async("exec"),
     fs: {
-      read: () => unbuiltAsync("fs", "read"),
-      write: () => unbuiltAsync("fs", "write"),
+      read: () => async("fs", "read"),
+      write: () => async("fs", "write"),
     },
     log: {
-      info: () => unbuilt("log", "info"),
-      warn: () => unbuilt("log", "warn"),
-      error: () => unbuilt("log", "error"),
+      info: () => sync("log", "info"),
+      warn: () => sync("log", "warn"),
+      error: () => sync("log", "error"),
     },
     get env() {
-      return unbuilt("env");
+      return sync("env");
     },
     schema: {
-      check: () => unbuilt("schema", "check"),
-      storable: () => unbuilt("schema", "storable"),
+      storable: () => sync("schema", "storable"),
     },
     version: {
       contract: environment.contract,
       awcli: environment.awcli,
       // Answers "can this be called", not "is this declared" — see ContractVersion.supports.
-      // A workflow written against a later contract asks about a member this binary has
-      // never heard of and gets false; one written against this contract asks about a member
-      // that is declared but unbuilt and gets false too, which is the only answer it can act
-      // on.
+      // A workflow written against a later contract asks about a member this binary has never
+      // heard of and gets false; one written against this contract asks about a member that is
+      // declared but unbuilt and gets false too, which is the only answer it can act on.
       supports: (member) => environment.implemented.includes(member),
     },
   };
@@ -191,3 +211,6 @@ export function createContext(environment: ContextEnvironment = runningEnvironme
 
 /** The runtime's shape, for conformance.ts to hold against the declaration. */
 export type RuntimeContext = ReturnType<typeof createContext>;
+
+/** The same, for a workflow that declared its own state shape — see conformance.ts. */
+export type RuntimeContextFor<State> = ReturnType<typeof createContext<State>>;

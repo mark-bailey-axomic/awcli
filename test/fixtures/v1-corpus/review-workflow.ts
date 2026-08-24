@@ -5,6 +5,10 @@
 //
 // Deliberately greedy — it touches most of the surface — because a member nobody exercises
 // here is a member whose standalone usability nobody has checked.
+//
+// It is also an exemplar: this is the file an author copies from, so the idioms in it are the
+// idioms that spread. Two are load-bearing — never interpolate ctx.env into a prompt, and use
+// the argv form of ctx.exec whenever any part of the command came from somewhere else.
 
 interface ReviewState {
   reviewed: string[];
@@ -15,7 +19,10 @@ const workflow: Workflow<ReviewState> = async (ctx) => {
   ctx.log.info("starting", { reviewed: ctx.state.reviewed.length });
 
   const target = ctx.args["path"] ?? ctx.project.paths.docs;
-  const tests = await ctx.exec(ctx.project.commands.test);
+
+  // String form, because a repository's declared test command is a shell command and may
+  // legitimately contain && or a pipe. Nothing is interpolated into it.
+  const tests = await ctx.exec(ctx.project.commands.test, { timeoutSeconds: 600 });
   if (tests.exitCode !== 0) {
     ctx.log.warn("tests are red", { exitCode: tests.exitCode, stderr: tests.stderr });
   }
@@ -27,8 +34,16 @@ const workflow: Workflow<ReviewState> = async (ctx) => {
         : { ok: false, errors: ["expected a plan with a summary"] },
   };
 
+  // target came from --arg, so it is argv: as one element it stays one argument whatever it
+  // contains. The string form here would be a command the caller of --arg gets to rewrite.
+  const listing = await ctx.exec(["git", "ls-files", "--", target]);
+
+  // Nothing from ctx.env goes into a prompt. A prompt leaves the machine and is written to
+  // this call's log, so interpolating the environment is how a credential ends up at a model
+  // provider and in a run record — swapping the key for a token name is a one-word edit that
+  // nothing here would catch.
   const review = await ctx.agent({
-    prompt: `Review ${target} and emit a <plan> block. Home is ${ctx.env["HOME"] ?? "unset"}.`,
+    prompt: `Review ${target} and emit a <plan> block. Files:\n${listing.stdout}`,
     output: { tag: "plan", schema: plan },
     name: "reviewer",
   });

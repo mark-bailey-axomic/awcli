@@ -41,6 +41,11 @@ afterAll(() => rmSync(workspace, { recursive: true, force: true }));
  * to the target's default, which would pull in the `.full` lib and put DOM in scope — the
  * declaration would then be free to name `AbortSignal` and pass here while failing in a real
  * repository that pins its lib.
+ *
+ * exactOptionalPropertyTypes is on because it is the strictest setting an author might have,
+ * and the declaration's reason for writing every optional as `?: T | undefined` only means
+ * anything under it. construction.ts passes explicit undefined for each one, so dropping a
+ * `| undefined` fails here.
  */
 function typecheck(
   sources: readonly string[],
@@ -55,6 +60,7 @@ function typecheck(
       compilerOptions: {
         noEmit: true,
         strict: true,
+        exactOptionalPropertyTypes: true,
         target: "es2022",
         lib: ["ES2022"],
         types: [],
