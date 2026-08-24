@@ -46,6 +46,7 @@ contracts:
     - docs/adr/0004-git-and-text-as-source-of-truth.md
     - docs/adr/0005-cli-owned-loop-with-durable-single-writer-state.md
     - docs/adr/0006-no-published-base-image.md
+    - docs/adr/0007-wsl2-is-the-windows-path.md
   # A CLI has no HTTP surface; `api` records command entry points, and exit codes
   # play the role of status codes (BR-018).
   api:

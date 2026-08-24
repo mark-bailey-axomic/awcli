@@ -22,7 +22,7 @@ the API as an argument. Nothing is installed into the target.
 
 ## Non-Goals
 
-- Native Windows execution (WSL2 is the Windows path — ADR pending, PRD P2-2).
+- Native Windows execution (WSL2 is the Windows path — ADR-0007).
 - A published container image (ADR-0006), remote execution targets, or multi-repo runs.
 - A hard spend ceiling (v1 reports and warns; the enforceable bound is wall-clock).
 - Branch-strategy matrices or automatic merging — branches are the workflow's to dispose of.
@@ -408,4 +408,5 @@ day one; nothing downstream of WB-2 may register a resource before it exists.
 | adr | docs/adr/0004-git-and-text-as-source-of-truth.md | Stream output is enrichment only |
 | adr | docs/adr/0005-cli-owned-loop-with-durable-single-writer-state.md | Loop ownership, write-through, frozen scopes |
 | adr | docs/adr/0006-no-published-base-image.md | Self-contained generated Dockerfile |
+| adr | docs/adr/0007-wsl2-is-the-windows-path.md | WSL2 supported, native win32 refused at startup |
 | reference | ../../mp-sandcastle | Reference implementation — read for lessons, do not depend on |
