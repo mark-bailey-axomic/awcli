@@ -149,61 +149,159 @@ contracts:
 
 # Work breakdown units from the TDD's ## Work Breakdown section.
 tickets:
-  - id: WB-1
-    path: design/agentic-workflow-cli-tdd.md#wb-1
-    title: "[AWCLI] Author the frozen context declaration and a fake agent driver"
+  - id: AWCLI-01
+    path: tickets/AWCLI-01-freeze-context-contract.md
+    title: "[AWCLI] Freeze the context contract and assert the runtime against it"
+    points: 2
+    work_breakdown: WB-1
+    depends_on: []
     status: todo
-  - id: WB-2
-    path: design/agentic-workflow-cli-tdd.md#wb-2
-    title: "[AWCLI] Build the disposal stack and cancellation primitive"
+  - id: AWCLI-02
+    path: tickets/AWCLI-02-fake-rehearsal-driver.md
+    title: "[AWCLI] Ship the fake agent driver so workflows run with no agent installed"
+    points: 3
+    work_breakdown: WB-1
+    depends_on: [AWCLI-01]
     status: todo
-  - id: WB-3
-    path: design/agentic-workflow-cli-tdd.md#wb-3
+  - id: AWCLI-03
+    path: tickets/AWCLI-03-disposal-stack.md
+    title: "[AWCLI] Build the disposal stack before anything registers with it"
+    points: 3
+    work_breakdown: WB-2
+    depends_on: []
+    status: todo
+  - id: AWCLI-04
+    path: tickets/AWCLI-04-cancellation-primitive.md
+    title: "[AWCLI] Two cancellation modes over one primitive"
+    points: 2
+    work_breakdown: WB-2
+    depends_on: [AWCLI-03]
+    status: todo
+  - id: AWCLI-05
+    path: tickets/AWCLI-05-workflow-loader.md
     title: "[AWCLI] Load a TypeScript workflow and validate its exports"
+    points: 3
+    work_breakdown: WB-3
+    depends_on: [AWCLI-01]
     status: todo
-  - id: WB-4
-    path: design/agentic-workflow-cli-tdd.md#wb-4
-    title: "[AWCLI] Gate chain — refuse before any side effect"
+  - id: AWCLI-06
+    path: tickets/AWCLI-06-gate-chain.md
+    title: "[AWCLI] Refuse a run before any side effect"
+    points: 3
+    work_breakdown: WB-4
+    depends_on: [AWCLI-05]
     status: todo
-  - id: WB-5
-    path: design/agentic-workflow-cli-tdd.md#wb-5
-    title: "[AWCLI] Run identity, locking with stale reclaim, and the run record"
+  - id: AWCLI-07
+    path: tickets/AWCLI-07-run-identity-and-lock.md
+    title: "[AWCLI] Name runs and take a reclaimable exclusive lock"
+    points: 2
+    work_breakdown: WB-5
+    depends_on: [AWCLI-03]
     status: todo
-  - id: WB-6
-    path: design/agentic-workflow-cli-tdd.md#wb-6
-    title: "[AWCLI] Durable state with write-through and scope freezing"
+  - id: AWCLI-08
+    path: tickets/AWCLI-08-run-record.md
+    title: "[AWCLI] Record every run so it can be explained the next morning"
+    points: 2
+    work_breakdown: WB-5
+    depends_on: [AWCLI-07]
     status: todo
-  - id: WB-7
-    path: design/agentic-workflow-cli-tdd.md#wb-7
-    title: "[AWCLI] Iteration loop and termination classification"
+  - id: AWCLI-09
+    path: tickets/AWCLI-09-durable-write-through-state.md
+    title: "[AWCLI] Persist shared state as it changes"
+    points: 3
+    work_breakdown: WB-6
+    depends_on: [AWCLI-03, AWCLI-07]
     status: todo
-  - id: WB-8
-    path: design/agentic-workflow-cli-tdd.md#wb-8
-    title: "[AWCLI] Workspace port — worktrees, deterministic branches, reuse"
+  - id: AWCLI-10
+    path: tickets/AWCLI-10-scope-freezing.md
+    title: "[AWCLI] Freeze state inside agent and container scopes"
+    points: 2
+    work_breakdown: WB-6
+    depends_on: [AWCLI-02, AWCLI-09]
     status: todo
-  - id: WB-9
-    path: design/agentic-workflow-cli-tdd.md#wb-9
-    title: "[AWCLI] Claude agent driver with git-and-text truth"
+  - id: AWCLI-11
+    path: tickets/AWCLI-11-iteration-loop.md
+    title: "[AWCLI] Drive iterations and classify how a run ends"
+    points: 3
+    work_breakdown: WB-7
+    depends_on: [AWCLI-04, AWCLI-09]
     status: todo
-  - id: WB-10
-    path: design/agentic-workflow-cli-tdd.md#wb-10
-    title: "[AWCLI] Structured output extraction and scoped re-ask"
+  - id: AWCLI-12
+    path: tickets/AWCLI-12-failure-isolation-and-drain.md
+    title: "[AWCLI] Isolate per-iteration failure and drain in-flight work on done"
+    points: 2
+    work_breakdown: WB-7
+    depends_on: [AWCLI-04, AWCLI-11]
     status: todo
-  - id: WB-11
-    path: design/agentic-workflow-cli-tdd.md#wb-11
-    title: "[AWCLI] Container execution target"
+  - id: AWCLI-13
+    path: tickets/AWCLI-13-worktree-provisioning.md
+    title: "[AWCLI] Provision worktrees on deterministic branches"
+    points: 3
+    work_breakdown: WB-8
+    depends_on: [AWCLI-03, AWCLI-07]
     status: todo
-  - id: WB-12
-    path: design/agentic-workflow-cli-tdd.md#wb-12
-    title: "[AWCLI] Workflow resolution, scaffolding and arguments"
+  - id: AWCLI-14
+    path: tickets/AWCLI-14-worktree-reuse-and-resume.md
+    title: "[AWCLI] Reuse, resume and fresh start"
+    points: 2
+    work_breakdown: WB-8
+    depends_on: [AWCLI-13]
     status: todo
-  - id: WB-13
-    path: design/agentic-workflow-cli-tdd.md#wb-13
-    title: "[AWCLI] Logging, isolation reporting and spend"
+  - id: AWCLI-15
+    path: tickets/AWCLI-15-claude-agent-driver.md
+    title: "[AWCLI] Run the agent as a subprocess and read its results from git and text"
+    points: 3
+    work_breakdown: WB-9
+    depends_on: [AWCLI-01, AWCLI-02, AWCLI-13]
     status: todo
-  - id: WB-14
-    path: design/agentic-workflow-cli-tdd.md#wb-14
-    title: "[AWCLI] Runtime layout, ignore-once and clean"
+  - id: AWCLI-16
+    path: tickets/AWCLI-16-agent-silence-and-teardown.md
+    title: "[AWCLI] Handle silence, lingering processes and unreadable detail"
+    points: 2
+    work_breakdown: WB-9
+    depends_on: [AWCLI-04, AWCLI-15]
+    status: todo
+  - id: AWCLI-17
+    path: tickets/AWCLI-17-structured-output-and-reask.md
+    title: "[AWCLI] Extract tagged results and re-ask narrowly once"
+    points: 3
+    work_breakdown: WB-10
+    depends_on: [AWCLI-15]
+    status: todo
+  - id: AWCLI-18
+    path: tickets/AWCLI-18-dockerfile-and-build-cache.md
+    title: "[AWCLI] Generate a self-contained Dockerfile and build it on demand"
+    points: 3
+    work_breakdown: WB-11
+    depends_on: []
+    status: todo
+  - id: AWCLI-19
+    path: tickets/AWCLI-19-container-exec-target.md
+    title: "[AWCLI] Execute agents in a container with credentials lent, never baked"
+    points: 2
+    work_breakdown: WB-11
+    depends_on: [AWCLI-03, AWCLI-13, AWCLI-18]
+    status: todo
+  - id: AWCLI-20
+    path: tickets/AWCLI-20-resolution-scaffolding-args.md
+    title: "[AWCLI] Resolve workflows project-first, scaffold new ones, pass arguments through"
+    points: 3
+    work_breakdown: WB-12
+    depends_on: [AWCLI-05]
+    status: todo
+  - id: AWCLI-21
+    path: tickets/AWCLI-21-logging-isolation-spend.md
+    title: "[AWCLI] Per-agent logs, honest isolation reporting, and spend with a threshold"
+    points: 3
+    work_breakdown: WB-13
+    depends_on: [AWCLI-07, AWCLI-08, AWCLI-15]
+    status: todo
+  - id: AWCLI-22
+    path: tickets/AWCLI-22-runtime-layout-ignore-clean.md
+    title: "[AWCLI] One runtime path, one ignore line, and a clean that only removes what is safe"
+    points: 3
+    work_breakdown: WB-14
+    depends_on: [AWCLI-07, AWCLI-13, AWCLI-14, AWCLI-18]
     status: todo
 
 plans: []
