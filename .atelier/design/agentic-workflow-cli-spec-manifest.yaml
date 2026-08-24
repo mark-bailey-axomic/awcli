@@ -5,7 +5,7 @@
 metadata:
   feature: agentic-workflow-cli
   epic: ""
-  status: approved
+  status: building
   source: specify
   source_ticket: ""
   version: 1
@@ -38,13 +38,172 @@ requirements:
 
 contracts:
   tdd:
-    path: ""
-  adrs: []
-  api: []
-  services: []
-  repositories: []
+    path: design/agentic-workflow-cli-tdd.md
+  adrs:
+    - docs/adr/0001-plain-typescript-with-driver-ports.md
+    - docs/adr/0002-contract-first-ambient-context-types.md
+    - docs/adr/0003-workspace-and-execution-as-orthogonal-axes.md
+    - docs/adr/0004-git-and-text-as-source-of-truth.md
+    - docs/adr/0005-cli-owned-loop-with-durable-single-writer-state.md
+    - docs/adr/0006-no-published-base-image.md
+  # A CLI has no HTTP surface; `api` records command entry points, and exit codes
+  # play the role of status codes (BR-018).
+  api:
+    - endpoint: run
+      method: CLI
+      path: awcli run <name-or-path>
+      request: "--repo --iterations --max-duration --name --fresh --dry-run --arg k=v --reset-state"
+      response: "run outcome + summary"
+      status_codes: [0, 1, 2, 3]
+    - endpoint: create
+      method: CLI
+      path: awcli create <name>
+      request: "--project --template"
+      response: "scaffolded workflow path"
+      status_codes: [0, 3]
+    - endpoint: init
+      method: CLI
+      path: awcli init
+      request: ""
+      response: ".awcli/ written"
+      status_codes: [0, 3]
+    - endpoint: clean
+      method: CLI
+      path: awcli clean
+      request: "--run --branches"
+      response: "released locks, collected branches"
+      status_codes: [0]
+    - endpoint: doctor
+      method: CLI
+      path: awcli doctor
+      request: ""
+      response: "versions, ranges, image and git state"
+      status_codes: [0]
+  services:
+    - class: AgentDriver
+      methods:
+        - name: start
+          params: "prompt, target, opts"
+          returns: AgentHandle
+        - name: output
+          params: ""
+          returns: "AsyncIterable<string>"
+        - name: wait
+          params: ""
+          returns: "Promise<Exit>"
+        - name: kill
+          params: ""
+          returns: "Promise<void>"
+    - class: ExecTarget
+      methods:
+        - name: exec
+          params: "cmd, opts"
+          returns: "Promise<ExecResult>"
+        - name: available
+          params: ""
+          returns: "Promise<boolean>"
+        - name: dispose
+          params: ""
+          returns: "Promise<void>"
+    - class: Workspace
+      methods:
+        - name: acquire
+          params: "run, slot"
+          returns: "Promise<WorkspaceHandle>"
+        - name: release
+          params: "preserve: true"
+          returns: "Promise<void>"
+    - class: Clock
+      methods:
+        - name: now
+          params: ""
+          returns: Instant
+        - name: elapsed
+          params: since
+          returns: Duration
+        - name: deadline
+          params: duration
+          returns: Deadline
+  repositories:
+    - class: Store
+      methods:
+        - name: loadState
+          params: run
+          returns: "Promise<State>"
+        - name: saveState
+          params: "run, data"
+          returns: "Promise<void>  # temp+rename, never partially observable"
+        - name: appendRecord
+          params: "run, entry"
+          returns: "Promise<void>  # stamps awcli + agent version, HEAD"
+        - name: acquireLock
+          params: run
+          returns: "Promise<Lock>  # fails if held by a live owner"
+        - name: reclaimIfStale
+          params: run
+          returns: "Promise<boolean>  # only when the owner is gone"
+        - name: logStream
+          params: "run, agent"
+          returns: WritableStream
 
-tickets: []
+# Work breakdown units from the TDD's ## Work Breakdown section.
+tickets:
+  - id: WB-1
+    path: design/agentic-workflow-cli-tdd.md#wb-1
+    title: "[AWCLI] Author the frozen context declaration and a fake agent driver"
+    status: todo
+  - id: WB-2
+    path: design/agentic-workflow-cli-tdd.md#wb-2
+    title: "[AWCLI] Build the disposal stack and cancellation primitive"
+    status: todo
+  - id: WB-3
+    path: design/agentic-workflow-cli-tdd.md#wb-3
+    title: "[AWCLI] Load a TypeScript workflow and validate its exports"
+    status: todo
+  - id: WB-4
+    path: design/agentic-workflow-cli-tdd.md#wb-4
+    title: "[AWCLI] Gate chain — refuse before any side effect"
+    status: todo
+  - id: WB-5
+    path: design/agentic-workflow-cli-tdd.md#wb-5
+    title: "[AWCLI] Run identity, locking with stale reclaim, and the run record"
+    status: todo
+  - id: WB-6
+    path: design/agentic-workflow-cli-tdd.md#wb-6
+    title: "[AWCLI] Durable state with write-through and scope freezing"
+    status: todo
+  - id: WB-7
+    path: design/agentic-workflow-cli-tdd.md#wb-7
+    title: "[AWCLI] Iteration loop and termination classification"
+    status: todo
+  - id: WB-8
+    path: design/agentic-workflow-cli-tdd.md#wb-8
+    title: "[AWCLI] Workspace port — worktrees, deterministic branches, reuse"
+    status: todo
+  - id: WB-9
+    path: design/agentic-workflow-cli-tdd.md#wb-9
+    title: "[AWCLI] Claude agent driver with git-and-text truth"
+    status: todo
+  - id: WB-10
+    path: design/agentic-workflow-cli-tdd.md#wb-10
+    title: "[AWCLI] Structured output extraction and scoped re-ask"
+    status: todo
+  - id: WB-11
+    path: design/agentic-workflow-cli-tdd.md#wb-11
+    title: "[AWCLI] Container execution target"
+    status: todo
+  - id: WB-12
+    path: design/agentic-workflow-cli-tdd.md#wb-12
+    title: "[AWCLI] Workflow resolution, scaffolding and arguments"
+    status: todo
+  - id: WB-13
+    path: design/agentic-workflow-cli-tdd.md#wb-13
+    title: "[AWCLI] Logging, isolation reporting and spend"
+    status: todo
+  - id: WB-14
+    path: design/agentic-workflow-cli-tdd.md#wb-14
+    title: "[AWCLI] Runtime layout, ignore-once and clean"
+    status: todo
 
 plans: []
 

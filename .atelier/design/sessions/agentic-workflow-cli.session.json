@@ -1,0 +1,40 @@
+{
+  "feature": "agentic-workflow-cli",
+  "split": "monolith",
+  "stage": "5b-review",
+  "prerequisites": {
+    "rules": "approved",
+    "bdd": "present",
+    "constitution": "absent"
+  },
+  "gates": {
+    "cross_review": false,
+    "auto_commit": false
+  },
+  "artifacts": {
+    "prd": ".atelier/context/agentic-workflow-cli-prd-draft.md",
+    "rules": ".atelier/design/agentic-workflow-cli-rules.md",
+    "bdd": ".atelier/design/agentic-workflow-cli-bdd.feature",
+    "flows": ".atelier/design/agentic-workflow-cli-flows.md",
+    "manifest": ".atelier/design/agentic-workflow-cli-spec-manifest.yaml",
+    "analysis": ".atelier/design/agentic-workflow-cli-analysis.md",
+    "tdd": ".atelier/design/agentic-workflow-cli-tdd.md",
+    "adrs": [
+      "docs/adr/0001-*.md",
+      "docs/adr/0002-*.md",
+      "docs/adr/0003-*.md",
+      "docs/adr/0004-*.md",
+      "docs/adr/0005-*.md",
+      "docs/adr/0006-*.md"
+    ]
+  },
+  "findings": {
+    "isolation-axes": "workspace (liveTree|worktree) x execution (host|container); sandbox() = worktree x container"
+  },
+  "chosen_option": "A \u2014 functional core + driver ports",
+  "work_breakdown": {
+    "units": 14,
+    "points": 56,
+    "first": "WB-1 (contract + fake driver), WB-2 (disposal spine) in parallel"
+  }
+}
