@@ -1,0 +1,59 @@
+# AWCLI-21 — [AWCLI] Per-agent logs, honest isolation reporting, and spend with a threshold
+
+**Points:** 3 · **Source:** WB-13 · **Status:** Ready
+
+## Problem / Goal
+
+Four agents streaming into one terminal is unreadable, and unreadable output is the same as no
+output. Each agent needs its own log and a summarised terminal view. Two related honesty
+problems ride along: every call must state how isolated it actually was, and spend must be
+reported without a threshold quietly passing because the number was never measurable.
+
+## Context
+
+Reporting spend rather than enforcing a budget is the v1 scope decision (PRD P1). The subtlety is
+that spend can be unknown — the agent's stream may not supply it — and a threshold that cannot be
+measured must say so up front rather than never firing. Isolation reporting closes the gap where
+an operator assumes containment they did not get.
+
+## Requirements
+
+### Functional
+
+- Write a separate log per agent call, addressable from the run record.
+- Keep the terminal readable under parallel fan-out: progress and summaries, not interleaved
+  streams.
+- State the isolation actually in effect for every agent call — workspace axis and execution axis.
+- Report spend per iteration and per run, marking unknown values as unknown.
+- Warn when a configured spend threshold is crossed, and warn at the start of the run when the
+  threshold cannot be measured at all.
+- Redact values matching known secret shapes from logs as well as records.
+
+### Non-Functional
+
+- An unknown spend never reads as zero, and never satisfies a threshold by default.
+- The terminal remains readable with at least four concurrent agents.
+- Log writing must not become the bottleneck under fan-out.
+
+## Constraints
+
+- Isolation is reported from what actually happened, never from what was requested.
+- The unmeasurable-threshold warning fires once, at the start, not at the end.
+
+## Acceptance Criteria
+
+- [ ] Scenario: *Four agents at once stay readable*.
+- [ ] Scenario: *Every agent call states how isolated it is*.
+- [ ] Scenario: *Spend is reported and a threshold warns*.
+- [ ] Scenario: *A threshold that cannot be measured says so up front*.
+- [ ] Values matching known secret shapes are absent from logs.
+- [ ] All tests pass, lint clean, type check clean.
+
+## Out of Scope
+
+- Enforcing a budget by stopping a run — deferred past v1.
+
+## Dependencies
+
+**Blocked by:** AWCLI-07, AWCLI-08, AWCLI-15
+**Blocks:** None
