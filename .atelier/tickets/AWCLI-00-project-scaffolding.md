@@ -1,6 +1,6 @@
 # AWCLI-00 — [AWCLI] Project scaffolding and a globally installable walking skeleton
 
-**Points:** 2 · **Source:** new — extracted from AWCLI-01's hidden scope · **Status:** Ready
+**Points:** 2 · **Source:** new — extracted from AWCLI-01's hidden scope · **Status:** Done
 
 ## Problem / Goal
 
@@ -51,13 +51,13 @@ ADR-0001 rejects.
 
 ## Acceptance Criteria
 
-- [ ] `npm install -g` from a clean clone produces a working command on `PATH`.
-- [ ] The command, invoked from a directory unrelated to the source tree, reports its version and
+- [x] `npm install -g` from a clean clone produces a working command on `PATH`.
+- [x] The command, invoked from a directory unrelated to the source tree, reports its version and
       exits zero.
-- [ ] Test, format-check and typecheck each run as a named script and pass on a clean tree.
-- [ ] A deliberate type error fails the typecheck script with a non-zero exit.
-- [ ] CI runs the gates on macOS and Linux, and has no Windows job.
-- [ ] All tests pass, lint clean, type check clean.
+- [x] Test, format-check and typecheck each run as a named script and pass on a clean tree.
+- [x] A deliberate type error fails the typecheck script with a non-zero exit.
+- [x] CI runs the gates on macOS and Linux, and has no Windows job.
+- [x] All tests pass, lint clean, type check clean.
 
 ## Out of Scope
 

@@ -155,7 +155,7 @@ tickets:
     points: 2
     work_breakdown: null  # project scaffolding — no WB entry
     depends_on: []
-    status: todo
+    status: done
   - id: AWCLI-01
     path: tickets/AWCLI-01-freeze-context-contract.md
     title: "[AWCLI] Freeze the context contract and assert the runtime against it"
