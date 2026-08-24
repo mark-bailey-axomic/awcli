@@ -1,0 +1,64 @@
+# Spec Manifest — awcli (agentic workflow CLI)
+# Created by: /specify (Stage 4a)
+# Next: /design populates contracts
+
+metadata:
+  feature: agentic-workflow-cli
+  epic: ""
+  status: approved
+  source: specify
+  source_ticket: ""
+  version: 1
+  created: "2026-08-24T16:57:51Z"
+  updated: "2026-08-24T16:57:51Z"
+
+requirements:
+  rules:
+    source: file
+    path: design/agentic-workflow-cli-rules.md
+    items: []
+    status: approved
+    count: 37
+    categories:
+      - environment-preconditions
+      - validation
+      - concurrency-and-permission
+      - isolation-and-safety
+      - execution-and-termination
+      - durability-and-resumption
+      - observability-and-attribution
+      - workspace-hygiene-and-portability
+      - contract-discipline
+  scenarios:
+    path: design/agentic-workflow-cli-bdd.feature
+    count: 60
+  flows:
+    path: design/agentic-workflow-cli-flows.md
+    count: 7
+
+contracts:
+  tdd:
+    path: ""
+  adrs: []
+  api: []
+  services: []
+  repositories: []
+
+tickets: []
+
+plans: []
+
+traceability: []
+
+validation:
+  last_run: ""
+  validation_history: []
+  coverage:
+    rules_tested_pct: 0
+    scenarios_linked_pct: 0
+    contracts_implemented_pct: 0
+  gaps:
+    untested_rules: []
+    unlinked_scenarios: []
+    orphan_tests: []
+  drift: []
