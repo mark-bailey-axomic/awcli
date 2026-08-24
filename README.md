@@ -20,8 +20,13 @@ a Python or Go repository. One workflow file runs against all of them.
 ```bash
 git clone https://github.com/mark-bailey-axomic/awcli.git
 cd awcli
-npm install -g .
+npm install          # installs devDependencies; `prepare` builds dist/
+npm install -g .     # packs and installs the built package globally
 ```
+
+Both steps are needed. `npm install -g .` on a bare clone fails: npm does not install
+devDependencies for a local folder install, so the `prepare` build has no bundler to run.
+It fails loudly rather than installing a broken command.
 
 Requires Node >= 20.11. Then, from any directory:
 
