@@ -53,5 +53,6 @@ before this exists.
 
 ## Dependencies
 
-**Blocked by:** None — parallel with AWCLI-01 from day one.
+**Blocked by:** AWCLI-00
+**Parallel with:** AWCLI-01 — neither depends on the other.
 **Blocks:** AWCLI-04, AWCLI-07, AWCLI-09, AWCLI-13, AWCLI-19
