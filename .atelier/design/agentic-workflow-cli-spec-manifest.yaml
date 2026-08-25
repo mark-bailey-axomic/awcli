@@ -324,6 +324,20 @@ tickets:
     work_breakdown: WB-14
     depends_on: [AWCLI-07, AWCLI-13, AWCLI-14, AWCLI-18]
     status: todo
+  - id: AWCLI-23
+    path: tickets/AWCLI-23-workspace-confined-filesystem.md
+    title: "[AWCLI] Read and write within the working copy, refusing paths that leave it"
+    points: 2
+    work_breakdown: null  # ctx.fs was a dashed context member — no WB entry; governed by BR-038
+    depends_on: [AWCLI-01, AWCLI-13, AWCLI-19]
+    status: todo
+  - id: AWCLI-24
+    path: tickets/AWCLI-24-resolved-environment.md
+    title: "[AWCLI] Resolve the run's environment, with awcli's own credentials subtracted"
+    points: 2
+    work_breakdown: null  # ctx.env was a dashed context member — no WB entry; governed by BR-039
+    depends_on: [AWCLI-01, AWCLI-19]
+    status: todo
 
 plans: []
 
