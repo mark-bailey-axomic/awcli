@@ -149,20 +149,30 @@ run is still a running run.
 **Example.** A nightly run is killed by a reboot; the next night's run reclaims the lock, noting that
 it did so.
 
-### BR-012 — Only the workflow body may write shared state
-**Statement.** Shared state is writable from the workflow's own body and read-only everywhere inside
-an agent or container scope. A write from inside a parallel branch fails immediately, naming the
-correct pattern.
-**Rationale.** This is the single-writer guarantee made structural. A lost update inside a fan-out
-is invisible and surfaces as inexplicably-wrong state hours later. The rule is whole, but its
-enforcement arrives in two parts: a `sandbox()` scope hands back a context whose state cannot be
-written, so that half is structural from the contract onwards, while an `agent()` fan-out has no
-child context to freeze and v1 enforces the single writer there at run time — AWCLI-10 adds the
-frozen agent scope.
+### BR-012 — Only the workflow body may write shared state, and not while its own agents are running
+**Statement.** Shared state is writable from the workflow's body, and only while that body has no
+agent call of its own still running. A `sandbox()` scope hands back a context whose state cannot be
+written at all. A write made while agents this body started are still in flight — which is what a
+write from inside a parallel branch is — is refused immediately, naming the pattern to use instead:
+let the branch return its result, and record it once it has.
+**Rationale.** This is the single-writer guarantee made enforceable, and it takes two mechanisms
+because the contract gives the two scopes different shapes. `sandbox()` returns a scope, so its
+read-only state is structural from the contract onwards and a write there does not compile.
+`agent()` returns a result rather than a scope, so a fan-out branch is the body's own code holding
+the body's own context: there is nothing there to freeze, and a branch write cannot be told from a
+body write by who made it. A rule that named an agent scope would name something the contract does
+not give. What does tell them apart is *when* — awcli owns the loop (BR-017) and therefore knows
+which agent calls are outstanding, so the in-flight window is a test it can actually apply. AWCLI-10
+builds it. A lost update inside a fan-out is invisible and surfaces as inexplicably-wrong state
+hours later, which is why an enforceable approximation beats an unenforceable exactness.
 **Actors.** Workflow.
-**Exceptions.** None. Results travel out of a branch as return values; the body records them.
-**Example.** Four parallel branches each try to append their result to shared state: each throws at
-once with the pattern to use instead.
+**Exceptions.** The window is deliberately blunt: a body write while any agent call it started is
+still running is refused even when nothing was fanning out and the write would have been safe. A
+refusal naming the pattern costs a line of rewriting; a lost update costs a night. Reads are never
+refused — the window closes writes only. Results travel out of a branch as return values, and the
+body records them once the branch has returned.
+**Example.** Four parallel branches each try to append their result to shared state: each is refused
+at once with the pattern to use instead, and the body records all four after awaiting them.
 
 ### BR-013 — Parallel agents never share a working copy
 **Statement.** Concurrently-running agents each receive their own working copy on their own branch.

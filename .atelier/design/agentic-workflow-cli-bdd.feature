@@ -149,6 +149,14 @@ Feature: Running agentic workflows from a global command-line tool
     And the failure names the supported pattern — return the result and record it in the workflow body
 
   @BR-012
+  Scenario: A write while the body's own agents are still running is refused
+    Given a workflow that has started four agents and is still waiting for them
+    When it writes to shared state before any of them has returned
+    Then that write is refused
+    And the refusal says it was made while the workflow's own agents were still running
+    And it names the pattern instead — return the result, and record it once the branch returns
+
+  @BR-012
   Scenario: The workflow body records results returned from its branches
     Given a workflow that starts four agents in parallel
     When each branch returns its result to the workflow body

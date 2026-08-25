@@ -10,7 +10,7 @@ The remaining six are AWCLI-23, AWCLI-24 and AWCLI-25 at two points each, delive
 members the work breakdown left unowned — the two it gave no rule at all, and the default half of
 a third, `ctx.exec` on the host, which WB-11 scoped entirely to the container.
 
-Every one of the 73 approved BDD scenarios appears as an acceptance criterion on exactly one
+Every one of the 74 approved BDD scenarios appears as an acceptance criterion on exactly one
 ticket. Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.
@@ -44,7 +44,7 @@ target actually is and AWCLI-25 builds it.
 | [AWCLI-07](AWCLI-07-run-identity-and-lock.md) | Run identity and reclaimable lock | 2 | WB-5 | 03 |
 | [AWCLI-08](AWCLI-08-run-record.md) | Run record and attribution | 2 | WB-5 | 07 |
 | [AWCLI-09](AWCLI-09-durable-write-through-state.md) | Durable write-through state | 3 | WB-6 | 03, 07 |
-| [AWCLI-10](AWCLI-10-scope-freezing.md) | Scope freezing | 2 | WB-6 | 02, 09 |
+| [AWCLI-10](AWCLI-10-scope-freezing.md) | Single-writer enforcement | 2 | WB-6 | 02, 09 |
 | [AWCLI-11](AWCLI-11-iteration-loop.md) | Iteration loop and termination | 3 | WB-7 | 04, 09 |
 | [AWCLI-12](AWCLI-12-failure-isolation-and-drain.md) | Failure isolation and drain | 2 | WB-7 | 04, 11 |
 | [AWCLI-13](AWCLI-13-worktree-provisioning.md) | Worktree provisioning | 3 | WB-8 | 03, 07 |

@@ -31,7 +31,7 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    count: 73
+    count: 74
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7
@@ -235,7 +235,7 @@ tickets:
     status: todo
   - id: AWCLI-10
     path: tickets/AWCLI-10-scope-freezing.md
-    title: "[AWCLI] Freeze state inside agent and container scopes"
+    title: "[AWCLI] Enforce the single writer: read-only scope state, and no writes while agents run"
     points: 2
     work_breakdown: WB-6
     depends_on: [AWCLI-02, AWCLI-09]
