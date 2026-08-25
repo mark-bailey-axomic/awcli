@@ -7,8 +7,11 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * The members this awcli declares but has not built, and the unit that delivers each.
  *
  * Maintainer-facing only — the ids never reach an operator's error message (see
- * NotYetImplementedError). Two members have no owning unit in the current breakdown; saying so
- * is more useful than attributing them to a ticket whose requirements do not mention them.
+ * NotYetImplementedError). fs and env had no owning unit in the work breakdown at all: they are
+ * the only two members of the twelve that the design governs with no business rule and no
+ * scenario, and a ticket's acceptance criteria come from scenarios. AWCLI-23 and AWCLI-24 close
+ * that by deriving their criteria from the declaration instead, so the gap is in the approved
+ * specification rather than in the attribution here.
  *
  * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
  * one that surprises people. Adding a member to CONTEXT_SURFACE fails to compile here until
@@ -16,6 +19,9 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * fails here too, because Record requires every key. That error is the reminder to add the
  * member to the implemented list below and to drop its stub; loosening this type to make it go
  * away is how the exhaustiveness gets lost.
+ *
+ * What it does not check is that a value names anything: every key carries a string, so a
+ * placeholder like "unassigned" compiles. not-implemented.test.ts is what rejects one.
  */
 const DELIVERED_BY = {
   agent: "AWCLI-02",
@@ -25,9 +31,9 @@ const DELIVERED_BY = {
   project: "AWCLI-06",
   git: "AWCLI-13",
   exec: "AWCLI-19",
-  fs: "unassigned",
+  fs: "AWCLI-23",
   log: "AWCLI-21",
-  env: "unassigned",
+  env: "AWCLI-24",
   schema: "AWCLI-09",
 } as const satisfies Record<Exclude<ContextMember, "version">, string>;
 

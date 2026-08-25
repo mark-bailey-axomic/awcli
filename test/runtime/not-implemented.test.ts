@@ -166,6 +166,51 @@ describe("how an unbuilt member refuses", () => {
   });
 });
 
+describe("the delivering unit a refusal carries", () => {
+  // The ticket id never reaches an operator, so nothing else would notice a placeholder in its
+  // place. But a placeholder means the surface declares a member no unit owns, which is a
+  // planning gap the `satisfies` clause cannot see — it checks that every key has a string, not
+  // that the string names anything. Asserted here so "unassigned" cannot survive a review.
+  const refusalFrom = async (invoke: () => unknown): Promise<unknown> => {
+    try {
+      const returned = invoke();
+      if (returned instanceof Promise) await returned;
+    } catch (error) {
+      return error;
+    }
+    return NOTHING_RETURNED;
+  };
+
+  /** Every way this member can refuse, and the unit each refusal names. */
+  const unitsNamedBy = async (member: string): Promise<readonly string[]> => {
+    const outcome = read(member);
+    if ("threw" in outcome) return [(outcome.threw as NotYetImplementedError).ticket];
+
+    const value = outcome.value;
+    const { callables, getters } =
+      typeof value === "function"
+        ? { callables: [value as Thrower], getters: [] as readonly (() => unknown)[] }
+        : membersOf(value as object);
+
+    const units: string[] = [];
+    for (const invoke of [...callables, ...getters]) {
+      const refusal = await refusalFrom(invoke);
+      expect(refusal).not.toBe(NOTHING_RETURNED);
+      expect(refusal).toBeInstanceOf(NotYetImplementedError);
+      units.push((refusal as NotYetImplementedError).ticket);
+    }
+    return units;
+  };
+
+  for (const member of unbuiltMembers) {
+    it(`names a real unit for ctx.${member}, not a placeholder`, async () => {
+      const units = await unitsNamedBy(member);
+      expect(units.length).toBeGreaterThan(0);
+      for (const unit of units) expect(unit).toMatch(/^AWCLI-\d\d$/);
+    });
+  }
+});
+
 describe("NotYetImplementedError", () => {
   it("names the member and the build that lacks it", () => {
     const error = new NotYetImplementedError("sandbox", "AWCLI-19", "0.1.0");

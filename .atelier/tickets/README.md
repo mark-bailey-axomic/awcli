@@ -1,16 +1,24 @@
 # awcli — implementation tickets
 
-23 tickets, 59 points, derived from the 14-unit work breakdown in
+25 tickets, 63 points, derived from the 14-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). The seven
 5-point units were each split into a 3 and a 2; WB-5 split into two 2-point tickets, which is
 where one of the extra points over the design's 56 comes from — separating the lock from the
-record revealed work the single estimate had compressed. AWCLI-00 is the other two: project
+record revealed work the single estimate had compressed. AWCLI-00 accounts for two more: project
 scaffolding the work breakdown never named, because a design document assumes a project exists.
+The remaining four are AWCLI-23 and AWCLI-24 at two points each, delivering the two context
+members the work breakdown left unowned.
 
 Every one of the 60 approved BDD scenarios appears as an acceptance criterion on exactly one
 ticket. Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.
+
+The converse does not hold: AWCLI-23 and AWCLI-24 carry no scenario at all. `ctx.fs` and
+`ctx.env` are the only two of the twelve context members the TDD governs with no business rule —
+a dash in its Rules column — and no approved scenario exercises either, so their criteria are
+derived from the frozen declaration instead. That is a gap in the approved specification, stated
+on both tickets rather than papered over.
 
 ## Tickets
 
@@ -39,6 +47,8 @@ those are the tests, verbatim.
 | [AWCLI-20](AWCLI-20-resolution-scaffolding-args.md) | Resolution, scaffolding, args | 3 | WB-12 | 05 |
 | [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 15 |
 | [AWCLI-22](AWCLI-22-runtime-layout-ignore-clean.md) | Runtime layout, ignore, clean | 3 | WB-14 | 07, 13, 14, 18 |
+| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | — | 01, 13 |
+| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | — | 01, 19 |
 
 ## Order
 
@@ -56,8 +66,8 @@ wave 0    00
 wave 1    01    03    18
 wave 2    02    04    05    07
 wave 3    06    08    09    13    20
-wave 4    10    11    14    15    19
-wave 5    12    16    17    21    22
+wave 4    10    11    14    15    19    23
+wave 5    12    16    17    21    22    24
 ```
 
 The multi-parent tickets, which the waves alone do not show:
@@ -72,8 +82,11 @@ The multi-parent tickets, which the waves alone do not show:
 | AWCLI-19 | 03, 13, 18 |
 | AWCLI-21 | 07, 08, 15 |
 | AWCLI-22 | 07, 13, 14, 18 |
+| AWCLI-23 | 01, 13 |
+| AWCLI-24 | 01, 19 |
 
-Longest chain is six deep: **00 → 03 → 07 → 13 → 14 → 22**. Critical paths worth naming are
+Longest chain is six deep — **00 → 03 → 07 → 13 → 14 → 22**, and equally
+**00 → 03 → 07 → 13 → 19 → 24**. Critical paths worth naming are
 **00 → 01 → 05 → 06** for refusals and **00 → 03 → 07 → 09 → 11 → 12** for the loop.
 
 The first genuinely useful milestone is 00 + 01 + 02 + 03 + 05 + 07 + 09 + 11 — about 21 points —
@@ -83,7 +96,10 @@ nothing installed. Everything after that is capability rather than viability.
 ## Conventions
 
 - One ticket is one session's work. Nothing here is larger than 3 points.
-- AWCLI-00 has no WB entry: the work breakdown described the tool, not the project that holds it.
+- A `—` in the WB column means no work-breakdown unit owns the ticket. AWCLI-00 is one: the work
+  breakdown described the tool, not the project that holds it. AWCLI-23 and AWCLI-24 are the
+  others, for the reason given above — the design gives their two members no rules and no
+  scenarios, so no unit was ever written to deliver them.
 - Titles carry the bare `[AWCLI]` repo tag, so they are ready to push to a tracker unchanged.
 - Tickets state *what* and *why*; the builder decides *how*. Specific shapes, paths and port
   signatures live in the TDD's Contracts section, referenced rather than duplicated.
