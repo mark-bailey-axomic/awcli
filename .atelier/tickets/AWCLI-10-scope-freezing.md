@@ -15,6 +15,12 @@ The frozen view is a structural enforcement of the single-writer property from A
 is what makes parallel fan-out safe without locks inside the run. The pattern it pushes authors
 toward — branch returns a value, body records it — is the one the approved scenarios describe.
 
+Half of BR-012 is already structural: the contract frozen in AWCLI-01 types a `sandbox()` scope's
+state as a deep read-only view, so a write through a container scope does not compile. This ticket
+owns the rest, and the split is why both scopes are still in scope here — the run-time refusal for
+both, and, for an `agent()` fan-out, a child context to freeze at all. `agent()` hands back a
+result rather than a context today, so that half has no structural home until this lands.
+
 ## Requirements
 
 ### Functional

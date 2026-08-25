@@ -81,14 +81,16 @@ function, before creating any run state.
 **Exceptions.** None.
 
 ### BR-006 — Declared profile fields are required; everything else is free-form
-**Statement.** When a workflow reads a profile field awcli defines, a missing value fails fast naming
-the field. Values in the profile's free-form area carry no such guarantee.
+**Statement.** Every profile field awcli defines is required in a repository's configuration. The gate
+chain refuses the run at startup, naming each field the configuration lacks, before the lock or any
+working copy — whether or not a workflow would have read it. Values in the profile's free-form area
+carry no such guarantee.
 **Rationale.** Portable workflows depend on a small, dependable set of facts; anything beyond it is
 the operator's own convention and cannot be validated.
 **Actors.** Operator, Workflow.
 **Exceptions.** Free-form values are returned as-is or absent.
-**Example.** A portable workflow reading the test command against a repo that declares none fails at
-startup naming `commands.test` — not mid-loop.
+**Example.** A repo that declares no test command is refused at startup naming `commands.test` — not
+mid-loop, and not only when some workflow happens to read it.
 
 ### BR-007 — A structured-output request must be asked for in the prompt
 **Statement.** When a workflow requests tagged output, awcli verifies the resolved prompt actually
@@ -152,7 +154,11 @@ it did so.
 an agent or container scope. A write from inside a parallel branch fails immediately, naming the
 correct pattern.
 **Rationale.** This is the single-writer guarantee made structural. A lost update inside a fan-out
-is invisible and surfaces as inexplicably-wrong state hours later.
+is invisible and surfaces as inexplicably-wrong state hours later. The rule is whole, but its
+enforcement arrives in two parts: a `sandbox()` scope hands back a context whose state cannot be
+written, so that half is structural from the contract onwards, while an `agent()` fan-out has no
+child context to freeze and v1 enforces the single writer there at run time — AWCLI-10 adds the
+frozen agent scope.
 **Actors.** Workflow.
 **Exceptions.** None. Results travel out of a branch as return values; the body records them.
 **Example.** Four parallel branches each try to append their result to shared state: each throws at
@@ -171,11 +177,14 @@ trustworthy.
 
 ### BR-014 — The default is an isolated working copy, never the live tree
 **Statement.** With no isolation requested, an agent works in a fresh working copy on its own branch.
-Operating on the operator's live checkout requires an explicit opt-in.
+Operating on the operator's live checkout requires an explicit opt-in from the operator on the
+command line. A workflow cannot request it, and nothing a workflow passes selects the workspace.
 **Rationale.** An unattended loop must never be able to damage uncommitted work or move the
-operator's branch.
-**Actors.** Operator, Workflow, Agent.
-**Exceptions.** The explicit opt-in.
+operator's branch. The person whose uncommitted work is at stake is the one who has to ask — and
+keeping the choice off the workflow's surface is what keeps one workflow file portable across both
+modes.
+**Actors.** Operator, awcli, Agent.
+**Exceptions.** The operator's explicit opt-in on the command line.
 
 ### BR-036 — Branches are named predictably, kept by default, and collected on request
 **Statement.** Each working copy's branch is named from its run and its slot within that run, so

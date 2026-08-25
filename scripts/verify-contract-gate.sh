@@ -7,10 +7,10 @@
 # member as no drift at all, because `never extends true` is true; and while the sub-APIs used
 # method syntax, a runtime narrowing a parameter was accepted for nine of the twelve members.
 #
-# So there are two cases. A top-level member, and a member of a sub-API — the class of drift
-# that used to pass. Each diverges one line of the runtime, asserts the build rejects it, asserts
-# the rejection comes from the conformance file AND names the member on the same line, and always
-# restores.
+# So there are three cases. A top-level member, a member of a sub-API — the class of drift that
+# used to pass — and a readonly modifier, which no amount of assignability checking can see. Each
+# diverges one line of the runtime, asserts the build rejects it, asserts the rejection comes from
+# the conformance file AND names the member on the same line, and always restores.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,7 +25,7 @@ CONFORMANCE="src/contract/conformance.ts"
 # would be nothing here to perturb. That property disappears one member at a time and silently,
 # so it is asserted rather than trusted.
 for interface_name in ExecApi GitApi FsApi LogApi SchemaApi ContractVersion; do
-  if grep -qE "^[[:space:]]+[a-z]+: ${interface_name};" "$TARGET"; then
+  if grep -qE "^[[:space:]]+(readonly[[:space:]]+)?[a-z]+: ${interface_name};" "$TARGET"; then
     echo "FAIL: ${TARGET} names ${interface_name} instead of restating it — that member's" >&2
     echo "      conformance check is now a tautology and this script cannot perturb it" >&2
     exit 1
@@ -103,6 +103,13 @@ check_case "git" "git.commit" \
   '    commit: (message: string) => Promise<Commit>;' \
   '    commit: (message: "feat" | "fix") => Promise<Commit>;'
 
+# The readonly modifier. Exact<> cannot see one — TypeScript ignores readonly when it relates two
+# types, so a runtime handing out a writable member satisfies a declaration promising a readonly
+# one, in both directions. SameReadonly is what closes that, and this is the case that proves it.
+check_case "exec" "exec's readonly modifier" \
+  '  readonly exec: (' \
+  '  exec: ('
+
 cleanup
 trap - EXIT INT TERM
 
@@ -113,4 +120,5 @@ if [ "$STATUS" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: the build rejects a runtime diverging from the declaration, at both levels, by name"
+echo "PASS: the build rejects a runtime diverging from the declaration — both levels and a"
+echo "      modifier — and names the member each time"

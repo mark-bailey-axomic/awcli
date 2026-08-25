@@ -19,7 +19,8 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 ### Functional
 
 - Default to an isolated working copy per run, cut on a deterministic branch name.
-- Require an explicit opt-in to work on the live checkout, and refuse to do so silently.
+- Require an explicit opt-in from the operator, on the command line, to work on the live
+  checkout; a workflow cannot request it. Refuse to work there silently.
 - Give each parallel slot its own working copy, so no two agents share one.
 - Expose the current working copy's directory, branch, head and dirty state to the workflow.
 - Register each working copy for release, with preservation of its branch.

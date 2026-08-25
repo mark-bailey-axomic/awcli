@@ -8,7 +8,8 @@
 //
 // It is also an exemplar: this is the file an author copies from, so the idioms in it are the
 // idioms that spread. Two are load-bearing — never interpolate ctx.env into a prompt, and use
-// the argv form of ctx.exec whenever any part of the command came from somewhere else.
+// the argv form of ctx.exec whenever a value from elsewhere goes into a command the workflow
+// wrote itself. A declared command is not that case; see ExecApi for why.
 
 interface ReviewState {
   reviewed: string[];
@@ -60,6 +61,9 @@ const workflow: Workflow<ReviewState> = async (ctx) => {
   if (ctx.version.supports("sandbox")) {
     const scope = await ctx.sandbox({ name: "reviewer" });
     try {
+      // String form again, and for the same reason as the test command above: a declared
+      // command is a shell command by construction. Annotated rather than left bare, because an
+      // unannotated string form is what teaches a copier that either form will do.
       await scope.ctx.exec(scope.ctx.project.commands.lint);
       ctx.log.info(scope.isolation.description);
     } finally {

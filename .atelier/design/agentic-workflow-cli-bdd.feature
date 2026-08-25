@@ -174,8 +174,8 @@ Feature: Running agentic workflows from a global command-line tool
 
   @BR-014
   Scenario: Working on the live checkout requires asking for it
-    Given a workflow that explicitly opts in to working on my live checkout
-    When I run it
+    Given a workflow with no say in which working copy it is given
+    When I run it and ask for my live checkout myself
     Then the agent works in my checkout directly
     And that choice is stated in the run's output
 

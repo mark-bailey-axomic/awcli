@@ -54,8 +54,10 @@ the API as an argument. Nothing is installed into the target.
 ```
 
 The context handed to the workflow is assembled per iteration by a factory closing over the ports.
-A child scope (inside `agent()` / `sandbox()`) is the same factory with a frozen state capability —
-which is how BR-012 is enforced structurally rather than documented (ADR-0005).
+A `sandbox()` scope is the same factory with a frozen state capability, which is how BR-012 is
+enforced structurally rather than documented for that half (ADR-0005). The `agent()` fan-out half is
+not structural in v1: `agent()` hands back a result rather than a child context, so there is nothing
+to freeze and the single writer is enforced at run time. The frozen agent scope lands in AWCLI-10.
 
 ### Component Design
 
@@ -151,9 +153,9 @@ generated ignore entry is a single line written once (BR-030).
 
 | Command | Purpose | Key options | Refusals |
 |---|---|---|---|
-| `awcli run <name-or-path>` | Run a workflow | `--repo`, `--iterations`, `--max-duration`, `--name`, `--fresh`, `--dry-run`, `--arg k=v`, `--reset-state` | BR-001…010, BR-035 |
+| `awcli run <name-or-path>` | Run a workflow | `--repo`, `--iterations`, `--max-duration`, `--name`, `--fresh`, `--dry-run`, `--arg k=v`, `--reset-state`, `--live` | BR-001…010, BR-035 |
 | `awcli create <name>` | Scaffold a workflow | `--project`, `--template` | Name already exists |
-| `awcli init` | Write `.awcli/` into a repository | — | BR-002 |
+| `awcli init` | Write `.awcli/` into a repository, including all five required profile fields — `commands.test`, `commands.build`, `commands.lint`, `paths.docs`, `paths.standards` (BR-006) | — | BR-002 |
 | `awcli clean` | Release leftovers; collect branches | `--run`, `--branches` | Never touches unmerged commits (BR-036) |
 | `awcli doctor` | Report versions, ranges, image and git state | — | — (P1-6) |
 

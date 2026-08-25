@@ -52,10 +52,21 @@ const isolation: Isolation = {
   description: "isolation: worktree — host filesystem and network reachable",
 };
 
+// worktree x container: what sandbox() fixes, and the only cell a Scope can report. Not
+// liveTree x container — ADR-0003 excludes that combination, so a frozen exemplar must not
+// build one and hand it to a Scope as if it were reachable.
 const containerIsolation: Isolation = {
-  workspace: "liveTree",
+  workspace: "worktree",
   target: "container",
   description: "isolation: container",
+};
+
+// liveTree x host: the operator asked for their own checkout on the command line (BR-014). Here
+// to keep the liveTree member of the workspace union exercised in the one cell it is legal in.
+const liveIsolation: Isolation = {
+  workspace: "liveTree",
+  target: "host",
+  description: "isolation: your own checkout — uncommitted work is in scope",
 };
 
 const execResult: ExecResult = { exitCode: 42, stdout: "out", stderr: "err" };
@@ -93,7 +104,7 @@ const agentResult: AgentResult<Plan> = {
 const textResult: AgentResult = {
   commits: [],
   output: "plain text",
-  isolation: containerIsolation,
+  isolation: liveIsolation,
   usage: undefined,
   logPath: "/runs/r/logs/a.log",
 };
@@ -194,6 +205,26 @@ const bareModule: WorkflowModule = {
   state: undefined,
 };
 
+// The one class of deletion no object literal above can notice: the last field of a one-field
+// shape. Excess-property checking needs the target to have properties at all — `const x: {} = {
+// a: 1 }` is legal — so deleting `done` from WorkflowResult leaves `{}` and the literal still
+// compiles. A `keyof` witness fails instead, because `keyof {}` is `never` and no string is
+// assignable to it. An exhaustive field-by-field deletion of the declaration found six one-field
+// shapes and no other hole; four of the six were invisible everywhere, and Schema and SchemaApi
+// were caught only incidentally, by a reader fixture that happens to call the method — which is
+// the fragility this file exists to remove.
+const schemaField: keyof Schema = "check";
+const schemaApiField: keyof SchemaApi = "storable";
+const sandboxOptionsField: keyof SandboxOptions = "name";
+const execOptionsField: keyof ExecOptions = "timeoutSeconds";
+const workflowResultField: keyof WorkflowResult = "done";
+const workflowLimitsField: keyof WorkflowLimits = "exhaustionIsCompletion";
+
+// SchemaCheck is a union, so keyof is the keys its branches share — the discriminant, and the
+// one field the literals above cannot vouch for: drop `ok` from either branch and the other
+// branch's `ok` still covers it in an excess-property check.
+const schemaCheckDiscriminant: keyof SchemaCheck<Plan> = "ok";
+
 export default workflow;
 
 export const built = {
@@ -203,6 +234,7 @@ export const built = {
   usage,
   unreported,
   isolation,
+  liveIsolation,
   execResult,
   execOptions,
   execOptionsUnset,
@@ -218,4 +250,11 @@ export const built = {
   openEndedResult,
   asModule,
   bareModule,
+  schemaField,
+  schemaApiField,
+  sandboxOptionsField,
+  execOptionsField,
+  workflowResultField,
+  workflowLimitsField,
+  schemaCheckDiscriminant,
 };

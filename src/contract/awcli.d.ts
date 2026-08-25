@@ -108,6 +108,13 @@ interface SchemaApi {
  * third is a change to the model rather than a new option, and it deserves the major version
  * that adding it would cost. Leaving them open would take exhaustiveness away from every
  * author to accommodate a case the design does not have.
+ *
+ * Two independent fields rather than a union of the permitted pairs, and that costs something:
+ * liveTree × container is expressible here, and ADR-0003 excludes that cell as meaningless.
+ * awcli never produces it — sandbox() fixes worktree × container, and the live checkout only ever
+ * runs on the host — but nothing in this type says so. Read the pair as two facts reported about
+ * a call, not as the set of states a call can be in. Closing the gap would mean replacing the two
+ * fields with a three-member union, which is a change to the frozen surface rather than a comment.
  */
 interface Isolation {
   /** worktree is the default; liveTree is the operator's own checkout, opt-in only (BR-014). */
@@ -365,11 +372,19 @@ interface ExecOptions {
  *
  * Two forms, and the difference is the whole point. An array is argv: it is executed directly,
  * no shell, and every element is one argument however it is spelled — this is the form to use
- * whenever any part of the command came from somewhere else, which includes the repository's
- * declared commands, an --arg value, and anything an agent produced. A string is handed to a
- * shell, because a repository's declared test command is allowed to contain && and pipes and
- * would be meaningless otherwise; a string built by interpolation is a command the interpolated
- * value can rewrite.
+ * whenever a value from elsewhere goes *into* a command the workflow otherwise wrote itself,
+ * which covers an --arg value, a path read out of the tree, and anything an agent produced. A
+ * string is handed to a shell, because a repository's declared test command is allowed to contain
+ * && and pipes and would be meaningless otherwise; a string built by interpolation is a command
+ * the interpolated value can rewrite.
+ *
+ * A repository's declared command is deliberately not on that list, and the reason is worth
+ * stating because it looks like an omission. argv protects a command the workflow trusts from a
+ * fragment it does not; a declared command is untrusted whole (see ProjectCommands), and passing
+ * it as a single argv element would not contain it — that element is the binary to run. So the
+ * quoting choice buys nothing there, which is also why ProjectCommands types its entries as shell
+ * strings rather than argv. What guards that case is a container, not a form of this call
+ * (BR-004, BR-015).
  *
  * Which execution target this runs on comes from the context rather than from an argument:
  * both axes are fixed when the scope is made (ADR-0003).
@@ -502,15 +517,29 @@ interface WorkflowContext<State = Record<string, unknown>> {
   /** Say something, attributably (BR-025, BR-028). */
   readonly log: LogApi;
   /**
-   * The environment the execution target resolves for this run, minus awcli's own agent
-   * credentials.
+   * The environment the execution target resolves for this run.
    *
-   * Those are lent to a container as a read-only mount for the life of the run and never
-   * copied (BR-016); handing them back through this record would copy them into every prompt
-   * and every run record that reads it, which is the thing BR-016 exists to prevent. What
-   * remains is the operator's environment, which is theirs and may hold secrets of its own —
-   * so this is somewhere to read a specific known variable from, not somewhere to enumerate
-   * and forward. A variable that is not set, or that awcli removed, is absent.
+   * awcli's own agent credentials are meant to be absent from it. They are lent to a container as
+   * a read-only mount for the life of the run and never copied (BR-016), and handing them back
+   * through this record would copy them into every prompt and every run record that reads it,
+   * which is the thing BR-016 exists to prevent.
+   *
+   * That subtraction is a promise about the record awcli builds, not something this type states
+   * or enforces — and it is not built. No unit in the current breakdown owns delivering env, so
+   * on this build reading it throws rather than returning a filtered record; ask
+   * ctx.version.supports("env") first (BR-033). Read the promise as what the member must do
+   * before it can ship, not as what a present awcli does.
+   *
+   * Nor can the type keep the record out of a log. `Readonly<Record<string, string | undefined>>`
+   * is a valid LogApi field record, so `ctx.log.info("env", ctx.env)` compiles; branding the
+   * record to refuse it would distort LogApi for every caller and still be defeated by a spread
+   * or by naming one variable. awcli redacts values matching known secret shapes from logs and
+   * run records, which is a net over shapes it recognises rather than a guarantee about a value
+   * it does not.
+   *
+   * What remains is the operator's environment, which is theirs and may hold secrets of its own —
+   * so this is somewhere to read a specific known variable from, not somewhere to enumerate and
+   * forward. A variable that is not set, or that awcli removed, is absent.
    */
   readonly env: Readonly<Record<string, string | undefined>>;
   /** The rules awcli applies that a workflow cannot reimplement (BR-008). */

@@ -102,12 +102,12 @@ function refusal(
 export function createContext<State = Record<string, unknown>>(
   environment: ContextEnvironment = runningEnvironment(),
 ): {
-  agent: <T = string>(options: AgentOptions<T>) => Promise<AgentResult<T>>;
-  sandbox: (options?: SandboxOptions) => Promise<Scope<State>>;
-  state: State & { save: () => Promise<void> };
-  args: Readonly<Record<string, string | undefined>>;
-  project: Project;
-  git: {
+  readonly agent: <T = string>(options: AgentOptions<T>) => Promise<AgentResult<T>>;
+  readonly sandbox: (options?: SandboxOptions) => Promise<Scope<State>>;
+  readonly state: State & { save: () => Promise<void> };
+  readonly args: Readonly<Record<string, string | undefined>>;
+  readonly project: Project;
+  readonly git: {
     readonly dir: string;
     branch: () => Promise<string>;
     head: () => Promise<string>;
@@ -116,15 +116,15 @@ export function createContext<State = Record<string, unknown>>(
     diff: () => Promise<string>;
     commit: (message: string) => Promise<Commit>;
   };
-  exec: (
+  readonly exec: (
     command: string | readonly string[],
     options?: ExecOptions,
   ) => Promise<ExecResult>;
-  fs: {
+  readonly fs: {
     read: (path: string) => Promise<string>;
     write: (path: string, contents: string) => Promise<void>;
   };
-  log: {
+  readonly log: {
     info: (
       message: string,
       fields?: Readonly<Record<string, Storable | undefined>>,
@@ -138,9 +138,13 @@ export function createContext<State = Record<string, unknown>>(
       fields?: Readonly<Record<string, Storable | undefined>>,
     ) => void;
   };
-  env: Readonly<Record<string, string | undefined>>;
-  schema: { storable: (value: unknown) => SchemaCheck<Storable> };
-  version: { contract: string; awcli: string; supports: (member: string) => boolean };
+  readonly env: Readonly<Record<string, string | undefined>>;
+  readonly schema: { storable: (value: unknown) => SchemaCheck<Storable> };
+  readonly version: {
+    readonly contract: string;
+    readonly awcli: string;
+    supports: (member: string) => boolean;
+  };
 } {
   /** Refuse a member that answers synchronously. Never returns. */
   const sync = (member: keyof typeof DELIVERED_BY, method?: string): never => {
