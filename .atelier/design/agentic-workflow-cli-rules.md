@@ -5,7 +5,7 @@ status: Amended since approval — amendments pending PM re-approval
 approved: 2026-08-24
 approved_baseline: 37 rules
 amended: 2026-08-25
-amended_in: PR #8 (AWCLI-01) review rounds 2 and 3
+amended_in: PR #8 (AWCLI-01) review rounds 2 and 3 (round 4 is recorded below; it changed no rule)
 date: 2026-08-24
 source: .atelier/context/agentic-workflow-cli-prd-draft.md
 rules: 40
@@ -519,9 +519,11 @@ contract), and **none of it has been through a PM approval gate**. The front mat
 than continuing to assert an unqualified approval. This section exists so that a reader can tell
 "the spec was wrong" from "the spec was bent" without reconstructing it from six commits.
 
-Two review rounds are referenced. *Run 2* is the round that reconciled the artifacts against the
+Three review rounds are referenced. *Run 2* is the round that reconciled the artifacts against the
 frozen declaration in `src/contract/awcli.d.ts`; *run 3* is the round that found what run 2's own
-amendments had left underdetermined.
+amendments had left underdetermined; *run 4* asked run 3's question of the one remaining scope
+factory and found the answer was a ticket, not a rule — it changed nothing in this file but the row
+below and this paragraph, and it leaves the re-approval scope exactly as it was.
 
 | Date | Change | Driven by |
 |---|---|---|
@@ -534,6 +536,7 @@ amendments had left underdetermined.
 | 2026-08-25 | **BR-040 added,** with three scenarios, and AWCLI-25 created to build the member. | Run 3. `ctx.exec`'s default target — a command run on the host — was owned by no unit: AWCLI-19 is the container target in every requirement it carries, and AWCLI-23 named it as the builder of `ctx.exec` itself. Third instance of the class of gap BR-038 and BR-039 closed. |
 | 2026-08-25 | **ADR-0003 corrected.** Its claim that `liveTree × container` is "excluded by construction" and "unrepresentable" was softened: two independent closed unions can name that cell, so the exclusion is a property of what awcli composes, not of the type. The two-axis decision and the frozen surface stand; no rule text changed. | Run 2. |
 | 2026-08-25 | **Counts and index reconciled.** `rules:` here, `requirements.rules.count` and `requirements.scenarios.count` in the manifest, the manifest's ticket list, and `.atelier/tickets/README.md`'s totals all moved with the above — 40 rules, 75 scenarios, 26 tickets, 65 points. | Run 3. The manifest's own `updated` date had not moved across three commits that changed what it describes. |
+| 2026-08-25 | **No rule added for `ctx.sandbox`, and that is the finding.** Run 3's question — which unit builds this member — was put to the last unexamined one. `ctx.sandbox` is a scope factory, and AWCLI-19 required running *in* a container but never building the `Scope` that hands one out. Unlike BR-038, BR-039 and BR-040, nothing behavioural was missing: BR-004, BR-012, BR-015, BR-016, BR-021 and BR-036 already state everything the scope does, and WB-11's Contracts column already named `ctx.sandbox`. So the fix is entirely in the tickets — AWCLI-19 widened to own the member end to end and re-estimated 2 → 3, AWCLI-10 given the AWCLI-19 dependency its `sandbox()` criteria always had. **No rule and no scenario changed; the counts stay at 40 and 75.** Ticket totals move to 26 tickets, 66 points. | Run 4. Fourth and last instance of the class of gap BR-038 opened, and the first that a rule would have been the wrong instrument for. |
 
 **What re-approval would have to cover:** the three rules added since approval (BR-038, BR-039,
 BR-040), the four rewritten (BR-006, BR-012, BR-014, and BR-038/BR-039's own second pass), the

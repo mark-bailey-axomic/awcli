@@ -10,7 +10,7 @@ metadata:
   source_ticket: ""
   version: 1
   created: "2026-08-24T16:57:51Z"
-  updated: "2026-08-25T14:20:37Z"
+  updated: "2026-08-25T16:05:00Z"
   # The rules and scenarios this manifest describes were amended after their
   # 2026-08-24 approval, during PR #8 (AWCLI-01) review rounds 2 and 3. See the
   # `## Amendments` section of design/agentic-workflow-cli-rules.md.
@@ -249,7 +249,7 @@ tickets:
     title: "[AWCLI] Enforce the single writer: read-only scope state, and no writes while agents run"
     points: 2
     work_breakdown: WB-6
-    depends_on: [AWCLI-02, AWCLI-09]
+    depends_on: [AWCLI-02, AWCLI-09, AWCLI-19]
     status: todo
   - id: AWCLI-11
     path: tickets/AWCLI-11-iteration-loop.md
@@ -309,10 +309,14 @@ tickets:
     status: todo
   - id: AWCLI-19
     path: tickets/AWCLI-19-container-exec-target.md
-    title: "[AWCLI] Execute agents in a container with credentials lent, never baked"
-    points: 2
+    title: "[AWCLI] Hand back a sandbox scope, and run in its container with credentials lent, never baked"
+    points: 3
+    # Widened from 2 in review round 4: WB-11's Contracts column always named
+    # ctx.sandbox, but the ticket scoped itself to the container target, leaving
+    # the construction of the Scope it hands back owned by nothing. No rule or
+    # scenario changed — BR-004/012/015/016/021/036 already govern it.
     work_breakdown: WB-11
-    depends_on: [AWCLI-03, AWCLI-13, AWCLI-18]
+    depends_on: [AWCLI-01, AWCLI-03, AWCLI-13, AWCLI-18]
     status: todo
   - id: AWCLI-20
     path: tickets/AWCLI-20-resolution-scaffolding-args.md

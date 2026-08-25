@@ -28,6 +28,11 @@ from the body only while the body has no agent call of its own still running. aw
 can apply — and it is what this ticket builds. Nothing below presupposes an agent scope, because the
 contract does not have one.
 
+AWCLI-19 is what constructs the `sandbox()` scope — the working copy, the container, the child
+context whose state is the read-only view — so the first mechanism here has nothing to attach to
+until that lands. The dependency was invisible while the scope's construction was owned by
+nothing; it is named now.
+
 ## Requirements
 
 ### Functional
@@ -77,5 +82,5 @@ contract does not have one.
 
 ## Dependencies
 
-**Blocked by:** AWCLI-02, AWCLI-09
+**Blocked by:** AWCLI-02, AWCLI-09, AWCLI-19
 **Blocks:** None

@@ -14,6 +14,12 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * governs env, each with scenarios behind it, so both tickets carry approved scenario criteria
  * like every other id here.
  *
+ * sandbox has always pointed at AWCLI-19 and still does, but that ticket used to build only the
+ * container a scope runs in and not the scope itself — a member is not delivered until something
+ * constructs the object it returns. AWCLI-19 now owns ctx.sandbox end to end. Nothing here needed
+ * to move; the point is that an id in this table naming a real ticket is not on its own proof that
+ * the ticket builds the whole member.
+ *
  * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
  * one that surprises people. Adding a member to CONTEXT_SURFACE fails to compile here until
  * someone says who builds it — but *implementing* a member means deleting its entry, and that

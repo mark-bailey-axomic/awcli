@@ -2,7 +2,7 @@
 # Prove the specification's own numbers still agree with each other.
 #
 # The rules file, the feature file, the manifest and the ticket README each restate counts the
-# others imply — 40 rules, 75 scenarios, 26 tickets, 65 points — and every one of those numbers is
+# others imply — 40 rules, 75 scenarios, 26 tickets, 66 points — and every one of those numbers is
 # prose that a person maintains by hand. Three review rounds on PR #8 moved all four documents, and
 # each time the drift was caught by a reader happening to notice, which does not scale and did not
 # reliably work: a scenario added to the feature file and to no ticket has no owner, a ticket
