@@ -1,8 +1,48 @@
 # feature: agentic-workflow-cli
 # artifact: bdd-scenarios
-# status: Approved
+# status: Amended since approval — amendments pending PM re-approval
+# approved: 2026-08-24
+# approved_baseline: 60 scenarios
+# amended: 2026-08-25
+# amended_in: PR #8 (AWCLI-01) review rounds 2 and 3
+# scenarios: 75
 # source: agentic-workflow-cli-rules.md
 # Each scenario is tagged with the business rule it verifies.
+#
+# ─── Amendments since approval ─────────────────────────────────────────────────
+# Approved 2026-08-24 with 60 scenarios; now 75. Fifteen were added and three
+# rewritten after approval, and none of the fifteen has been through a PM
+# approval gate. The rules file's `## Amendments` section is the authority on
+# what changed and why; this block records only which scenarios moved.
+#
+# Added, run 2 (reconciling the artifacts against the frozen contract):
+#   BR-038 x5  A workflow's paths are read against the working copy it was given
+#              A path that climbs out of the working copy is refused
+#              A path given from the root of the machine is refused
+#              A link pointing out of the working copy is refused
+#              Reaching outside the working copy on purpose is not refused
+#   BR-039 x3  (all three since rewritten — see below)
+#
+# Rewritten, run 2:
+#   BR-014     Working on the live checkout requires asking for it
+#              — the opt-in became the operator's, on the command line
+#
+# Added, run 3 (finding what run 2's amendments left underdetermined):
+#   BR-006 x1  A missing profile field is refused even when no workflow reads it
+#   BR-012 x1  A write while the body's own agents are still running is refused
+#   BR-038 x1  A path into the working copy's git administrative area is refused
+#   BR-039 x1  On the host target there may be nothing to leave out
+#   BR-040 x3  The default execution target is named for what it is
+#              A repository's declared command runs whole on the host
+#              A value from elsewhere cannot become a second command
+#
+# Rewritten, run 3:
+#   BR-039 x2  A variable awcli set for this run is absent from the record
+#              My own environment is still there, an inherited API key included
+#              — both had turned on "the credentials awcli supplies", which does
+#                not decide the inherited-key case, so both were restated around
+#                the variables awcli set for the run
+# ───────────────────────────────────────────────────────────────────────────────
 
 Feature: Running agentic workflows from a global command-line tool
 

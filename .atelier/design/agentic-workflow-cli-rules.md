@@ -1,7 +1,11 @@
 ---
 feature: agentic-workflow-cli
 artifact: business-rules
-status: Approved
+status: Amended since approval — amendments pending PM re-approval
+approved: 2026-08-24
+approved_baseline: 37 rules
+amended: 2026-08-25
+amended_in: PR #8 (AWCLI-01) review rounds 2 and 3
 date: 2026-08-24
 source: .atelier/context/agentic-workflow-cli-prd-draft.md
 rules: 40
@@ -503,6 +507,38 @@ it corrupts the state of the run it is rehearsing.
 **Actors.** Operator, Workflow.
 **Exceptions.** It still creates a working copy, so that anything derived from repository history
 behaves as it will in earnest.
+
+---
+
+## Amendments since approval
+
+This file was approved on **2026-08-24** with **37 rules**, against a feature file of **60
+scenarios**. It now carries **40 rules** and **75 scenarios**. Everything in the table below was
+added or rewritten *after* that approval, during review of PR #8 (AWCLI-01, freezing the `ctx`
+contract), and **none of it has been through a PM approval gate**. The front matter says so rather
+than continuing to assert an unqualified approval. This section exists so that a reader can tell
+"the spec was wrong" from "the spec was bent" without reconstructing it from six commits.
+
+Two review rounds are referenced. *Run 2* is the round that reconciled the artifacts against the
+frozen declaration in `src/contract/awcli.d.ts`; *run 3* is the round that found what run 2's own
+amendments had left underdetermined.
+
+| Date | Change | Driven by |
+|---|---|---|
+| 2026-08-25 | **BR-006 widened.** Statement and example rewritten: every declared profile field is required in a repository's configuration, and the run is refused at startup naming what is missing, before the lock or any working copy, whether or not a workflow would have read it. Previously the refusal fired when a workflow *read* a missing field. | Run 2. The frozen declaration asserted the wider rule while this file asserted the narrower one. |
+| 2026-08-25 | **BR-006 carried by a scenario.** Added *A missing profile field is refused even when no workflow reads it*. AWCLI-06 restated to match, and AWCLI-22 given the `awcli init` five-fields requirement the TDD already assumed. | Run 3. The widened half had no scenario, and the only ticket that could have written the five fields did not require it. |
+| 2026-08-25 | **BR-012 split, then given a mechanism.** Run 2 added the phasing note: only the `sandbox()` half is structural. Run 3 rewrote the statement, rationale and exceptions around the mechanism that makes the rest enforceable — shared state is writable from the body only while it has no agent call of its own still running. Added *A write while the body's own agents are still running is refused*; AWCLI-10 reworked and retitled. | Run 3. The split left the `agent()` half naming no mechanism, and AWCLI-10's criteria still presupposed an agent scope the split said does not exist. |
+| 2026-08-25 | **BR-014 rewritten.** Statement, rationale, actors and exceptions: the live-checkout opt-in is the operator's, on the command line; a workflow cannot request it and nothing a workflow passes selects the workspace. Scenario *Working on the live checkout requires asking for it* rewritten with it. | Run 2. The declaration kept the choice off the workflow surface while this rule let a workflow opt in. |
+| 2026-08-25 | **BR-038 added, then narrowed.** Run 2 added it, with five scenarios, to govern `ctx.fs` — one of two context members the design gave no rule and no scenario. Run 3 narrowed confinement from the working copy to the working *tree*, carving out the git administrative area on both layouts, and added a sixth scenario. | Run 3. As first written, `.git/hooks/pre-commit` was inside the confinement and ran on the next commit; on the worktree default the `.git` pointer file was inside it too, so writing it repointed the working copy at another repository. |
+| 2026-08-25 | **BR-039 added, then rewritten.** Run 2 added it, with three scenarios, to govern `ctx.env` — the other unowned member. Run 3 rewrote it around a decidable test: the variables awcli set *for this run*, not "the credentials awcli itself supplies". Both original scenarios rewritten, a fourth added for the empty case, AWCLI-24 reconciled throughout. | Run 3. "The credentials awcli supplies" had no membership test — an inherited API key was the subject of both scenarios at once — and on the host target the subtraction was vacuous, so the first scenario's Given could not be established. |
+| 2026-08-25 | **BR-040 added,** with three scenarios, and AWCLI-25 created to build the member. | Run 3. `ctx.exec`'s default target — a command run on the host — was owned by no unit: AWCLI-19 is the container target in every requirement it carries, and AWCLI-23 named it as the builder of `ctx.exec` itself. Third instance of the class of gap BR-038 and BR-039 closed. |
+| 2026-08-25 | **ADR-0003 corrected.** Its claim that `liveTree × container` is "excluded by construction" and "unrepresentable" was softened: two independent closed unions can name that cell, so the exclusion is a property of what awcli composes, not of the type. The two-axis decision and the frozen surface stand; no rule text changed. | Run 2. |
+| 2026-08-25 | **Counts and index reconciled.** `rules:` here, `requirements.rules.count` and `requirements.scenarios.count` in the manifest, the manifest's ticket list, and `.atelier/tickets/README.md`'s totals all moved with the above — 40 rules, 75 scenarios, 26 tickets, 65 points. | Run 3. The manifest's own `updated` date had not moved across three commits that changed what it describes. |
+
+**What re-approval would have to cover:** the three rules added since approval (BR-038, BR-039,
+BR-040), the four rewritten (BR-006, BR-012, BR-014, and BR-038/BR-039's own second pass), the
+fifteen scenarios added, and the three rewritten. Until that happens, this file is amended-but-not-
+re-approved, and the tickets derived from it inherit that status.
 
 ---
 

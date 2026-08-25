@@ -10,14 +10,22 @@ metadata:
   source_ticket: ""
   version: 1
   created: "2026-08-24T16:57:51Z"
-  updated: "2026-08-24T16:57:51Z"
+  updated: "2026-08-25T14:20:37Z"
+  # The rules and scenarios this manifest describes were amended after their
+  # 2026-08-24 approval, during PR #8 (AWCLI-01) review rounds 2 and 3. See the
+  # `## Amendments` section of design/agentic-workflow-cli-rules.md.
+  amended: "2026-08-25"
+  amendments_status: pending-pm-re-approval
 
 requirements:
   rules:
     source: file
     path: design/agentic-workflow-cli-rules.md
     items: []
-    status: approved
+    # Approved 2026-08-24 at 37 rules; three added and four rewritten since,
+    # pending PM re-approval. Provenance: the rules file's `## Amendments`.
+    status: approved-with-pending-amendments
+    approved_baseline_count: 37
     count: 40
     categories:
       - environment-preconditions
@@ -31,6 +39,9 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
+    # Approved 2026-08-24 at 60; fifteen added and three rewritten since.
+    status: approved-with-pending-amendments
+    approved_baseline_count: 60
     count: 75
   flows:
     path: design/agentic-workflow-cli-flows.md

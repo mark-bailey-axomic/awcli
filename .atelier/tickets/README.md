@@ -10,10 +10,19 @@ The remaining six are AWCLI-23, AWCLI-24 and AWCLI-25 at two points each, delive
 members the work breakdown left unowned — the two it gave no rule at all, and the default half of
 a third, `ctx.exec` on the host, which WB-11 scoped entirely to the container.
 
-Every one of the 75 approved BDD scenarios appears as an acceptance criterion on exactly one
-ticket. Acceptance criteria written in *italics* are scenario names from
+Every one of the 75 BDD scenarios appears as an acceptance criterion on exactly one ticket.
+Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.
+
+**Sixty of those scenarios are PM-approved; fifteen are not yet.** The rules and the feature file
+were approved on 2026-08-24 at 37 rules and 60 scenarios, and were amended during PR #8 (AWCLI-01)
+review — three rules added, four rewritten, fifteen scenarios added, three rewritten. The
+`## Amendments` section of
+[`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md) records each
+change, its date and the finding that drove it. Every ticket below derived from an amended rule
+inherits that pending status: AWCLI-06, AWCLI-10, AWCLI-13, AWCLI-22, AWCLI-23, AWCLI-24 and
+AWCLI-25.
 
 The converse does not hold, and it applies to four tickets: AWCLI-00, AWCLI-03, AWCLI-15 and
 AWCLI-18 carry no scenario at all. Scaffolding, the disposal stack, the agent driver and the
