@@ -10,7 +10,7 @@ The remaining six are AWCLI-23, AWCLI-24 and AWCLI-25 at two points each, delive
 members the work breakdown left unowned — the two it gave no rule at all, and the default half of
 a third, `ctx.exec` on the host, which WB-11 scoped entirely to the container.
 
-Every one of the 74 approved BDD scenarios appears as an acceptance criterion on exactly one
+Every one of the 75 approved BDD scenarios appears as an acceptance criterion on exactly one
 ticket. Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.

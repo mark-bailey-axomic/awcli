@@ -83,6 +83,14 @@ Feature: Running agentic workflows from a global command-line tool
     And no agent is started
 
   @BR-006
+  Scenario: A missing profile field is refused even when no workflow reads it
+    Given a repository whose profile declares no test command
+    And a workflow that never reads the test command
+    When I run that workflow against it
+    Then the run is refused at startup, naming the missing field
+    And it is refused before the run takes its lock or creates a working copy
+
+  @BR-006
   Scenario: The free-form part of a profile carries no guarantee
     Given a workflow that reads a value from the free-form part of the repository's profile
     And the repository declares no such value
