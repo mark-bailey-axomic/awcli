@@ -260,18 +260,27 @@ Feature: Running agentic workflows from a global command-line tool
     And no credential is written into the container image
 
   @BR-039
-  Scenario: The environment a workflow is given holds none of awcli's own credentials
-    Given awcli is supplying its own agent credentials to the agent for this run
+  Scenario: A variable awcli set for this run is absent from the record
+    Given awcli sets a variable of its own for this run, to lend the agent a credential
     When a workflow reads the environment it was given
-    Then no credential awcli supplies appears in it, under any name
-    And each of them is indistinguishable from a variable that was never set
+    Then that variable is absent from the record, under the name awcli set it
+    And it is indistinguishable from a variable that was never set
 
   @BR-039
-  Scenario: My own environment is still there, secrets and all
+  Scenario: My own environment is still there, an inherited API key included
     Given I have secrets of my own in the environment I started awcli from
+    And one of them is an agent API key I set myself
     When a workflow reads the environment it was given
     Then my own variables are readable by name, values included
-    And only the credentials awcli itself supplies were removed
+    And the API key I set is among them, because awcli did not set it
+    And only the names awcli set for this run were left out
+
+  @BR-039
+  Scenario: On the host target there may be nothing to leave out
+    Given a run on the default execution target, where awcli sets no variables of its own
+    When a workflow reads the environment it was given
+    Then the record holds everything my own environment held, with nothing removed
+    And the run does not claim that any credential was withheld
 
   @BR-039
   Scenario: A command the workflow runs still sees the whole environment

@@ -243,25 +243,38 @@ are never written into an image.
 **Actors.** awcli.
 **Exceptions.** None.
 
-### BR-039 — awcli's own credentials are absent from the environment it resolves
-**Statement.** The environment record awcli hands a workflow omits the agent credentials awcli itself
-supplies. They are absent rather than filtered at each read, so they cannot reach a prompt or a log
-line by accident, and a name awcli removed is indistinguishable from one that was never set.
-**Rationale.** Those credentials are lent for the life of the run and never copied (BR-016); handing
-them back through a record that every prompt and every run record can read would copy them, which is
-precisely what BR-016 exists to prevent. Absence by construction is the only version of this that
-survives a workflow nobody reviewed.
+### BR-039 — The variables awcli sets for a run are absent from the environment it hands the workflow
+**Statement.** awcli sets variables of its own for some runs — the agent credentials it lends a
+container being the ones that matter (BR-016). Exactly those, and nothing else, are absent from the
+environment record it hands the workflow. The test is what awcli set for *this* run, which awcli
+knows at the moment it sets it, so membership is decidable and no judgement about what looks like a
+credential enters into it. Everything the operator's own environment already carried is present,
+values included — including an agent API key the operator set themselves, which awcli did not supply
+and does not remove. On the host execution target awcli often sets nothing at all, so the set removed
+may be empty and the record is then the operator's environment unchanged. A name awcli removed is
+indistinguishable from one that was never set.
+**Rationale.** The reason to remove anything is BR-016: what awcli sets for the run is lent for the
+life of the run and never copied, and handing it back through a record that every prompt and every
+run record can read would copy it. But "the credentials awcli supplies" cannot be the test, because
+an inherited key and a lent key are the same name — a rule stated that way does not decide the one
+case it exists for. "What awcli set for this run" does decide it, and it is the only version awcli
+can actually apply. Absence rather than filtering at each read is what makes it survive a workflow
+nobody reviewed.
 **Actors.** awcli, Workflow.
-**Exceptions.** None to the subtraction — but it is hygiene, not a control, and three things remain
-true beside it. What is left is the operator's own environment, which may hold secrets of their own,
-so this is somewhere to read a known name from rather than somewhere to enumerate and forward. A
-command the workflow runs sees the environment its execution target actually has, credentials
-included; nothing is removed from the machine. And subtraction is not redaction: this removes awcli's
-own credentials by construction, whereas redacting values that match known secret shapes is a net
-cast over values wherever they are written — a separate mechanism no rule here states, carried by the
-logging work behind BR-025 and BR-028 (AWCLI-21).
-**Example.** A workflow reading the resolved environment finds its project's own variables and no
-awcli agent credential under any name; a command it runs still finds them in its own environment.
+**Exceptions.** None to the subtraction, but it is hygiene, not a control, and four things remain
+true beside it. The set may be empty — on the host target usually is — and an empty subtraction is
+still the rule satisfied, not a failure to apply it; awcli claims nothing was withheld when nothing
+was. What is left is the operator's own environment, which may hold secrets of their own, so this is
+somewhere to read a known name from rather than somewhere to enumerate and forward. A command the
+workflow runs sees the environment its execution target actually has, credentials included; nothing
+is removed from the machine (BR-040). And subtraction is not redaction: this removes what awcli set
+by construction, whereas redacting values that match known secret shapes is a net cast over values
+wherever they are written — a separate mechanism no rule here states, carried by the logging work
+behind BR-025 and BR-028 (AWCLI-21).
+**Example.** A container run lends the agent a credential under a name awcli sets; a workflow reading
+the resolved environment does not find that name, finds its project's own variables, and finds the
+API key the operator had set in their own shell. The same workflow on the host target finds the
+record identical to the environment it was started from.
 
 ### BR-040 — On the host target a command runs with the operator's own reach, and awcli says so
 **Statement.** The default execution target is the machine awcli is running on. A command the

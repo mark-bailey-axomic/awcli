@@ -31,7 +31,7 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    count: 72
+    count: 73
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7
@@ -333,7 +333,7 @@ tickets:
     status: todo
   - id: AWCLI-24
     path: tickets/AWCLI-24-resolved-environment.md
-    title: "[AWCLI] Resolve the run's environment, with awcli's own credentials subtracted"
+    title: "[AWCLI] Resolve the run's environment, with what awcli set for the run subtracted"
     points: 2
     work_breakdown: null  # ctx.env was a dashed context member — no WB entry; governed by BR-039
     depends_on: [AWCLI-01, AWCLI-19, AWCLI-25]
