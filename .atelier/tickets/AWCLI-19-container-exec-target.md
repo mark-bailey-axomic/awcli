@@ -15,6 +15,11 @@ Workspace and execution are orthogonal axes (ADR-0003), so the execution axis ca
 disturbing the workspace axis — a container refusal does not affect a workflow that never asked
 for one. This is the second half of the container work; the image itself comes from AWCLI-18.
 
+**This ticket is the container target only.** Every requirement below is about running in the
+container. The default target — a command run on the host, with the operator's own reach — is
+AWCLI-25, governed by BR-040. A container is the only thing that changes what a command can reach
+(BR-015), which is what makes this the opt-in half rather than the whole of `ctx.exec`.
+
 ## Requirements
 
 ### Functional
@@ -51,6 +56,7 @@ for one. This is the second half of the container work; the image itself comes f
 
 - Image generation and build caching — AWCLI-18.
 - Per-call isolation reporting format — AWCLI-21.
+- Command execution on the host target, and what BR-040 says a command reaches there — AWCLI-25.
 
 ## Dependencies
 

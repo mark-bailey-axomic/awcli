@@ -30,7 +30,8 @@ git, with the workflow's own reach, and only a container is a boundary (BR-015),
 BR-038 states this as hygiene. And reaching outside the working copy deliberately is what
 `ctx.exec` is for; the refusal exists so that a mistyped path cannot do by accident what an
 explicit act should do on purpose. That non-refusal is asserted here rather than assumed, which
-is why `ctx.exec` (AWCLI-19) is a blocker.
+is why `ctx.exec` on the host target (AWCLI-25, governed by BR-040) is a blocker. AWCLI-19 owns
+only the container target, and every requirement it carries is about running in the container.
 
 `AgentOptions.promptFile` is declared as confined "on the same terms as `ctx.fs.read`", and the
 declaration calls it the sharper of the two because its contents leave the machine by
@@ -83,11 +84,11 @@ construction. The two must not be allowed to drift.
 ## Out of Scope
 
 - The resolved environment and its credential subtraction — AWCLI-24.
-- Building `ctx.exec` itself — AWCLI-19. This ticket asserts only that confinement does not
-  extend to it.
+- Building `ctx.exec` itself — AWCLI-25 on the host target, AWCLI-19 in a container. This ticket
+  asserts only that confinement does not extend to either.
 - Wiring `promptFile` into an agent call — AWCLI-15; this ticket supplies the resolver it uses.
 
 ## Dependencies
 
-**Blocked by:** AWCLI-01, AWCLI-13, AWCLI-19
+**Blocked by:** AWCLI-01, AWCLI-13, AWCLI-25
 **Blocks:** None — no other ticket names `ctx.fs` in its requirements.

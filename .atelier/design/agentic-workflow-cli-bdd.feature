@@ -271,6 +271,32 @@ Feature: Running agentic workflows from a global command-line tool
     Then that command sees the environment its execution target actually has
     And the credentials left out of the record were not removed from the machine
 
+  @BR-040
+  Scenario: The default execution target is named for what it is
+    Given a workflow that runs a command without asking for a container
+    When I run it
+    Then the output names the host as the target that command ran on
+    And it says the wider filesystem, the network and this machine's credentials are reachable
+    And nothing in the output calls that target contained or sandboxed
+
+  @BR-040
+  Scenario: A repository's declared command runs whole on the host
+    Given a repository whose declared test command chains several commands together
+    And a workflow that runs that declared command without asking for a container
+    When I run the workflow
+    Then the command runs as the repository wrote it, chaining included
+    And the run reports it as having run on the host, with nothing containing it
+    And asking for a container is the only way offered to change that
+
+  @BR-040
+  Scenario: A value from elsewhere cannot become a second command
+    Given a workflow that runs a command as a list of arguments
+    And one of those arguments is a value the workflow did not write itself
+    When I run it
+    Then that value reaches the command as a single argument, however it is spelled
+    And it does not become a command of its own
+    And the run still reports the host as the target, with the reach any command there has
+
   # ─── Execution and termination ───
 
   @BR-017

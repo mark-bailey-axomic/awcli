@@ -4,7 +4,7 @@ artifact: business-rules
 status: Approved
 date: 2026-08-24
 source: .atelier/context/agentic-workflow-cli-prd-draft.md
-rules: 39
+rules: 40
 ---
 
 # awcli — Business Rules
@@ -252,6 +252,30 @@ cast over values wherever they are written — a separate mechanism no rule here
 logging work behind BR-025 and BR-028 (AWCLI-21).
 **Example.** A workflow reading the resolved environment finds its project's own variables and no
 awcli agent credential under any name; a command it runs still finds them in its own environment.
+
+### BR-040 — On the host target a command runs with the operator's own reach, and awcli says so
+**Statement.** The default execution target is the machine awcli is running on. A command the
+workflow runs there — including a command the repository itself declares — runs as the operator,
+with the operator's own reach: the filesystem beyond the working copy, the network, and whatever
+credentials that machine holds. awcli names the target a command actually ran on and never
+describes the default one as containment. Asking for a container is the only thing that changes
+what a command can reach (BR-004, BR-015). Giving a command as a list of arguments settles which
+fragment of it can rewrite it — each element stays one argument however it is spelled — and settles
+nothing at all about its reach.
+**Rationale.** Working-copy confinement (BR-038) is hygiene over the paths a workflow names; it says
+nothing about what a command does once it is running, and reaching past the working copy on purpose
+is what running a command is for. A repository's declared command is the sharpest case: it is
+untrusted whole and its first word is the binary to run, so no way of passing it holds it back.
+Saying that plainly is the only thing that stops an operator inferring a boundary from a
+confinement that is not one — the same honesty BR-015 buys by refusing to call a worktree a
+sandbox.
+**Actors.** Operator, Workflow, awcli.
+**Exceptions.** None to the reach on this target. A workflow may bound how *long* a command runs,
+never what it may touch; only a container narrows that, and BR-004 forbids granting a container
+request quietly weaker than it was asked.
+**Example.** A run's output reads *"exec: host — the wider filesystem, the network and this machine's
+credentials are reachable"*, and the repository's declared test command runs on exactly those terms.
+The same call made inside a container reports the container instead.
 
 ---
 

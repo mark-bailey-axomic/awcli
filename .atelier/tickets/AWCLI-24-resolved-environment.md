@@ -90,8 +90,10 @@ the environment its execution target actually has.
   declaration says so; the workflow decides what is worth recording (BR-028).
 - Mounting credentials into a container — AWCLI-19. This ticket mirrors that set, it does not
   own it.
+- Running a command on the host target — AWCLI-25. This ticket reads that target's environment;
+  it does not build the target.
 
 ## Dependencies
 
-**Blocked by:** AWCLI-01, AWCLI-19
+**Blocked by:** AWCLI-01, AWCLI-19, AWCLI-25
 **Blocks:** None — no other ticket names `ctx.env` in its requirements.

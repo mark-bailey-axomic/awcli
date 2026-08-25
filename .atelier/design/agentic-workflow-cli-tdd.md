@@ -188,7 +188,7 @@ generated ignore entry is a single line written once (BR-030).
 | `ctx.args` | `Record<string, string>` from `--arg` | P0-10 |
 | `ctx.project` | fixed profile fields + `custom` record | BR-006 |
 | `ctx.git` | branch, log, diff, commit helpers | BR-036 |
-| `ctx.exec` | run a command in the current workspace and target | BR-032 |
+| `ctx.exec` | run a command in the current workspace and target | BR-032, BR-040 |
 | `ctx.fs` | read/write within the workspace | BR-038 |
 | `ctx.log` | structured logging attributed to run/iteration/agent | BR-025, BR-028 |
 | `ctx.env` | resolved environment | BR-039 |

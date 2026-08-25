@@ -18,7 +18,7 @@ requirements:
     path: design/agentic-workflow-cli-rules.md
     items: []
     status: approved
-    count: 39
+    count: 40
     categories:
       - environment-preconditions
       - validation
@@ -31,7 +31,7 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    count: 68
+    count: 71
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7
@@ -329,14 +329,21 @@ tickets:
     title: "[AWCLI] Read and write within the working copy, refusing paths that leave it"
     points: 2
     work_breakdown: null  # ctx.fs was a dashed context member — no WB entry; governed by BR-038
-    depends_on: [AWCLI-01, AWCLI-13, AWCLI-19]
+    depends_on: [AWCLI-01, AWCLI-13, AWCLI-25]
     status: todo
   - id: AWCLI-24
     path: tickets/AWCLI-24-resolved-environment.md
     title: "[AWCLI] Resolve the run's environment, with awcli's own credentials subtracted"
     points: 2
     work_breakdown: null  # ctx.env was a dashed context member — no WB entry; governed by BR-039
-    depends_on: [AWCLI-01, AWCLI-19]
+    depends_on: [AWCLI-01, AWCLI-19, AWCLI-25]
+    status: todo
+  - id: AWCLI-25
+    path: tickets/AWCLI-25-host-exec-target.md
+    title: "[AWCLI] Run commands on the host target, saying plainly what they can reach"
+    points: 2
+    work_breakdown: null  # WB-11 scoped ctx.exec to the container only; the host target is BR-040
+    depends_on: [AWCLI-01, AWCLI-13]
     status: todo
 
 plans: []

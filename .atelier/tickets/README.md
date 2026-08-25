@@ -1,15 +1,16 @@
 # awcli — implementation tickets
 
-25 tickets, 63 points, derived from the 14-unit work breakdown in
+26 tickets, 65 points, derived from the 14-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). The seven
 5-point units were each split into a 3 and a 2; WB-5 split into two 2-point tickets, which is
 where one of the extra points over the design's 56 comes from — separating the lock from the
 record revealed work the single estimate had compressed. AWCLI-00 accounts for two more: project
 scaffolding the work breakdown never named, because a design document assumes a project exists.
-The remaining four are AWCLI-23 and AWCLI-24 at two points each, delivering the two context
-members the work breakdown left unowned.
+The remaining six are AWCLI-23, AWCLI-24 and AWCLI-25 at two points each, delivering the context
+members the work breakdown left unowned — the two it gave no rule at all, and the default half of
+a third, `ctx.exec` on the host, which WB-11 scoped entirely to the container.
 
-Every one of the 68 approved BDD scenarios appears as an acceptance criterion on exactly one
+Every one of the 71 approved BDD scenarios appears as an acceptance criterion on exactly one
 ticket. Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.
@@ -22,6 +23,11 @@ and `ctx.env` were the only two of the twelve context members the TDD governed w
 rule — a dash in its Rules column — and no scenario exercised either, so AWCLI-23 and AWCLI-24
 derived their criteria from the frozen declaration instead. Those two rules and their eight
 scenarios close that gap; the declaration still supplies what the scenarios do not state.
+
+A third member had the same shape of gap without a dash to show it: `ctx.exec` cited BR-032, but
+every requirement that named it lived on AWCLI-19, which is the container target throughout — so
+the *default* target, a command run on the host, was owned by nothing. BR-040 states what that
+target actually is and AWCLI-25 builds it.
 
 ## Tickets
 
@@ -50,8 +56,9 @@ scenarios close that gap; the declaration still supplies what the scenarios do n
 | [AWCLI-20](AWCLI-20-resolution-scaffolding-args.md) | Resolution, scaffolding, args | 3 | WB-12 | 05 |
 | [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 15 |
 | [AWCLI-22](AWCLI-22-runtime-layout-ignore-clean.md) | Runtime layout, ignore, clean | 3 | WB-14 | 07, 13, 14, 18 |
-| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | — | 01, 13, 19 |
-| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | — | 01, 19 |
+| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | — | 01, 13, 25 |
+| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | — | 01, 19, 25 |
+| [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | — | 01, 13 |
 
 ## Order
 
@@ -69,7 +76,7 @@ wave 0    00
 wave 1    01    03    18
 wave 2    02    04    05    07
 wave 3    06    08    09    13    20
-wave 4    10    11    14    15    19
+wave 4    10    11    14    15    19    25
 wave 5    12    16    17    21    22    23    24
 ```
 
@@ -85,12 +92,14 @@ The multi-parent tickets, which the waves alone do not show:
 | AWCLI-19 | 03, 13, 18 |
 | AWCLI-21 | 07, 08, 15 |
 | AWCLI-22 | 07, 13, 14, 18 |
-| AWCLI-23 | 01, 13, 19 |
-| AWCLI-24 | 01, 19 |
+| AWCLI-23 | 01, 13, 25 |
+| AWCLI-24 | 01, 19, 25 |
+| AWCLI-25 | 01, 13 |
 
 Longest chain is six deep — **00 → 03 → 07 → 13 → 14 → 22**, and equally
-**00 → 03 → 07 → 13 → 19 → 24** and **00 → 03 → 07 → 13 → 19 → 23**. Critical paths worth
-naming are **00 → 01 → 05 → 06** for refusals and **00 → 03 → 07 → 09 → 11 → 12** for the loop.
+**00 → 03 → 07 → 13 → 25 → 23**, **00 → 03 → 07 → 13 → 25 → 24** and
+**00 → 03 → 07 → 13 → 19 → 24**. Critical paths worth naming are **00 → 01 → 05 → 06** for
+refusals and **00 → 03 → 07 → 09 → 11 → 12** for the loop.
 
 The first genuinely useful milestone is 00 + 01 + 02 + 03 + 05 + 07 + 09 + 11 — about 21 points —
 a workflow that loops, carries state across passes, and rehearses against a fake agent with
@@ -100,10 +109,11 @@ nothing installed. Everything after that is capability rather than viability.
 
 - One ticket is one session's work. Nothing here is larger than 3 points.
 - A `—` in the WB column means no work-breakdown unit owns the ticket. AWCLI-00 is one: the work
-  breakdown described the tool, not the project that holds it. AWCLI-23 and AWCLI-24 are the
-  others, for the reason given above — the design gave their two members no rules and no
-  scenarios when the units were written, so none was written to deliver them. BR-038 and BR-039
-  govern the members now; the units were never revisited.
+  breakdown described the tool, not the project that holds it. AWCLI-23, AWCLI-24 and AWCLI-25
+  are the others, for the reason given above — the design gave the first two members no rules and
+  no scenarios when the units were written, and scoped the third's unit (WB-11) to the container
+  alone, so nothing was written to deliver any of them on the default path. BR-038, BR-039 and
+  BR-040 govern the members now; the units were never revisited.
 - Titles carry the bare `[AWCLI]` repo tag, so they are ready to push to a tracker unchanged.
 - Tickets state *what* and *why*; the builder decides *how*. Specific shapes, paths and port
   signatures live in the TDD's Contracts section, referenced rather than duplicated.
