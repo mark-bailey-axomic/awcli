@@ -213,6 +213,13 @@ const bareModule: WorkflowModule = {
 // shapes and no other hole; four of the six were invisible everywhere, and Schema and SchemaApi
 // were caught only incidentally, by a reader fixture that happens to call the method — which is
 // the fragility this file exists to remove.
+//
+// Exhaustive in that one direction, and silent about the other. Every fixture in this directory
+// has to compile, which makes all of them deletion probes: a declaration that grows *looser*
+// breaks none of them. Widening Storable to admit a function compiles every file here, and a
+// type whose only job is refusing what cannot be stored would then be refusing nothing.
+// ../v1-rejected/storable.ts is where that direction is pinned, because it is the only place it
+// can be — by code that must fail.
 const schemaField: keyof Schema = "check";
 const schemaApiField: keyof SchemaApi = "storable";
 const sandboxOptionsField: keyof SandboxOptions = "name";
