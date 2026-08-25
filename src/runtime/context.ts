@@ -7,11 +7,12 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * The members this awcli declares but has not built, and the unit that delivers each.
  *
  * Maintainer-facing only — the ids never reach an operator's error message (see
- * NotYetImplementedError). fs and env had no owning unit in the work breakdown at all: they are
- * the only two members of the twelve that the design governs with no business rule and no
- * scenario, and a ticket's acceptance criteria come from scenarios. AWCLI-23 and AWCLI-24 close
- * that by deriving their criteria from the declaration instead, so the gap is in the approved
- * specification rather than in the attribution here.
+ * NotYetImplementedError). fs and env are the two members no unit in the work breakdown ever
+ * owned; AWCLI-23 and AWCLI-24 were opened to build them. That attribution used to be weaker
+ * than the rest, because the design governed neither member with a business rule or a scenario
+ * and a ticket's acceptance criteria come from scenarios. BR-038 now governs fs and BR-039
+ * governs env, each with scenarios behind it, so both tickets carry approved scenario criteria
+ * like every other id here.
  *
  * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
  * one that surprises people. Adding a member to CONTEXT_SURFACE fails to compile here until
