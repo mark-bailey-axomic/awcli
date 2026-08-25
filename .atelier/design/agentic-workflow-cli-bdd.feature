@@ -236,6 +236,15 @@ Feature: Running agentic workflows from a global command-line tool
     And a read through the same link is refused on the same terms
 
   @BR-038
+  Scenario: A path into the working copy's git administrative area is refused
+    Given a workflow whose path names something inside the working copy's git administrative area
+    When I run it
+    Then the write is refused, naming the path and saying it is the git administrative area
+    And it is refused although that path never left the working copy
+    And no hook it would have written runs on the next commit awcli makes
+    And the entry naming which repository this working copy belongs to is unchanged
+
+  @BR-038
   Scenario: Reaching outside the working copy on purpose is not refused
     Given a workflow that runs a command reading a file elsewhere on the machine
     When I run it

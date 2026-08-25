@@ -31,7 +31,7 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    count: 71
+    count: 72
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7

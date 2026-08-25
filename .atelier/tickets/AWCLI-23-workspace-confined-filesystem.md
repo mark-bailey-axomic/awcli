@@ -7,10 +7,17 @@
 `ctx.fs` is published on the frozen context surface and nothing builds it, so a workflow that
 reads or writes a file gets a "not yet implemented" refusal on every path. The member is small,
 but the property it carries is not: a relative path in a workflow must be resolved against the
-working copy this iteration is operating in, and a path that leaves that working copy must be
-refused rather than resolved (BR-038). Without that, a mistyped `../` in a workflow reaches the
-operator's other files, which is exactly the failure the worktree default (BR-014) exists to
+working copy this iteration is operating in, and a path that leaves that working copy's *tree*
+must be refused rather than resolved (BR-038). Without that, a mistyped `../` in a workflow reaches
+the operator's other files, which is exactly the failure the worktree default (BR-014) exists to
 prevent.
+
+The tree, and not the whole working copy, because the working copy's git administrative area sits
+inside it. Confining to the working copy alone would leave two writes inside the confinement that
+reach straight past the run: a commit hook, which the next `ctx.git.commit()` then runs, and — on
+the worktree default, where `.git` is a single line naming which repository this working copy
+belongs to — a write to that line, which repoints the working copy at a different repository. Both
+are inside every path check that only asks whether a path left the working copy.
 
 ## Context
 
@@ -27,7 +34,9 @@ Two things BR-038 and the declaration are careful about, and this ticket must no
 Confinement protects the operator's *other files*; it is not a boundary around the agent — git
 hooks living in the working copy are run by `ctx.git.commit()` and by any `ctx.exec` that runs
 git, with the workflow's own reach, and only a container is a boundary (BR-015), which is why
-BR-038 states this as hygiene. And reaching outside the working copy deliberately is what
+BR-038 states this as hygiene. `ctx.fs` cannot write such a hook — that is the carve-out above —
+but a command can, and nothing in this ticket stops it. And reaching outside the working copy
+deliberately is what
 `ctx.exec` is for; the refusal exists so that a mistyped path cannot do by accident what an
 explicit act should do on purpose. That non-refusal is asserted here rather than assumed, which
 is why `ctx.exec` on the host target (AWCLI-25, governed by BR-040) is a blocker. AWCLI-19 owns
@@ -44,8 +53,11 @@ construction. The two must not be allowed to drift.
 - Read a file's contents by a path resolved against the working copy this iteration is
   operating in.
 - Write contents to a path resolved the same way, creating the file if it is not there.
-- Refuse a path that escapes the working copy — whether by `..`, by being absolute, or by
+- Refuse a path that escapes the working copy's tree — whether by `..`, by being absolute, or by
   traversing a symlink that points outside — rather than resolving it (BR-038).
+- Refuse a path into the working copy's git administrative area — the `.git` directory of a live
+  checkout, the `.git` pointer file of a worktree — even though it lies inside the working copy
+  (BR-038).
 - Answer `ctx.version.supports("fs")` affirmatively once the member is built (BR-033).
 
 ### Non-Functional
@@ -71,10 +83,13 @@ construction. The two must not be allowed to drift.
 - [ ] Scenario: *A path that climbs out of the working copy is refused*.
 - [ ] Scenario: *A path given from the root of the machine is refused*.
 - [ ] Scenario: *A link pointing out of the working copy is refused*.
+- [ ] Scenario: *A path into the working copy's git administrative area is refused*.
 - [ ] Scenario: *Reaching outside the working copy on purpose is not refused*.
 - [ ] Resolution is against the directory `ctx.git.dir` reports, never the process working
       directory, and a write resolves on the same terms as a read, creating the file if it is
       not there.
+- [ ] The administrative-area refusal is exercised on both layouts — the `.git` directory of a
+      live checkout and the `.git` pointer file of a worktree — since the worktree is the default.
 - [ ] `promptFile` and `fs.read` resolve and refuse identically, exercised through one shared
       resolver.
 - [ ] `ctx.version.supports("fs")` returns true, and the member's entry in `DELIVERED_BY` is

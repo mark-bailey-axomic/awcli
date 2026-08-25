@@ -10,7 +10,7 @@ The remaining six are AWCLI-23, AWCLI-24 and AWCLI-25 at two points each, delive
 members the work breakdown left unowned — the two it gave no rule at all, and the default half of
 a third, `ctx.exec` on the host, which WB-11 scoped entirely to the container.
 
-Every one of the 71 approved BDD scenarios appears as an acceptance criterion on exactly one
+Every one of the 72 approved BDD scenarios appears as an acceptance criterion on exactly one
 ticket. Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.
@@ -21,8 +21,9 @@ image build are machinery whose observable behaviour is asserted on the tickets 
 them — 04, 16, 17, 19 and 21. It was six tickets until BR-038 and BR-039 were added: `ctx.fs`
 and `ctx.env` were the only two of the twelve context members the TDD governed with no business
 rule — a dash in its Rules column — and no scenario exercised either, so AWCLI-23 and AWCLI-24
-derived their criteria from the frozen declaration instead. Those two rules and their eight
-scenarios close that gap; the declaration still supplies what the scenarios do not state.
+derived their criteria from the frozen declaration instead. Those two rules close that gap, each
+with scenarios of its own; the declaration still supplies what the scenarios do not state. Exact
+counts per amendment are in the rules file's `## Amendments` section rather than repeated here.
 
 A third member had the same shape of gap without a dash to show it: `ctx.exec` cited BR-032, but
 every requirement that named it lived on AWCLI-19, which is the container target throughout — so

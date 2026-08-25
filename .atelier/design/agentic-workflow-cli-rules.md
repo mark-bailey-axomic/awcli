@@ -209,22 +209,32 @@ invites the operator to assume a boundary that does not exist.
 **Exceptions.** None.
 **Example.** A log line reads *"isolation: worktree — host filesystem and network reachable"*.
 
-### BR-038 — File access resolves within the working copy, and an escape is refused
+### BR-038 — File access resolves within the working copy's tree, and anything else is refused
 **Statement.** A path the workflow reads or writes resolves against the working copy the iteration is
-operating in, never against the directory awcli was started from. A path that leaves that working
-copy — by climbing out of it, by being given from the root of the machine, or by following a link
-whose target is outside it — is refused, naming the offending path and saying it left the working
-copy, rather than resolved.
+operating in, never against the directory awcli was started from. What it may resolve to is that
+working copy's *tree* and not its git administrative area — the `.git` directory in a live checkout,
+the `.git` pointer file in a worktree — which lies inside the working copy and is refused anyway. A
+path that leaves the tree, by climbing out of it, by being given from the root of the machine, or by
+following a link whose target is outside it, is refused on the same terms: naming the offending path
+and saying where it went, rather than resolved.
 **Rationale.** This is hygiene, not a boundary. Only a container is a boundary (BR-015), and reaching
-outside the working copy deliberately is what running a command is for. The refusal exists so that a
-mistyped `../` fails loudly instead of silently reading or writing a file nobody scoped for this run
-— the same uncommitted work BR-014 keeps an agent out of by default.
+outside the working copy deliberately is what running a command is for (BR-040). The refusal exists
+so that a mistyped `../` fails loudly instead of silently reading or writing a file nobody scoped
+for this run — the same uncommitted work BR-014 keeps an agent out of by default. The administrative
+area is carved out for that reason and no stronger one: a hook written there is run by the next
+commit awcli makes, and on the worktree default the `.git` entry is a single line naming which
+repository this working copy belongs to, so writing it repoints the working copy at a different
+repository without any path having left anything. Both are ways for a careless path to reach past
+the run while appearing to have stayed inside it.
 **Actors.** Workflow, awcli.
 **Exceptions.** None. An escape is never quietly clamped to the working copy root: a path that
-resolved to something other than what the workflow asked for is worse than a refusal.
+resolved to something other than what the workflow asked for is worse than a refusal. And the
+carve-out is not a boundary around the administrative area — a command the workflow runs may still
+write anything there, on BR-040's terms.
 **Example.** A workflow reading `notes.md` reads the one in its own working copy; the same workflow
-reading `../notes.md` is refused, naming the path — while a command it runs may still read anything
-on the machine.
+reading `../notes.md` is refused, naming the path, and writing a commit hook into the working copy's
+own git administrative area is refused too — while a command it runs may still read or write
+anything on the machine.
 
 ### BR-016 — Credentials are lent, never copied
 **Statement.** Agent credentials reach a container as a read-only mount for the life of the run, and
