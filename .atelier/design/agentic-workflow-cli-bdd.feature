@@ -207,12 +207,69 @@ Feature: Running agentic workflows from a global command-line tool
     Then the output states that isolation is a working copy only
     And that the wider filesystem and the network remain reachable
 
+  @BR-038
+  Scenario: A workflow's paths are read against the working copy it was given
+    Given a workflow that reads a file named relative to the repository
+    When I run it from a completely different directory
+    Then the file it reads is the one in the working copy this iteration was given
+    And nothing is read relative to the directory I started awcli from
+
+  @BR-038
+  Scenario: A path that climbs out of the working copy is refused
+    Given a workflow whose path climbs out of the working copy by mistake
+    When I run it
+    Then the read is refused, naming the path and saying it left the working copy
+    And no file outside the working copy is read or written
+
+  @BR-038
+  Scenario: A path given from the root of the machine is refused
+    Given a workflow that names a file by its full path from the root of the machine
+    When I run it
+    Then the read is refused
+    And it is refused even when that path happens to point inside the working copy
+
+  @BR-038
+  Scenario: A link pointing out of the working copy is refused
+    Given a working copy containing a link whose target lies outside it
+    When a workflow writes through that link
+    Then the write is refused, naming the path
+    And a read through the same link is refused on the same terms
+
+  @BR-038
+  Scenario: Reaching outside the working copy on purpose is not refused
+    Given a workflow that runs a command reading a file elsewhere on the machine
+    When I run it
+    Then the command runs and reads that file
+    And the run is not refused
+    And the output still states that isolation is a working copy only
+
   @BR-016
   Scenario: Credentials are lent to a container, never baked into it
     Given a workflow whose agent runs in a container
     When the container is prepared and the agent runs
     Then my agent credentials are available to it for the life of the run
     And no credential is written into the container image
+
+  @BR-039
+  Scenario: The environment a workflow is given holds none of awcli's own credentials
+    Given awcli is supplying its own agent credentials to the agent for this run
+    When a workflow reads the environment it was given
+    Then no credential awcli supplies appears in it, under any name
+    And each of them is indistinguishable from a variable that was never set
+
+  @BR-039
+  Scenario: My own environment is still there, secrets and all
+    Given I have secrets of my own in the environment I started awcli from
+    When a workflow reads the environment it was given
+    Then my own variables are readable by name, values included
+    And only the credentials awcli itself supplies were removed
+
+  @BR-039
+  Scenario: A command the workflow runs still sees the whole environment
+    Given a workflow that runs a command reporting its own environment
+    When I run it
+    Then that command sees the environment its execution target actually has
+    And the credentials left out of the record were not removed from the machine
 
   # ─── Execution and termination ───
 

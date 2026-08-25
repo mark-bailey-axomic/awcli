@@ -18,7 +18,7 @@ requirements:
     path: design/agentic-workflow-cli-rules.md
     items: []
     status: approved
-    count: 37
+    count: 39
     categories:
       - environment-preconditions
       - validation
@@ -31,7 +31,7 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    count: 60
+    count: 68
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7

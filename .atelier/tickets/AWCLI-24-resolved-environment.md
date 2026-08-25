@@ -5,26 +5,25 @@
 ## Problem / Goal
 
 `ctx.env` is published on the frozen context surface and nothing builds it, so reading it throws
-on every build shipped so far. It also carries the one promise on the surface that is currently
-prose and nothing else: awcli's own agent credentials are meant to be *absent* from the record.
-They are lent to a container as a read-only mount for the life of the run and never copied
-(BR-016), and handing them back through this record would copy them into every prompt and every
-run record that reads it — which is the thing BR-016 exists to prevent. The declaration says
-plainly that this subtraction "is a promise about the record awcli builds, not something this
-type states or enforces — and it is not built." This ticket is where it gets built.
+on every build shipped so far. It also carries the promise BR-039 now states: awcli's own agent
+credentials are *absent* from the record it hands a workflow. They are lent to a container as a
+read-only mount for the life of the run and never copied (BR-016), and handing them back through
+this record would copy them into every prompt and every run record that reads it — which is the
+thing BR-016 exists to prevent. The declaration says plainly that this subtraction "is a promise
+about the record awcli builds, not something this type states or enforces — and it is not built."
+BR-039 is now where it is stated; this ticket is where it gets built.
 
 ## Context
 
-**This ticket carries no BDD scenarios, and that is a gap in the approved specification rather
-than an omission here.** `ctx.env` is one of two members in the TDD's context-members table
-(`| ctx.env | resolved environment | — |`) whose Rules column is a dash: it is governed by no
-business rule, and no scenario in the approved feature file exercises it. The other is `ctx.fs`
-(AWCLI-23). Acceptance criteria on every other ticket derive from approved scenarios, so no
-ticket could have owned these two — which is why `src/runtime/context.ts` recorded both as
-`unassigned`. BR-016 is cited below because the credential promise points at it, but BR-016 is a
-rule about a container mount, not about this record; no rule governs the record itself. The
-criteria are otherwise derived from the `env` declaration and its doc-comment in
-`src/contract/awcli.d.ts`, which is the only approved statement of what this member promises.
+**This member is now governed like every other, by BR-039.** `ctx.env` was one of two members in
+the TDD's context-members table whose Rules column was a dash — no business rule, and no
+scenario in the approved feature file exercising it — which is why no work-breakdown unit ever
+owned it and why `src/runtime/context.ts` had no unit to name for it. BR-039 governs the record
+itself: the agent credentials awcli supplies are absent from it. BR-016 is still cited below,
+because it is the rule the credential promise points at, but it is a rule about a container mount
+and BR-039 is the one about this record. The criteria below are the three approved scenarios plus
+what the `env` declaration and its doc-comment in `src/contract/awcli.d.ts` add on top. The other
+dashed member was `ctx.fs`, closed by BR-038 (AWCLI-23).
 
 Two limits the declaration is explicit about, and this ticket inherits rather than fixes. The
 type cannot keep the record out of a log: `Readonly<Record<string, string | undefined>>` is a
@@ -32,9 +31,11 @@ valid `LogApi` field record, so `ctx.log.info("env", ctx.env)` compiles, and bra
 to refuse it would distort `LogApi` for every caller and still be defeated by a spread. And what
 remains after the subtraction is the operator's own environment, which may hold secrets of its
 own — so this is somewhere to read a specific known variable from, not somewhere to enumerate
-and forward. Subtraction and redaction are different mechanisms: subtraction removes awcli's own
-credentials from the record by construction, while redaction (AWCLI-21) is a net cast over
-shapes awcli recognises wherever they are written down.
+and forward. Subtraction and redaction are different mechanisms, as BR-039 says: subtraction
+removes awcli's own credentials from the record by construction, while redaction (AWCLI-21, which
+no business rule states) is a net cast over shapes awcli recognises wherever they are written
+down. And subtraction removes nothing from the machine — a command the workflow runs still sees
+the environment its execution target actually has.
 
 ## Requirements
 
@@ -43,7 +44,7 @@ shapes awcli recognises wherever they are written down.
 - Build the record from what the execution target resolves for this run — the host environment
   for a host target, the container's for a container target.
 - Subtract awcli's own agent credentials from the record, so they are absent rather than
-  filtered at each read site (BR-016).
+  filtered at each read site (BR-039, BR-016).
 - Report a variable that is not set as absent, on the same terms as one awcli removed.
 - Answer `ctx.version.supports("env")` affirmatively once the member is built (BR-033).
 
@@ -65,18 +66,19 @@ shapes awcli recognises wherever they are written down.
 
 ## Acceptance Criteria
 
-- [ ] A variable the operator set is readable from the record by name, with the value the
-      execution target resolved.
-- [ ] A variable that was never set is absent, and is indistinguishable from one awcli removed.
-- [ ] Every credential awcli supplies to an agent is absent from the record, verified with those
-      variables present in the parent environment (BR-016).
-- [ ] No credential value appears anywhere in the record, under any key.
+- [ ] Scenario: *The environment a workflow is given holds none of awcli's own credentials*.
+- [ ] Scenario: *My own environment is still there, secrets and all*.
+- [ ] Scenario: *A command the workflow runs still sees the whole environment*.
+- [ ] A variable read from the record carries the value the execution target resolved, and one
+      that was never set is absent.
+- [ ] The credential absence is verified with those variables present in the parent environment
+      (BR-016), and no credential value appears anywhere in the record, under any key.
 - [ ] A container target's record reflects the container's environment, not the host's.
 - [ ] The record does not change when the process environment changes mid-run.
 - [ ] The subtracted-name set is defined once, next to the credential mount of AWCLI-19, and a
       test fails if the two fall out of step.
-- [ ] `ctx.version.supports("env")` returns true, and the member's `unassigned` entry in
-      `DELIVERED_BY` is gone.
+- [ ] `ctx.version.supports("env")` returns true, and the member's entry in `DELIVERED_BY` is
+      gone.
 - [ ] All tests pass, lint clean, type check clean.
 
 ## Out of Scope
@@ -88,11 +90,8 @@ shapes awcli recognises wherever they are written down.
   declaration says so; the workflow decides what is worth recording (BR-028).
 - Mounting credentials into a container — AWCLI-19. This ticket mirrors that set, it does not
   own it.
-- Authoring the missing business rules and scenarios for this member. The gap is recorded here;
-  closing it is a change to the approved specification.
 
 ## Dependencies
 
 **Blocked by:** AWCLI-01, AWCLI-19
-**Blocks:** None — no existing ticket names `ctx.env` in its requirements, which is part of the
-gap described in Context.
+**Blocks:** None — no other ticket names `ctx.env` in its requirements.

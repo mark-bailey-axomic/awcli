@@ -4,7 +4,7 @@ artifact: business-rules
 status: Approved
 date: 2026-08-24
 source: .atelier/context/agentic-workflow-cli-prd-draft.md
-rules: 37
+rules: 39
 ---
 
 # awcli — Business Rules
@@ -209,12 +209,49 @@ invites the operator to assume a boundary that does not exist.
 **Exceptions.** None.
 **Example.** A log line reads *"isolation: worktree — host filesystem and network reachable"*.
 
+### BR-038 — File access resolves within the working copy, and an escape is refused
+**Statement.** A path the workflow reads or writes resolves against the working copy the iteration is
+operating in, never against the directory awcli was started from. A path that leaves that working
+copy — by climbing out of it, by being given from the root of the machine, or by following a link
+whose target is outside it — is refused, naming the offending path and saying it left the working
+copy, rather than resolved.
+**Rationale.** This is hygiene, not a boundary. Only a container is a boundary (BR-015), and reaching
+outside the working copy deliberately is what running a command is for. The refusal exists so that a
+mistyped `../` fails loudly instead of silently reading or writing a file nobody scoped for this run
+— the same uncommitted work BR-014 keeps an agent out of by default.
+**Actors.** Workflow, awcli.
+**Exceptions.** None. An escape is never quietly clamped to the working copy root: a path that
+resolved to something other than what the workflow asked for is worse than a refusal.
+**Example.** A workflow reading `notes.md` reads the one in its own working copy; the same workflow
+reading `../notes.md` is refused, naming the path — while a command it runs may still read anything
+on the machine.
+
 ### BR-016 — Credentials are lent, never copied
 **Statement.** Agent credentials reach a container as a read-only mount for the life of the run, and
 are never written into an image.
 **Rationale.** An image outlives the run and can be shared or pushed; a mount cannot.
 **Actors.** awcli.
 **Exceptions.** None.
+
+### BR-039 — awcli's own credentials are absent from the environment it resolves
+**Statement.** The environment record awcli hands a workflow omits the agent credentials awcli itself
+supplies. They are absent rather than filtered at each read, so they cannot reach a prompt or a log
+line by accident, and a name awcli removed is indistinguishable from one that was never set.
+**Rationale.** Those credentials are lent for the life of the run and never copied (BR-016); handing
+them back through a record that every prompt and every run record can read would copy them, which is
+precisely what BR-016 exists to prevent. Absence by construction is the only version of this that
+survives a workflow nobody reviewed.
+**Actors.** awcli, Workflow.
+**Exceptions.** None to the subtraction — but it is hygiene, not a control, and three things remain
+true beside it. What is left is the operator's own environment, which may hold secrets of their own,
+so this is somewhere to read a known name from rather than somewhere to enumerate and forward. A
+command the workflow runs sees the environment its execution target actually has, credentials
+included; nothing is removed from the machine. And subtraction is not redaction: this removes awcli's
+own credentials by construction, whereas redacting values that match known secret shapes is a net
+cast over values wherever they are written — a separate mechanism no rule here states, carried by the
+logging work behind BR-025 and BR-028 (AWCLI-21).
+**Example.** A workflow reading the resolved environment finds its project's own variables and no
+awcli agent credential under any name; a command it runs still finds them in its own environment.
 
 ---
 
