@@ -186,16 +186,22 @@ generated ignore entry is a single line written once (BR-030).
 |---|---|---|
 | `ctx.agent(opts)` | `(opts: AgentOptions) => Promise<AgentResult>` | BR-013, BR-020, BR-022 |
 | `ctx.sandbox(opts)` | `(opts: SandboxOptions) => Promise<Scope>` — worktree × container | BR-004, BR-016 |
-| `ctx.state` | mutable record in the body; frozen view in a scope | BR-008, BR-012, BR-023 |
+| `ctx.state` | mutable record in the body; read-only view inside a `sandbox()` scope; unwritable while the body's own agents are in flight | BR-008, BR-012, BR-023 |
 | `ctx.args` | `Record<string, string>` from `--arg` | P0-10 |
 | `ctx.project` | fixed profile fields + `custom` record | BR-006 |
 | `ctx.git` | branch, log, diff, commit helpers | BR-036 |
 | `ctx.exec` | run a command in the current workspace and target | BR-032, BR-040 |
 | `ctx.fs` | read/write within the workspace | BR-038 |
-| `ctx.log` | structured logging attributed to run/iteration/agent | BR-025, BR-028 |
-| `ctx.env` | resolved environment | BR-039 |
+| `ctx.log` | structured logging attributed to run/iteration/agent; field values are unconstrained and checked when the line is written | BR-008, BR-025, BR-028 |
+| `ctx.env` | the run's environment, asked one name at a time — `get`/`has`, never a record | BR-039 |
 | `ctx.schema` | validator used for output and state shapes | BR-008, BR-009, BR-020 |
 | `ctx.version` | the running contract version, for feature detection | BR-033 |
+
+Every function on this surface — top level and inside the sub-APIs — is a member a workflow cannot
+assign over (BR-025). Without that, a module the workflow imported without reading could replace
+`log.info` and the run would agree with itself while recording nothing, and a scope's own `exec` or
+`fs` could be swapped for the body's after the scope was made. It is hygiene against accident, not a
+boundary: the workflow shares awcli's process.
 
 `AgentOptions`: `{ prompt, promptFile?, model?, output?: { tag, schema }, timeoutSeconds?, name? }`.
 `AgentResult`: `{ commits, output, isolation, usage?, logPath }` — `commits` from git, `output` from

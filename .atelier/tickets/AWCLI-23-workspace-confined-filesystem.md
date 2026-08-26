@@ -98,7 +98,7 @@ construction. The two must not be allowed to drift.
 
 ## Out of Scope
 
-- The resolved environment and its credential subtraction — AWCLI-24.
+- The run's environment and its credential subtraction — AWCLI-24.
 - Building `ctx.exec` itself — AWCLI-25 on the host target, AWCLI-19 in a container. This ticket
   asserts only that confinement does not extend to either.
 - Wiring `promptFile` into an agent call — AWCLI-15; this ticket supplies the resolver it uses.
