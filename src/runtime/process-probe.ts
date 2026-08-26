@@ -1,5 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Who holds something, in a form that survives the death of the process that recorded it.
@@ -27,19 +30,45 @@ export interface ProcessIdentity {
 }
 
 /**
+ * What the operating system said, including the case where it did not say anything.
+ *
+ * The third variant is the one that matters, and leaving it out is a fail-open bug rather than a
+ * simplification. An earlier version of this file answered `undefined` for both "no process holds
+ * that id" and "the question could not be asked", so a `ps` that timed out on a loaded machine,
+ * an `EAGAIN` from `fork`, or a container image without `ps` in it all evicted a *live* owner's
+ * lock. That failure is load-correlated: it fires when the machine is busy, which is exactly when
+ * a second run is most likely to be present for it to collide with.
+ *
+ * So "I could not find out" is its own answer, and the lock refuses on it rather than reclaiming.
+ * A refusal costs the operator a retry; a wrong reclamation costs them the corruption the lock
+ * exists to prevent.
+ */
+export type ProbeAnswer =
+  | { readonly kind: "running"; readonly identity: ProcessIdentity }
+  /** Asked, and nothing holds that id. */
+  | { readonly kind: "not-found" }
+  /** Could not ask, or could not understand the answer. Never treated as "gone". */
+  | { readonly kind: "unknown"; readonly reason: string };
+
+/**
  * Asking the operating system who a process is.
  *
  * A port, because every liveness decision in the lock goes through it and none of them can be
- * tested against real processes: a test needs a process that is alive, one that is gone, and —
- * the case that matters most — an id belonging to a *different* process than the one recorded.
- * The third cannot be staged for real at all. So the decision logic is tested against a
- * substitute, and the adapter below is tested against real processes.
+ * staged with real processes: a test needs a process that is alive, one that is gone, one whose id
+ * now belongs to something *else*, and one the OS will not answer about. The third cannot be
+ * staged at all. So the decision logic is tested against a substitute, and the adapter below is
+ * tested against real processes.
+ *
+ * Asynchronous because the real implementation spawns `ps`, and doing that synchronously blocks
+ * the event loop for the whole spawn — on the startup path, with a signal handler installed, that
+ * is a window in which Ctrl-C cannot be delivered. It also gives the lock's tests a way to hold a
+ * probe open and interleave two acquisitions deterministically, which is how the concurrency
+ * tests in `run-lock.test.ts` reproduce a race rather than hoping to hit it.
  */
 export interface ProcessProbe {
   /** This process's identity, obtained the same way as any other's — see `systemProcessProbe`. */
-  self(): ProcessIdentity;
-  /** The identity of a live process, or nothing when no process holds that id. */
-  identify(pid: number): ProcessIdentity | undefined;
+  self(): Promise<ProcessIdentity>;
+  identify(pid: number): Promise<ProbeAnswer>;
 }
 
 /**
@@ -47,23 +76,27 @@ export interface ProcessProbe {
  *
  * `gone` and `different` are kept apart because the operator-facing explanation differs: one is
  * "the process that held this is no longer running", the other is "that id belongs to something
- * else now". Both are stale; conflating them would make the reclamation message vaguer than the
- * evidence for it.
+ * else now". Both are stale. `undecidable` is neither, and is the reason this is not a boolean.
  */
-export type Liveness = "live" | "gone" | "different";
+export type Liveness = "live" | "gone" | "different" | "undecidable";
 
 /** Whether the process recorded in `owner` is still the process running under that id. */
-export function livenessOf(owner: ProcessIdentity, probe: ProcessProbe): Liveness {
-  const current = probe.identify(owner.pid);
-  if (current === undefined) return "gone";
-  return current.startedAt === owner.startedAt ? "live" : "different";
+export async function livenessOf(
+  owner: ProcessIdentity,
+  probe: ProcessProbe,
+): Promise<Liveness> {
+  const answer = await probe.identify(owner.pid);
+  if (answer.kind === "unknown") return "undecidable";
+  if (answer.kind === "not-found") return "gone";
+  return answer.identity.startedAt === owner.startedAt ? "live" : "different";
 }
 
 /**
- * How long `ps` may take before we treat it as unavailable.
+ * How long `ps` may take before we treat the question as unanswered.
  *
- * Short on purpose. This runs on the startup path, before anything has happened, and a `ps` that
- * hangs must not be the reason a run never begins.
+ * Short on purpose: this runs on the startup path, before anything has happened, and a `ps` that
+ * hangs must not be the reason a run never begins. Timing out is reported as `unknown` rather than
+ * as `not-found`, so a slow machine costs a refusal and never a reclamation.
  */
 const PS_TIMEOUT_MS = 2_000;
 
@@ -75,85 +108,154 @@ const PS_TIMEOUT_MS = 2_000;
  * conversion is deliberately not cached across calls, because a lock check happens once per run
  * and a stale cached boot time would be a bug that only appears after a suspend.
  *
- * Parsed from the end rather than by splitting on spaces from the start: field 2 is the
+ * Parsed from the last `)` rather than by splitting on spaces from the start: field 2 is the
  * executable name in parentheses and may itself contain spaces and parentheses, which is the
  * classic way of misreading this file.
  */
-function procStartedAt(pid: number): number | undefined {
+async function procIdentify(pid: number): Promise<ProbeAnswer> {
   let stat: string;
   try {
-    stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-  } catch {
-    return undefined;
+    stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  } catch (error) {
+    // ENOENT is the answer; anything else — EACCES under a hardened `hidepid`, EIO — is a
+    // question that could not be asked, and must not read as a dead process.
+    const code = (error as { code?: string }).code;
+    if (code === "ENOENT" || code === "ESRCH") return { kind: "not-found" };
+    return {
+      kind: "unknown",
+      reason: `/proc/${pid}/stat could not be read (${code ?? error})`,
+    };
   }
 
   const afterName = stat.slice(stat.lastIndexOf(")") + 1).trim();
   // Fields 3 onwards. Field 22 overall is therefore index 19 here.
   const ticks = Number(afterName.split(/\s+/)[19]);
-  if (!Number.isFinite(ticks)) return undefined;
+  if (!Number.isFinite(ticks)) {
+    return {
+      kind: "unknown",
+      reason: `/proc/${pid}/stat did not parse as process stats`,
+    };
+  }
 
-  const bootMatch = /^btime (\d+)$/m.exec(readFileSync("/proc/stat", "utf8"));
-  const bootSeconds = Number(bootMatch?.[1]);
-  if (!Number.isFinite(bootSeconds)) return undefined;
+  let bootSeconds: number;
+  try {
+    const bootMatch = /^btime (\d+)$/m.exec(await readFile("/proc/stat", "utf8"));
+    bootSeconds = Number(bootMatch?.[1]);
+  } catch (error) {
+    return { kind: "unknown", reason: `/proc/stat could not be read (${String(error)})` };
+  }
+  if (!Number.isFinite(bootSeconds)) {
+    return { kind: "unknown", reason: "/proc/stat carries no btime" };
+  }
 
   // USER_HZ, fixed at 100 on Linux for the purposes of this file regardless of the kernel's
   // internal tick rate. There is no syscall-free way to read it, and it has not been anything
   // else on a Linux target awcli supports.
-  return Math.round(bootSeconds * 1000 + (ticks / 100) * 1000);
+  const startedAt = Math.round(bootSeconds * 1000 + (ticks / 100) * 1000);
+  return { kind: "running", identity: { pid, startedAt } };
 }
 
 /**
  * Reads a process's start time from `ps`, the way macOS exposes it.
  *
- * `-o lstart=` prints an absolute local time, which `Date.parse` handles, and the empty `=`
- * suppresses the header so there is nothing to skip. `-p` on a dead id exits non-zero and prints
- * nothing, which is the answer we want and arrives as a throw.
+ * `LC_ALL=C` is not tidiness. `-o lstart=` prints a *localised* absolute time, and `Date.parse`
+ * understands only the C one: under `fr_FR.UTF-8` the same process reports
+ * `mer. 26 août 19:52:19 2026`, which parses as NaN — so on a French-locale machine every
+ * `self()` threw and no run could ever take a lock. `de_DE` parsed only by luck of its
+ * abbreviations. Pinning the locale is what makes the format a contract instead of a coincidence.
  */
-function psStartedAt(pid: number): number | undefined {
-  let output: string;
+async function psIdentify(pid: number): Promise<ProbeAnswer> {
+  let stdout: string;
   try {
-    output = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    ({ stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: PS_TIMEOUT_MS,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-  } catch {
-    return undefined;
+      env: { ...process.env, LC_ALL: "C" },
+    }));
+  } catch (error) {
+    const failure = error as {
+      code?: string | number;
+      killed?: boolean;
+      signal?: string;
+    };
+    // `ps -p` on an id nothing holds exits 1 with no output. That is the answer.
+    if (failure.code === 1 && failure.killed !== true) return { kind: "not-found" };
+    // Everything else is a question that could not be asked: `ps` absent from the image
+    // (ENOENT), the timeout above (killed), EAGAIN from fork on a loaded box.
+    return {
+      kind: "unknown",
+      reason:
+        failure.killed === true
+          ? `ps did not answer within ${PS_TIMEOUT_MS}ms`
+          : `ps could not be run (${String(failure.code ?? error)})`,
+    };
   }
-  const parsed = Date.parse(output.trim());
-  return Number.isFinite(parsed) ? parsed : undefined;
+
+  const printed = stdout.trim();
+  if (printed.length === 0) return { kind: "not-found" };
+  const startedAt = Date.parse(printed);
+  if (!Number.isFinite(startedAt)) {
+    return {
+      kind: "unknown",
+      reason: `ps reported an unparseable start time (${printed})`,
+    };
+  }
+  return { kind: "running", identity: { pid, startedAt } };
 }
+
+/**
+ * This process's identity, resolved once.
+ *
+ * Memoised because it cannot change — a process's own start time is fixed — and because the
+ * uncached version spawned `ps` several times per acquisition, each one a blocked event loop.
+ */
+let ownIdentity: Promise<ProcessIdentity> | undefined;
 
 /**
  * The real probe: asks the operating system, and answers for this process the same way.
  *
- * `self()` is `identify(process.pid)` rather than anything derived from `process.uptime()`, and
- * that is not a shortcut — it is the property the whole comparison rests on. The value written
- * into a lock and the value a later run reads back for the same process must come from the same
- * source, or a live owner's identity will fail to match its own recorded one and every lock will
- * read as stale. Deriving `self` differently is how that bug gets written; there is only one
- * source here, so it cannot be.
+ * `self()` goes through `identify(process.pid)` rather than through anything derived from
+ * `process.uptime()`, and that is not a shortcut — it is the property the whole comparison rests
+ * on. The value written into a lock and the value a later run reads back for the same process must
+ * come from the same source, or a live owner's identity will fail to match its own recorded one
+ * and every lock will read as stale. Deriving `self` differently is how that bug gets written;
+ * there is only one source here, so it cannot be.
  */
 export const systemProcessProbe: ProcessProbe = {
-  self() {
-    // Not `this.identify`: a caller that destructures the probe would lose `this`, and the
-    // failure would be a thrown error on the startup path rather than anything obvious here.
-    const identity = systemProcessProbe.identify(process.pid);
-    // Unreachable in practice: a process asking about itself is running by definition. Failing
-    // loudly rather than inventing a start time, because a wrong `startedAt` here would be
-    // written into the lock and would make this run's own lock look stale to the next one.
-    if (identity === undefined) {
+  self(): Promise<ProcessIdentity> {
+    // Named rather than `this.identify`: a caller that destructures the probe would otherwise
+    // lose `this`, and the failure would surface as a thrown error on the startup path.
+    ownIdentity ??= systemProcessProbe.identify(process.pid).then((answer) => {
+      if (answer.kind === "running") return answer.identity;
+      // Unreachable in practice: a process asking about itself is running by definition. Failing
+      // loudly rather than inventing a start time, because a wrong `startedAt` here would be
+      // written into the lock and would make this run's own lock look stale to the next one.
       throw new Error(
-        `Cannot determine this process's start time (pid ${process.pid}). awcli needs it to hold a run lock that a later run can tell apart from a recycled process id.`,
+        `awcli cannot determine its own start time (pid ${process.pid}): ${
+          answer.kind === "unknown"
+            ? answer.reason
+            : "the process table has no entry for it"
+        }. It needs that to hold a run lock a later run can tell apart from a recycled process id.`,
       );
-    }
-    return identity;
+    });
+    // Not cached on failure: a transient `ps` timeout should not poison every later attempt in
+    // this process, and the throw above is what a retry has to be able to get past.
+    const pending = ownIdentity;
+    return pending.catch((error: unknown) => {
+      if (ownIdentity === pending) ownIdentity = undefined;
+      throw error;
+    });
   },
 
-  identify(pid: number): ProcessIdentity | undefined {
-    if (!Number.isInteger(pid) || pid <= 0) return undefined;
-    const startedAt =
-      process.platform === "linux" ? procStartedAt(pid) : psStartedAt(pid);
-    return startedAt === undefined ? undefined : { pid, startedAt };
+  async identify(pid: number): Promise<ProbeAnswer> {
+    if (!Number.isInteger(pid) || pid <= 0) {
+      return { kind: "not-found" };
+    }
+    return process.platform === "linux" ? procIdentify(pid) : psIdentify(pid);
   },
 };
+
+/** Test seam: forget the memoised identity so a suite can exercise `self()` from cold. */
+export function forgetOwnIdentity(): void {
+  ownIdentity = undefined;
+}

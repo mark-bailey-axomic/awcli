@@ -59,10 +59,11 @@ different writers and may proceed together.
 ## Notes
 
 Each criterion above was watched failing before it was ticked. `scripts/verify-lock-gate.sh`
-(wired into `npm run check:gates`, and so into CI) applies thirteen plausible wrong
-implementations — trust the pid alone, reclaim anything older than an hour, refuse every existing
-lock, one lock file per repository, unlink whatever is at the path, slugify what the operator
-typed — and fails if the suite still passes with any of them applied.
+(wired into `npm run check:gates`, and so into CI) applies twenty plausible wrong implementations —
+trust the pid alone, reclaim anything older than an hour, refuse every existing lock, one lock file
+per repository, unlink whatever is at the path, slugify what the operator typed — and fails if the
+suite still passes with any of them applied. It has fired for real twice on this ticket, both times
+because a refactor moved an anchor.
 
 Two properties came out of building it that the ticket did not name, and both are load-bearing:
 
@@ -70,10 +71,43 @@ Two properties came out of building it that the ticket did not name, and both ar
   half-written. That is what makes "unreadable therefore reclaimable" sound rather than a guess;
   without it, a corrupted lock would have to be treated as live and would block the run name for
   ever.
-- Reclamation renames the stale lock aside rather than deleting it in place. Two runs meeting the
-  same stale lock rename to different names, so exactly one wins; the loser meets the winner's
-  live lock and is refused, which is correct.
+- Reclamation removes only the file it judged stale, verified by inode after taking custody of it.
 
 `worktrees` is refused as a run name: the layout puts working copies at
 `run/worktrees/<run>/<slot>`, a sibling of `run/<run>/`, so that name would put a run's state
 directory and the worktree root at one path.
+
+### What review changed
+
+The first version of this unit passed all six criteria and shipped four defects, every one of them
+in a place the suite could not look. Recorded here because the pattern generalises: the tests were
+all sequential, and both properties above exist *only* to survive concurrency.
+
+- **Reclamation was not mutually exclusive.** It renamed whatever was at the lock path aside on the
+  strength of a judgement made before the rename, with a `ps` spawn in between. Two runs meeting
+  the same stale lock after a reboot — the ordinary case reclamation exists for — could both come
+  away holding the name. Now: take custody, verify the inode, re-judge and restore if it was not
+  the file judged. The regression test parks one acquisition inside the probe with a latch, so the
+  interleaving is deterministic rather than hoped for.
+- **The acquisition loop was unbounded.** A `continue` jumped the attempt check, and a dangling
+  symlink at the lock path pins both branches for ever (`link` answers EEXIST, `readFile` answers
+  ENOENT), so awcli spun at startup. The bound now covers every path, and a symlink at the lock
+  path or its directory is refused outright.
+- **An unanswerable probe read as "owner gone".** A `ps` timeout, an `EAGAIN` from fork, or a
+  container image without `ps` all evicted a live owner's lock — load-correlated, so it fired
+  exactly when a second run was present to collide with. The probe now answers three ways and
+  "could not ask" refuses. So does a lock written on another machine, whose pid this machine's
+  process table cannot speak to; that is what the recorded `host` field is for, and the first
+  version wrote it without reading it.
+- **`ps -o lstart=` is locale-formatted.** Under `fr_FR.UTF-8` it prints `mer. 26 août ...`, which
+  `Date.parse` reads as NaN, so on a French-locale machine no run could ever take a lock. `LC_ALL`
+  is pinned, and a test asks under a locale that would otherwise break it.
+
+Also from review: the validated run name is branded, so an unvalidated string can no longer reach a
+path (`"../../../etc"` escaped, `""` collapsed every run onto one lock); names ending in `.lock` and
+names differing only by case are refused, both of which git or a case-insensitive filesystem would
+otherwise refuse later, after the run had started work; the staging file is keyed by UUID with
+`wx`, so two acquisitions in one millisecond cannot truncate an already-linked live lock through a
+shared inode; a refusal that reclaimed on the way reports it and no longer claims nothing changed;
+and the gate harness is shared with the disposal gate rather than copied, with every substitution
+counted so a half-applied mutation fails instead of printing `ok`.

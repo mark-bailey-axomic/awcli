@@ -15,11 +15,23 @@ import { basename, join } from "node:path";
  * workflow reference *is* slugified, because there the input was not a name the operator chose.
  */
 
+/**
+ * A run name that has been through `validateRunName`.
+ *
+ * Branded, so a raw string cannot reach a path or a lock. The alternative was a comment asking
+ * call sites to validate first, and the review of the first version of this file found exactly
+ * what that is worth: `acquireRunLock` took a bare string, so `"../../../etc"` escaped the runtime
+ * directory and `""` collapsed every run onto one repository-wide lock. Neither is reachable now
+ * without a deliberate cast.
+ */
+declare const runNameBrand: unique symbol;
+export type RunName = string & { readonly [runNameBrand]: true };
+
 /** The runtime directory, relative to the repository root. All mutable state lives here (BR-030). */
-export const RUNTIME_DIRECTORY = ".awcli";
+const RUNTIME_DIRECTORY = ".awcli";
 
 /** Everything a run mutates sits under this, so one generated ignore line covers all of it. */
-export const RUN_DIRECTORY = "run";
+const RUN_DIRECTORY = "run";
 
 /**
  * Names a run may not take, because something else already owns that path.
@@ -40,16 +52,25 @@ const MAX_RUN_NAME_LENGTH = 64;
 /**
  * Alphanumeric at both ends, dots, dashes and underscores inside.
  *
- * The ends are constrained because git's ref rules are: a component may not begin with a dot,
- * may not end with `.lock`, and may not end with a dot. Requiring alphanumeric at both ends
- * satisfies all three at once without enumerating them, and it also keeps a name from looking
- * like a shell option when it appears in a message.
+ * The ends are constrained because git's ref rules are: a component may not begin with a dot and
+ * may not end with one. This does not cover git's third rule — a component may not end in `.lock`
+ * — and the first version of this comment claimed it did: `k` is a letter, so `nightly.lock`
+ * passed here and would have been refused later by git, at branch-creation time, after the run had
+ * taken its lock and started work. That rule is checked explicitly below.
+ *
+ * Constraining the ends also keeps a name from looking like a shell option in a message.
  */
 const RUN_NAME_PATTERN = /^[A-Za-z0-9]$|^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$/;
 
 /** Why a name was refused. Discriminated so the caller can say what to fix, not just that it is wrong. */
 export type RunNameProblem =
-  "empty" | "too-long" | "illegal-characters" | "traversal" | "reserved";
+  | "empty"
+  | "too-long"
+  | "illegal-characters"
+  | "traversal"
+  | "reserved"
+  | "not-lowercase"
+  | "git-reserved-suffix";
 
 export interface RunNameRefusal {
   readonly ok: false;
@@ -59,7 +80,8 @@ export interface RunNameRefusal {
   readonly message: string;
 }
 
-export type RunNameResult = { readonly ok: true; readonly name: string } | RunNameRefusal;
+export type RunNameResult =
+  { readonly ok: true; readonly name: RunName } | RunNameRefusal;
 
 /** Whether a string may be used as a run name, and why not when it may not. */
 export function validateRunName(name: string): RunNameResult {
@@ -90,6 +112,27 @@ export function validateRunName(name: string): RunNameResult {
       `"${name}" is not usable as a run name. Use letters, digits, dots, dashes and underscores, starting and ending with a letter or digit — the name becomes a directory name and a git branch name.`,
     );
   }
+  // Lowercase only. A run name is a directory on a filesystem that may be case-insensitive
+  // (APFS, NTFS) and a git branch on one that is not, so `Triage` and `triage` would be one lock
+  // file and two branches — a pair of runs that contend for state while diverging on disk.
+  // Refused rather than lowercased, for the same reason no other name is rewritten.
+  if (name !== name.toLowerCase()) {
+    return refuse(
+      name,
+      "not-lowercase",
+      `"${name}" must be lowercase: the name is both a directory (on a filesystem that may ignore case) and a git branch (on one that does not), and the two must agree. Try "${name.toLowerCase()}".`,
+    );
+  }
+  // git refuses a ref component ending in `.lock`, and it refuses it at branch-creation time —
+  // which is after this run has taken its lock and started work. The edge-character rule below
+  // does not catch it, because `k` is a letter.
+  if (name.endsWith(".lock")) {
+    return refuse(
+      name,
+      "git-reserved-suffix",
+      `A run name may not end in ".lock": git refuses a branch whose name ends that way, and the name becomes the branch awcli/${name}/<slot>.`,
+    );
+  }
   if (RESERVED_RUN_NAMES.includes(name)) {
     return refuse(
       name,
@@ -97,7 +140,7 @@ export function validateRunName(name: string): RunNameResult {
       `"${name}" is reserved: awcli uses that path for the run's working copies. Choose another name.`,
     );
   }
-  return { ok: true, name };
+  return { ok: true, name: name as RunName };
 }
 
 function refuse(name: string, problem: RunNameProblem, message: string): RunNameRefusal {
@@ -144,7 +187,13 @@ export function defaultRunName(workflowReference: string): RunNameResult {
 }
 
 export interface RunNameRequest {
-  /** `--name`, when the operator passed it. Wins outright. */
+  /**
+   * `--name`, when the operator passed it. Wins outright.
+   *
+   * Absent and empty are different. `--name ""` is a mistake — a shell variable that did not
+   * expand is the usual cause — and silently falling back to the derived default would send the
+   * run at whatever the workflow file happens to be called, which is not what was asked for.
+   */
   readonly explicit?: string | undefined;
   /** The workflow reference the command was given, used only when there is no explicit name. */
   readonly workflowReference: string;
@@ -153,7 +202,7 @@ export interface RunNameRequest {
 /** The run name for this invocation: the explicit one if there is one, otherwise the derived one. */
 export function resolveRunName(request: RunNameRequest): RunNameResult {
   const explicit = request.explicit;
-  return explicit === undefined || explicit.length === 0
+  return explicit === undefined
     ? defaultRunName(request.workflowReference)
     : validateRunName(explicit);
 }
@@ -163,12 +212,17 @@ export function runtimeRoot(repositoryPath: string): string {
   return join(repositoryPath, RUNTIME_DIRECTORY, RUN_DIRECTORY);
 }
 
-/** `<repo>/.awcli/run/<run>` — one run's own directory: state, record, lock, logs. */
-export function runDirectory(repositoryPath: string, runName: string): string {
+/**
+ * `<repo>/.awcli/run/<run>` — one run's own directory: state, record, lock, logs.
+ *
+ * Not exported: nothing outside this module needs it yet. AWCLI-08's record and AWCLI-09's state
+ * will, and can export it then — an export with no caller is a surface nobody has had to justify.
+ */
+function runDirectory(repositoryPath: string, runName: RunName): string {
   return join(runtimeRoot(repositoryPath), runName);
 }
 
 /** `<repo>/.awcli/run/<run>/lock` — the file whose existence means someone holds this name. */
-export function runLockPath(repositoryPath: string, runName: string): string {
+export function runLockPath(repositoryPath: string, runName: RunName): string {
   return join(runDirectory(repositoryPath, runName), "lock");
 }

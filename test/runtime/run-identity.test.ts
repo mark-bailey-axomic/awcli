@@ -6,6 +6,7 @@ import {
   runLockPath,
   runtimeRoot,
   validateRunName,
+  type RunName,
 } from "../../src/runtime/run-identity.js";
 
 describe("naming a run", () => {
@@ -63,6 +64,42 @@ describe("naming a run", () => {
     });
   });
 
+  /**
+   * Absent and empty are different. `--name ""` is almost always a shell variable that did not
+   * expand, and falling back to the derived default would silently send the run at whatever the
+   * workflow file happens to be called.
+   */
+  it("refuses an empty --name rather than falling back to the default", () => {
+    const result = resolveRunName({
+      explicit: "",
+      workflowReference: "./workflows/nightly-triage.ts",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.problem).toBe("empty");
+  });
+
+  it("still derives a default when --name was not passed at all", () => {
+    expect(
+      resolveRunName({ workflowReference: "./workflows/nightly-triage.ts" }),
+    ).toEqual({
+      ok: true,
+      name: "nightly-triage",
+    });
+  });
+
+  it.each([
+    ["Triage", "not-lowercase"],
+    ["nightly.lock", "git-reserved-suffix"],
+  ] as const)("refuses %j", (name, problem) => {
+    const result = validateRunName(name);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.problem).toBe(problem);
+    // The message says what to use instead, rather than only what is wrong.
+    expect(result.message.length).toBeGreaterThan(20);
+  });
+
   it("refuses an explicit name that would escape the runtime directory", () => {
     const result = resolveRunName({
       explicit: "../../etc",
@@ -117,15 +154,22 @@ describe("naming a run", () => {
   });
 });
 
+/** The only way to a branded name, which is the only thing `runLockPath` accepts. */
+function runName(name: string): RunName {
+  const result = validateRunName(name);
+  if (!result.ok) throw new Error(`test used an invalid run name: ${result.message}`);
+  return result.name;
+}
+
 describe("where a run's files live", () => {
   it("keeps every run under one runtime path, so one ignore line covers them all", () => {
     expect(runtimeRoot("/repo")).toBe("/repo/.awcli/run");
-    expect(runLockPath("/repo", "triage")).toBe("/repo/.awcli/run/triage/lock");
+    expect(runLockPath("/repo", runName("triage"))).toBe("/repo/.awcli/run/triage/lock");
   });
 
   it("gives differently named runs different lock files", () => {
-    expect(runLockPath("/repo", "triage")).not.toBe(
-      runLockPath("/repo", "release-notes"),
+    expect(runLockPath("/repo", runName("triage"))).not.toBe(
+      runLockPath("/repo", runName("release-notes")),
     );
   });
 });
