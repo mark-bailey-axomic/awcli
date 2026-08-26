@@ -21,7 +21,22 @@
 MG_SUITE=""
 MG_SUBJECTS=()
 MG_BACKUP_DIR=""
+MG_STASH=""
 MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-5000}"
+
+# Where a subject's pristine copy lives, as a path mirroring the subject's own.
+#
+# Not its basename. Review caught that: two subjects sharing a basename — `src/a/index.ts` and
+# `src/b/index.ts` — would have shared one backup, so the second `cp` would overwrite the first and
+# `mg_restore` would write one subject's contents over the other. No gate here has same-basename
+# subjects today, which is exactly why it was worth fixing: it is a trap set for whoever adds one,
+# in the one file whose job is to be trustworthy about restoring a tree it deliberately broke.
+#
+# Sets MG_STASH rather than echoing, so a path containing a space or a newline cannot be re-split by
+# a command substitution.
+mg_stash_path() {
+  MG_STASH="$MG_BACKUP_DIR/subjects/$1"
+}
 
 mutation_gate_init() {
   MG_SUITE="$1"
@@ -34,7 +49,9 @@ mutation_gate_init() {
       echo "FAIL: subject $file does not exist" >&2
       exit 1
     }
-    cp "$file" "$MG_BACKUP_DIR/$(basename "$file")"
+    mg_stash_path "$file"
+    mkdir -p "$(dirname "$MG_STASH")"
+    cp "$file" "$MG_STASH"
   done
 
   # INT and TERM as well as EXIT: this spends most of its run with tracked source files
@@ -56,7 +73,8 @@ mutation_gate_init() {
 mg_restore() {
   local file
   for file in "${MG_SUBJECTS[@]}"; do
-    cp "$MG_BACKUP_DIR/$(basename "$file")" "$file"
+    mg_stash_path "$file"
+    cp "$MG_STASH" "$file"
   done
 }
 

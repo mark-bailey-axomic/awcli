@@ -361,11 +361,25 @@ async function releaseRunLock(held: RunLockHandle): Promise<void> {
  */
 async function writeIfAbsent(path: string, contents: RunLockContents): Promise<boolean> {
   const staging = `${path}.staging.${randomUUID()}`;
-  await writeFile(staging, `${JSON.stringify(contents, undefined, 2)}\n`, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
+  try {
+    await writeFile(staging, `${JSON.stringify(contents, undefined, 2)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+  } catch (error) {
+    // `wx` creates the file and then writes to it, so a failure part-way through — ENOSPC, EIO —
+    // leaves an empty or half-written staging file behind with nobody to remove it. It would never
+    // be linked into place and never be read, but it would accumulate in the run's directory and be
+    // one more thing to explain to whoever is trying to work out why a lock is misbehaving.
+    //
+    // EEXIST is the one failure where the file must be left alone: it means something already
+    // holds that name, so it is not ours to delete. A UUID makes that essentially unreachable,
+    // which is the point of handling it rather than assuming it away.
+    if (!isErrno(error, "EEXIST")) await unlink(staging).catch(ignoreMissing);
+    throw error;
+  }
+
   try {
     await link(staging, path);
     return true;

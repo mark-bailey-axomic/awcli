@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 
 mutation_gate_init \
-  "test/runtime/run-lock.test.ts test/runtime/run-identity.test.ts test/runtime/process-probe.test.ts" \
+  "test/runtime/run-lock.test.ts test/runtime/run-identity.test.ts test/runtime/process-probe.test.ts test/runtime/run-lock-staging.test.ts" \
   src/runtime/run-lock.ts src/runtime/run-identity.ts src/runtime/process-probe.ts
 
 # ── Scenario: Two runs of the same name cannot overlap ───────────────────────────────────────
@@ -171,5 +171,11 @@ expect_red "a recycled-pid lock taken aside is still stale" src/runtime/run-lock
 # verdict is about a file that is no longer there, so reusing it reports the wrong reason and owner.
 expect_red "a reclamation reports the lock it actually removed" src/runtime/run-lock.ts \
   's/      reason: staleReasonFrom\(taken, takenLiveness\),\n      previousOwner: taken\.kind === "lock" \? taken\.contents\.owner : undefined,/      reason: judged.reason,\n      previousOwner: judged.read.kind === "lock" ? judged.read.contents.owner : undefined,/'
+
+# A staging write that fails part-way through — ENOSPC, EIO — creates the file and then fails, so
+# skipping the cleanup leaves a staging file nobody will ever link or read accumulating in the run's
+# directory. EEXIST is deliberately not cleaned: that file is not ours.
+expect_red "a failed staging write leaves nothing behind" src/runtime/run-lock.ts \
+  's/    if \(!isErrno\(error, "EEXIST"\)\) await unlink\(staging\)\.catch\(ignoreMissing\);\n    throw error;/    throw error;/'
 
 mutation_gate_finish "each run-lock criterion has a test that fails when it is broken"

@@ -129,6 +129,20 @@ Fixing the second of those exposed a reporting bug: the reclamation reused the c
 which on the mismatch path describes a file still on disk rather than the one removed. The removal
 now returns the verdict for what it actually took away.
 
+A fourth round found two more, both latent rather than reachable today:
+
+- **The staging write was outside its own cleanup.** `wx` creates the file and then writes to it, so
+  a failure part-way through — ENOSPC, EIO — left an empty staging file in the run's directory with
+  nothing to remove it. Never linked, never read, but one more thing to explain to whoever is
+  debugging a lock. EEXIST is deliberately still not cleaned: that file is not ours.
+- **The gate harness backed subjects up by basename.** Two subjects sharing one — `src/a/index.ts`
+  and `src/b/index.ts` — would have shared a backup, so restore would write one subject's contents
+  over the other. No gate has same-basename subjects today, which is why it was worth fixing: it is
+  a trap set for whoever adds the second one, in the file whose whole job is to be trustworthy
+  about restoring a tree it deliberately broke. `scripts/verify-mutation-gate.sh` now self-tests
+  backup and restore against same-basename and spaced paths, and I watched it fail against the
+  basename version.
+
 Also from review: the validated run name is branded, so an unvalidated string can no longer reach a
 path (`"../../../etc"` escaped, `""` collapsed every run onto one lock); names ending in `.lock` and
 names differing only by case are refused, both of which git or a case-insensitive filesystem would
