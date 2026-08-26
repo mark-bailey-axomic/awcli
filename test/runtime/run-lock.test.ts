@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { DisposalStack, withDisposal } from "../../src/runtime/disposal.js";
 import type {
@@ -531,6 +531,48 @@ describe("releasing on every exit path", () => {
 });
 
 /**
+ * The one claim in this module that no test here can reach.
+ *
+ * Three operator-facing messages say whether anything was changed, and one of them — the terminal
+ * "could not take the lock after N attempts" — needs three rounds of genuine contention to reach,
+ * which is not something this suite can stage. Review found that message asserting "Nothing has
+ * been changed" while a reclamation had already deleted a file, which is the same defect that was
+ * fixed in the other two messages a round earlier and missed here.
+ *
+ * So rather than claim a gate that does not exist, this asserts the structural property that makes
+ * the claim impossible to get wrong: the sentence lives in exactly one function, and every message
+ * goes through it. A fourth message added with its own hardcoded copy fails here.
+ */
+describe("every message that claims nothing changed", () => {
+  it("gets that claim from one place, so it cannot contradict a reclamation", async () => {
+    const source = await readFile(
+      new URL("../../src/runtime/run-lock.ts", import.meta.url),
+      "utf8",
+    );
+    // Comments stripped: this is about what the code says to an operator, and the prose above
+    // `changeNote` quotes the old wording while explaining why it was wrong.
+    const code = source.replace(/\/\*[^]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+    // "Nothing further has been changed" is deliberately not this claim — it appears in the one
+    // error that has already said what it changed — so the pattern does not match it.
+    const claim = /Nothing (?:else )?has been changed/g;
+    expect(code.match(claim)).toHaveLength(2);
+
+    const changeNote = /function changeNote\([^]*?\n}/.exec(code)?.[0] ?? "";
+    expect(changeNote).not.toBe("");
+    expect(changeNote.match(claim)).toHaveLength(2);
+
+    // And every message that can be issued after a reclamation takes the note rather than writing
+    // its own copy. Three of them: the two refusals, and the terminal failure — which review found
+    // hardcoding the claim while a reclamation had already deleted a file.
+    expect(code.match(/changeNote\(reclaimed\)/g)).toHaveLength(3);
+    expect(code).toMatch(
+      /after \$\{MAX_ATTEMPTS\} attempts[^`]*\$\{changeNote\(reclaimed\)\}/,
+    );
+  });
+});
+
+/**
  * Where the first version of this unit was wrong, and where its suite could not look.
  *
  * Every other test here is sequential, and both of the lock's interesting properties —
@@ -939,6 +981,43 @@ describe("refusing rather than guessing", () => {
       await rm(outside, { recursive: true, force: true });
     },
   );
+
+  /**
+   * The ancestor walk must inspect the repository's own `.awcli` and below, and nothing else.
+   *
+   * `--repo /repo/` — a trailing separator, which shell completion supplies — used to defeat the
+   * walk's stopping condition, because it compared against the repository path as a string and
+   * `/repo` never equals `/repo/`. The walk then carried on past the repository. This stages a
+   * symlink *above* the repository, so an implementation that walks out refuses a run it has no
+   * business refusing; the layout is derived forwards now, so there is no condition to get wrong.
+   */
+  it.each([
+    { label: "no trailing separator", suffix: "" },
+    { label: "a trailing separator", suffix: sep },
+  ])("ignores a symlink above the repository, given $label", async ({ suffix }) => {
+    const parent = await mkdtemp(join(tmpdir(), "awcli-above-"));
+    const real = join(parent, "real");
+    const viaLink = join(parent, "link");
+    await mkdir(join(real, "repo"), { recursive: true });
+    // `<parent>/link` is a symlink, and the repository is reached through it.
+    await symlink(real, viaLink);
+    const repositoryPath = join(viaLink, "repo") + suffix;
+
+    try {
+      const stack = new DisposalStack();
+      const outcome = await acquireRunLock(stack, {
+        repositoryPath,
+        runName: TRIAGE,
+        probe: fakeProbe(OPERATOR),
+      });
+
+      expect(outcome.ok).toBe(true);
+      expect(existsSync(runLockPath(repositoryPath, TRIAGE))).toBe(true);
+      await stack.unwind();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
 
   it("refuses a symlinked run directory", async () => {
     const repositoryPath = await repository();

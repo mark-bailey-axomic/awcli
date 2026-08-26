@@ -154,7 +154,7 @@ expect_red "the acquisition loop is bounded on every path" src/runtime/run-lock.
 # symlink at any level, so a committed symlink at `.awcli` or `.awcli/run` put the lock outside the
 # repository and the check saw a real directory at the level it inspected.
 expect_red "a symlink above the run directory is refused too" src/runtime/run-lock.ts \
-  's/  for \(const ancestor of ancestors\) \{/  for (const ancestor of ancestors.slice(-1)) {/'
+  's/for \(const ancestor of runDirectoryAncestors\(repositoryPath, runName\)\) \{/for (const ancestor of runDirectoryAncestors(repositoryPath, runName).slice(-1)) {/'
 
 # The re-judge inside a reclamation, looser than the acquisition path in both directions at once: a
 # lock from another host counted as stale, so a reclamation that took it aside deleted it — while
@@ -177,5 +177,16 @@ expect_red "a reclamation reports the lock it actually removed" src/runtime/run-
 # directory. EEXIST is deliberately not cleaned: that file is not ours.
 expect_red "a failed staging write leaves nothing behind" src/runtime/run-lock.ts \
   's/    if \(!isErrno\(error, "EEXIST"\)\) await unlink\(staging\)\.catch\(ignoreMissing\);\n    throw error;/    throw error;/'
+
+# The ancestor walk used to stop by comparing against the repository path as a string, which is
+# wrong for the same directory spelled differently: `--repo /repo/` never equals `/repo`, so the
+# walk carried on past the repository and inspected paths above it.
+expect_red "the ancestor walk stays inside the repository" src/runtime/run-lock.ts \
+  's/  for \(const ancestor of runDirectoryAncestors\(repositoryPath, runName\)\) \{/  const runDir = dirname(runLockPath(repositoryPath, runName));\n  const walked: string[] = [];\n  for (let c = runDir; c !== repositoryPath; c = dirname(c)) {\n    walked.unshift(c);\n    if (dirname(c) === c) break;\n  }\n  for (const ancestor of walked) {/'
+
+# The terminal failure claimed "Nothing has been changed" while a reclamation may already have
+# deleted a file. The same defect as the two refusal messages a round earlier, missed here.
+expect_red "no message hardcodes a claim that nothing changed" src/runtime/run-lock.ts \
+  's/processes\. \$\{changeNote\(reclaimed\)\} Try again\.`/processes. Nothing has been changed; try again.`/'
 
 mutation_gate_finish "each run-lock criterion has a test that fails when it is broken"

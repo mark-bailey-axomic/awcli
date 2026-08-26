@@ -143,6 +143,23 @@ A fourth round found two more, both latent rather than reachable today:
   backup and restore against same-basename and spaced paths, and I watched it fail against the
   basename version.
 
+A fifth round found two more in the code the fourth round had just added:
+
+- **The ancestor walk stopped by string equality against the repository path.** `--repo /repo/` — a
+  trailing separator, which shell completion supplies — never equals `/repo`, so the walk carried on
+  past the repository and inspected paths above it, which its own comment said must never happen.
+  The list is now derived forwards from the layout by `runDirectoryAncestors`, so there is no
+  stopping condition to get wrong. The regression test reaches the repository through a symlinked
+  parent, so an implementation that walks out refuses a run it has no business refusing.
+- **The terminal "could not take the lock after N attempts" claimed nothing had changed** while a
+  reclamation may already have deleted a file — the same defect fixed in the two refusal messages a
+  round earlier, and missed here.
+
+That second one cannot be reached by this suite: it needs three rounds of genuine contention. Rather
+than tick a criterion with no gate behind it, the claim now lives in exactly one function and a test
+asserts that structurally — a fourth message with its own hardcoded copy fails it. The distinction
+is deliberate: the check is over the shape of the code, not over the behaviour, and it says so.
+
 Also from review: the validated run name is branded, so an unvalidated string can no longer reach a
 path (`"../../../etc"` escaped, `""` collapsed every run onto one lock); names ending in `.lock` and
 names differing only by case are refused, both of which git or a case-insensitive filesystem would

@@ -19,7 +19,7 @@ import {
   type ProcessIdentity,
   type ProcessProbe,
 } from "./process-probe.js";
-import { runLockPath, type RunName } from "./run-identity.js";
+import { runDirectoryAncestors, runLockPath, type RunName } from "./run-identity.js";
 
 /**
  * The exclusive lock a named run holds while it is in progress.
@@ -282,7 +282,7 @@ export async function acquireRunLock(
       }
 
       throw new Error(
-        `Could not take the lock for the "${request.runName}" run after ${MAX_ATTEMPTS} attempts: it is being taken and released repeatedly by other processes. Nothing has been changed; try again.`,
+        `Could not take the lock for the "${request.runName}" run after ${MAX_ATTEMPTS} attempts: it is being taken and released repeatedly by other processes. ${changeNote(reclaimed)} Try again.`,
       );
     },
     release: async (held) => {
@@ -423,23 +423,20 @@ async function refuseSymlink(path: string, what: string): Promise<void> {
 /**
  * Refuses a symlink anywhere between the repository root and the run directory.
  *
- * Walked from the outside in, and it stops at the first component that does not exist: nothing can
- * be below a path that is not there, and `mkdir` will create the rest as real directories.
+ * Outside in, stopping at the first component that does not exist: nothing can be below a path that
+ * is not there, and `mkdir` will create the rest as real directories.
+ *
+ * The list comes from `runDirectoryAncestors`, which derives it forwards from the layout rather
+ * than walking back up from the lock. Walking up needs a stopping condition, and comparing against
+ * the repository path as a string got it wrong for `--repo /repo/` — see that function. Only the
+ * repository's own `.awcli` and below are awcli's to inspect; how the operator spelled the path to
+ * the repository, and what lies above it, are not.
  */
 async function refuseSymlinkedAncestors(
   repositoryPath: string,
   runName: RunName,
 ): Promise<void> {
-  const runDir = dirname(runLockPath(repositoryPath, runName));
-  const ancestors: string[] = [];
-  for (let current = runDir; current !== repositoryPath; current = dirname(current)) {
-    ancestors.unshift(current);
-    // Defensive: a `runLockPath` that ever stopped being under the repository would otherwise walk
-    // to the filesystem root. Nothing above the repository is ours to inspect.
-    if (dirname(current) === current) break;
-  }
-
-  for (const ancestor of ancestors) {
+  for (const ancestor of runDirectoryAncestors(repositoryPath, runName)) {
     const stats = await lstatOrMissing(ancestor);
     if (stats === undefined) return;
     if (stats.isSymbolicLink()) {

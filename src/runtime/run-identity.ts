@@ -222,6 +222,27 @@ function runDirectory(repositoryPath: string, runName: RunName): string {
   return join(runtimeRoot(repositoryPath), runName);
 }
 
+/**
+ * The directories between the repository root and a run's own directory, outermost first.
+ *
+ * Derived from the same constants that build the lock's path, rather than by walking back up from
+ * it. Walking up needs a stopping condition, and the obvious one — string equality against the
+ * repository path — is wrong for any path that is the same directory spelled differently. Review
+ * caught it: `--repo /repo/` (a trailing separator, which shell completion supplies) never matched
+ * `/repo`, so the walk carried on past the repository and inspected `/repo` and `/`. Deriving the
+ * list forwards has no stopping condition to get wrong.
+ */
+export function runDirectoryAncestors(
+  repositoryPath: string,
+  runName: RunName,
+): readonly string[] {
+  return [
+    join(repositoryPath, RUNTIME_DIRECTORY),
+    runtimeRoot(repositoryPath),
+    runDirectory(repositoryPath, runName),
+  ];
+}
+
 /** `<repo>/.awcli/run/<run>/lock` — the file whose existence means someone holds this name. */
 export function runLockPath(repositoryPath: string, runName: RunName): string {
   return join(runDirectory(repositoryPath, runName), "lock");
