@@ -378,9 +378,7 @@ tickets:
     points: 2
     work_breakdown: null  # no unit: PR #8 merged round 4's surface decisions without their code
     depends_on: [AWCLI-01]
-    # in-review: on branch feat/awcli-26-land-frozen-surface; every criterion is confirmed by a
-    # gate that runs in the branch, so the outstanding step is review rather than build.
-    status: in-review
+    status: done
 
 plans: []
 

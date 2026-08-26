@@ -1,6 +1,6 @@
 # AWCLI-26 — [AWCLI] Land the frozen context surface's final shape, and prove it ships
 
-**Points:** 2 · **Source:** new — completes AWCLI-01's review round 4 (see Context) · **Status:** In Review
+**Points:** 2 · **Source:** new — completes AWCLI-01's review round 4 (see Context) · **Status:** Done
 
 ## Problem / Goal
 
