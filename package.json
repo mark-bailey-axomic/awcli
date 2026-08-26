@@ -11,15 +11,19 @@
   },
   "scripts": {
     "prepare": "npm run build",
-    "build": "tsup",
+    "check:contract": "tsc --noEmit",
+    "build": "npm run check:contract && tsup",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify:global": "bash scripts/verify-global-install.sh",
-    "check": "npm run format:check && npm run typecheck && npm run test && npm run build",
-    "verify:typecheck-gate": "bash scripts/verify-typecheck-gate.sh"
+    "check": "npm run format:check && npm run test && npm run build",
+    "check:gates": "npm run verify:typecheck-gate && npm run verify:contract-gate && npm run verify:spec-invariants",
+    "verify:typecheck-gate": "bash scripts/verify-typecheck-gate.sh",
+    "verify:contract-gate": "bash scripts/verify-contract-gate.sh",
+    "verify:spec-invariants": "bash scripts/verify-spec-invariants.sh"
   },
   "files": [
     "dist"

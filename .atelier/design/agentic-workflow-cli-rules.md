@@ -1,10 +1,16 @@
 ---
 feature: agentic-workflow-cli
 artifact: business-rules
-status: Approved
+status: Amended since approval — amendments pending PM re-approval
+approved: 2026-08-24
+approved_baseline: 37 rules
+amended: 2026-08-26
+amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4
+approved_unchanged: 31 rules
+pending_reapproval: 9 rules (BR-038, BR-039, BR-040 added; BR-006, BR-008, BR-012, BR-014, BR-025, BR-028 rewritten)
 date: 2026-08-24
 source: .atelier/context/agentic-workflow-cli-prd-draft.md
-rules: 37
+rules: 40
 ---
 
 # awcli — Business Rules
@@ -81,14 +87,16 @@ function, before creating any run state.
 **Exceptions.** None.
 
 ### BR-006 — Declared profile fields are required; everything else is free-form
-**Statement.** When a workflow reads a profile field awcli defines, a missing value fails fast naming
-the field. Values in the profile's free-form area carry no such guarantee.
+**Statement.** Every profile field awcli defines is required in a repository's configuration. The gate
+chain refuses the run at startup, naming each field the configuration lacks, before the lock or any
+working copy — whether or not a workflow would have read it. Values in the profile's free-form area
+carry no such guarantee.
 **Rationale.** Portable workflows depend on a small, dependable set of facts; anything beyond it is
 the operator's own convention and cannot be validated.
 **Actors.** Operator, Workflow.
 **Exceptions.** Free-form values are returned as-is or absent.
-**Example.** A portable workflow reading the test command against a repo that declares none fails at
-startup naming `commands.test` — not mid-loop.
+**Example.** A repo that declares no test command is refused at startup naming `commands.test` — not
+mid-loop, and not only when some workflow happens to read it.
 
 ### BR-007 — A structured-output request must be asked for in the prompt
 **Statement.** When a workflow requests tagged output, awcli verifies the resolved prompt actually
@@ -98,13 +106,29 @@ all the work.
 **Actors.** Workflow.
 **Exceptions.** None.
 
-### BR-008 — Shared state must be storable
+### BR-008 — Shared state must be storable, and each surface is checked where its value lands
 **Statement.** A value the workflow puts into shared state must be storable as plain data. A value
-that cannot be stored is rejected at the moment it is set, naming the offending key.
+that cannot be stored is rejected at the moment it is set, naming the offending key. The same
+requirement holds for a value the workflow logs, and it is checked in a different place and answered
+differently: a log field is checked as the line is written down, and a field that cannot be written
+down is recorded as unrepresentable — the line is still written, that field is named, and the run
+does not fail for it.
 **Rationale.** State crosses iterations and process restarts; a live handle cannot. Failing at the
-assignment points at the line that caused it.
-**Actors.** Workflow.
-**Exceptions.** None.
+assignment points at the line that caused it. A log field reaches disk too, so the same requirement
+applies to it — but a log is the record of what happened, and refusing to keep one is worse than
+keeping it with a named hole in it, which is why this is the one place the requirement degrades
+rather than refuses. Refusing a log field where it is passed would also refuse awcli's own values: a
+command's result, a commit, the run's arguments are all shapes awcli hands the workflow, and none of
+them can be logged under a check that admits only plain data written out by hand. A check that makes
+the ordinary case impossible is not paid for by what it catches.
+**Actors.** Workflow, awcli.
+**Exceptions.** A log field may be absent where a state value may not: the most ordinary thing to log
+is a number the agent never reported or an argument nobody passed, and refusing those buys nothing.
+And because a log field is not decided until the line is written, a workflow that wants to know
+sooner asks awcli whether a value is storable and decides for itself.
+**Example.** A workflow assigning a live handle into shared state is refused at that line, naming the
+key. The same handle passed as a log field leaves one field marked unrepresentable in an otherwise
+complete log line, and the run continues.
 
 ### BR-009 — A declared state shape is checked on load
 **Statement.** When a workflow declares the shape of its shared state, awcli validates the stored
@@ -147,16 +171,30 @@ run is still a running run.
 **Example.** A nightly run is killed by a reboot; the next night's run reclaims the lock, noting that
 it did so.
 
-### BR-012 — Only the workflow body may write shared state
-**Statement.** Shared state is writable from the workflow's own body and read-only everywhere inside
-an agent or container scope. A write from inside a parallel branch fails immediately, naming the
-correct pattern.
-**Rationale.** This is the single-writer guarantee made structural. A lost update inside a fan-out
-is invisible and surfaces as inexplicably-wrong state hours later.
+### BR-012 — Only the workflow body may write shared state, and not while its own agents are running
+**Statement.** Shared state is writable from the workflow's body, and only while that body has no
+agent call of its own still running. A `sandbox()` scope hands back a context whose state cannot be
+written at all. A write made while agents this body started are still in flight — which is what a
+write from inside a parallel branch is — is refused immediately, naming the pattern to use instead:
+let the branch return its result, and record it once it has.
+**Rationale.** This is the single-writer guarantee made enforceable, and it takes two mechanisms
+because the contract gives the two scopes different shapes. `sandbox()` returns a scope, so its
+read-only state is structural from the contract onwards and a write there does not compile.
+`agent()` returns a result rather than a scope, so a fan-out branch is the body's own code holding
+the body's own context: there is nothing there to freeze, and a branch write cannot be told from a
+body write by who made it. A rule that named an agent scope would name something the contract does
+not give. What does tell them apart is *when* — awcli owns the loop (BR-017) and therefore knows
+which agent calls are outstanding, so the in-flight window is a test it can actually apply. AWCLI-10
+builds it. A lost update inside a fan-out is invisible and surfaces as inexplicably-wrong state
+hours later, which is why an enforceable approximation beats an unenforceable exactness.
 **Actors.** Workflow.
-**Exceptions.** None. Results travel out of a branch as return values; the body records them.
-**Example.** Four parallel branches each try to append their result to shared state: each throws at
-once with the pattern to use instead.
+**Exceptions.** The window is deliberately blunt: a body write while any agent call it started is
+still running is refused even when nothing was fanning out and the write would have been safe. A
+refusal naming the pattern costs a line of rewriting; a lost update costs a night. Reads are never
+refused — the window closes writes only. Results travel out of a branch as return values, and the
+body records them once the branch has returned.
+**Example.** Four parallel branches each try to append their result to shared state: each is refused
+at once with the pattern to use instead, and the body records all four after awaiting them.
 
 ### BR-013 — Parallel agents never share a working copy
 **Statement.** Concurrently-running agents each receive their own working copy on their own branch.
@@ -171,11 +209,14 @@ trustworthy.
 
 ### BR-014 — The default is an isolated working copy, never the live tree
 **Statement.** With no isolation requested, an agent works in a fresh working copy on its own branch.
-Operating on the operator's live checkout requires an explicit opt-in.
+Operating on the operator's live checkout requires an explicit opt-in from the operator on the
+command line. A workflow cannot request it, and nothing a workflow passes selects the workspace.
 **Rationale.** An unattended loop must never be able to damage uncommitted work or move the
-operator's branch.
-**Actors.** Operator, Workflow, Agent.
-**Exceptions.** The explicit opt-in.
+operator's branch. The person whose uncommitted work is at stake is the one who has to ask — and
+keeping the choice off the workflow's surface is what keeps one workflow file portable across both
+modes.
+**Actors.** Operator, awcli, Agent.
+**Exceptions.** The operator's explicit opt-in on the command line.
 
 ### BR-036 — Branches are named predictably, kept by default, and collected on request
 **Statement.** Each working copy's branch is named from its run and its slot within that run, so
@@ -200,12 +241,104 @@ invites the operator to assume a boundary that does not exist.
 **Exceptions.** None.
 **Example.** A log line reads *"isolation: worktree — host filesystem and network reachable"*.
 
+### BR-038 — File access resolves within the working copy's tree, and anything else is refused
+**Statement.** A path the workflow reads or writes resolves against the working copy the iteration is
+operating in, never against the directory awcli was started from. What it may resolve to is that
+working copy's *tree* and not its git administrative area — the `.git` directory in a live checkout,
+the `.git` pointer file in a worktree — which lies inside the working copy and is refused anyway. A
+path that leaves the tree, by climbing out of it, by being given from the root of the machine, or by
+following a link whose target is outside it, is refused on the same terms: naming the offending path
+and saying where it went, rather than resolved.
+**Rationale.** This is hygiene, not a boundary. Only a container is a boundary (BR-015), and reaching
+outside the working copy deliberately is what running a command is for (BR-040). The refusal exists
+so that a mistyped `../` fails loudly instead of silently reading or writing a file nobody scoped
+for this run — the same uncommitted work BR-014 keeps an agent out of by default. The administrative
+area is carved out for that reason and no stronger one: a hook written there is run by the next
+commit awcli makes, and on the worktree default the `.git` entry is a single line naming which
+repository this working copy belongs to, so writing it repoints the working copy at a different
+repository without any path having left anything. Both are ways for a careless path to reach past
+the run while appearing to have stayed inside it.
+**Actors.** Workflow, awcli.
+**Exceptions.** None. An escape is never quietly clamped to the working copy root: a path that
+resolved to something other than what the workflow asked for is worse than a refusal. And the
+carve-out is not a boundary around the administrative area — a command the workflow runs may still
+write anything there, on BR-040's terms.
+**Example.** A workflow reading `notes.md` reads the one in its own working copy; the same workflow
+reading `../notes.md` is refused, naming the path, and writing a commit hook into the working copy's
+own git administrative area is refused too — while a command it runs may still read or write
+anything on the machine.
+
 ### BR-016 — Credentials are lent, never copied
 **Statement.** Agent credentials reach a container as a read-only mount for the life of the run, and
 are never written into an image.
 **Rationale.** An image outlives the run and can be shared or pushed; a mount cannot.
 **Actors.** awcli.
 **Exceptions.** None.
+
+### BR-039 — The environment answers one name at a time, and answers as unset for what awcli set
+**Statement.** awcli sets variables of its own for some runs — the agent credentials it lends a
+container being the ones that matter (BR-016). The workflow is not handed the environment as a
+collection. It asks by name: whether a name is set, and what that name holds. Exactly the variables
+awcli set for *this* run answer as not set, and nothing else does. The test is what awcli set for
+this run, which awcli knows at the moment it sets it, so membership is decidable and no judgement
+about what looks like a credential enters into it. Every name the operator's own environment already
+carried answers with its value — including an agent API key the operator set themselves, which awcli
+did not supply and does not withhold. On the host execution target awcli often sets nothing at all,
+so the set that answers as unset may be empty, and every name then answers exactly as the operator's
+own environment holds it. A name awcli withheld is indistinguishable from one that was never set.
+**Rationale.** The reason to withhold anything is BR-016: what awcli sets for the run is lent for the
+life of the run and never copied, and answering with it would copy it into every prompt and every run
+record that reads the answer. But "the credentials awcli supplies" cannot be the test, because an
+inherited key and a lent key are the same name — a rule stated that way does not decide the one case
+it exists for. "What awcli set for this run" does decide it, and it is the only version awcli can
+actually apply.
+Asking by name rather than being handed a collection is the other half, and it is about what the
+easy thing to write is. What survives the subtraction is the operator's own environment, which may
+hold secrets of its own that awcli neither set nor knows about — so the shape that matters is the one
+where reading a known variable is one call and forwarding everything is not available at all. Given
+the whole environment in hand, writing it into a prompt or a log line is a single expression and
+nothing about it looks wrong; a rule can advise against that and be ignored by every workflow nobody
+reviewed. An accessor makes bulk forwarding something a workflow has to set out to do, name by name.
+**Actors.** awcli, Workflow.
+**Exceptions.** None to the subtraction, but it is hygiene, not a control, and four things remain
+true beside it. The set may be empty — on the host target usually is — and an empty subtraction is
+still the rule satisfied, not a failure to apply it; awcli claims nothing was withheld when nothing
+was. Asking by name discourages bulk forwarding and prevents nothing: a workflow that names the
+variables it wants can still forward every one of them, and awcli does not describe the accessor as
+protection. A command the workflow runs sees the environment its execution target actually has,
+credentials included; nothing is removed from the machine (BR-040). And subtraction is not redaction:
+this withholds what awcli set by construction, whereas redacting values that match known secret
+shapes is a net cast over values wherever they are written — a separate mechanism no rule here
+states, carried by the logging work behind BR-025 and BR-028 (AWCLI-21).
+**Example.** A container run lends the agent a credential under a name awcli sets; a workflow asking
+for that name is told it is not set, asking for its project's own variables gets their values, and
+asking for the API key the operator had set in their own shell gets it. The same workflow on the host
+target gets, for every name it asks, exactly what the environment it was started from held. Neither
+workflow can ask for the environment itself.
+
+### BR-040 — On the host target a command runs with the operator's own reach, and awcli says so
+**Statement.** The default execution target is the machine awcli is running on. A command the
+workflow runs there — including a command the repository itself declares — runs as the operator,
+with the operator's own reach: the filesystem beyond the working copy, the network, and whatever
+credentials that machine holds. awcli names the target a command actually ran on and never
+describes the default one as containment. Asking for a container is the only thing that changes
+what a command can reach (BR-004, BR-015). Giving a command as a list of arguments settles which
+fragment of it can rewrite it — each element stays one argument however it is spelled — and settles
+nothing at all about its reach.
+**Rationale.** Working-copy confinement (BR-038) is hygiene over the paths a workflow names; it says
+nothing about what a command does once it is running, and reaching past the working copy on purpose
+is what running a command is for. A repository's declared command is the sharpest case: it is
+untrusted whole and its first word is the binary to run, so no way of passing it holds it back.
+Saying that plainly is the only thing that stops an operator inferring a boundary from a
+confinement that is not one — the same honesty BR-015 buys by refusing to call a worktree a
+sandbox.
+**Actors.** Operator, Workflow, awcli.
+**Exceptions.** None to the reach on this target. A workflow may bound how *long* a command runs,
+never what it may touch; only a container narrows that, and BR-004 forbids granting a container
+request quietly weaker than it was asked.
+**Example.** A run's output reads *"exec: host — the wider filesystem, the network and this machine's
+credentials are reachable"*, and the repository's declared test command runs on exactly those terms.
+The same call made inside a container reports the container instead.
 
 ---
 
@@ -310,13 +443,29 @@ iteration 4."*
 
 ## Category 7 — Observability and attribution
 
-### BR-025 — Every run is attributable
+### BR-025 — Every run is attributable, and the workflow cannot replace what writes the record
 **Statement.** Each run's record and log header states the awcli version, the agent tool's version,
-and the repository position it started from.
-**Rationale.** An unattended failure discovered the next morning must be explicable without
-guesswork about what was installed.
-**Actors.** Operator.
-**Exceptions.** None.
+and the repository position it started from. What writes that record is not the workflow's to
+substitute: every function awcli hands the workflow — the logging calls among them — is fixed at the
+moment the workflow receives it, so assigning over one is refused rather than taken.
+**Rationale.** An unattended failure discovered the next morning must be explicable without guesswork
+about what was installed. But the record is written through functions the workflow is holding, and a
+workflow is the operator's own TypeScript with its own imports. If those functions were assignable,
+a workflow — or a module it imported without reading — could put its own function over the one that
+writes the log, and the run would agree with itself while recording nothing. A record its own
+subject can rewrite is not attribution. The same fixity is what stops a `sandbox()` scope's members
+being swapped for the body's after the scope has been made: the working copy a path resolves against
+(BR-038) and the target a command runs on (BR-040) are settled when the scope is constructed, and a
+call that reports the wrong one is worse than a call that refuses.
+**Actors.** Operator, Workflow, awcli.
+**Exceptions.** This is hygiene against accident and against a careless import, not a boundary. A
+workflow runs in the same process as awcli, so a workflow whose author sets out to defeat its own
+audit trail can: nothing here makes the record proof against the person who wrote the workflow, and
+it is not offered as a control over one. Only a container is a boundary (BR-015). What it does buy is
+that no member is ever replaced by accident, or as the side effect of an import nobody read.
+**Example.** A workflow that assigns its own function over the one awcli gave it to log with is
+refused at that assignment, and the run's record still states the versions and the repository
+position it started from.
 
 ### BR-026 — Optional detail degrades loudly, exactly once
 **Statement.** When awcli cannot interpret an agent's detailed output, it warns once and continues
@@ -340,7 +489,9 @@ summary.
 **Rationale.** Four parallel agents interleaved on one terminal is unreadable, and the detail is
 exactly what is needed after the fact.
 **Actors.** Operator.
-**Exceptions.** None.
+**Exceptions.** None to the per-agent log itself. A field awcli cannot write down costs that field
+and not the line or the run (BR-008), and the calls that write the log are not the workflow's to
+replace (BR-025).
 
 ---
 
@@ -400,6 +551,66 @@ it corrupts the state of the run it is rehearsing.
 **Actors.** Operator, Workflow.
 **Exceptions.** It still creates a working copy, so that anything derived from repository history
 behaves as it will in earnest.
+
+---
+
+## Amendments since approval
+
+This file was approved on **2026-08-24** with **37 rules**, against a feature file of **60
+scenarios**. It now carries **40 rules** and **78 scenarios**. Everything in the table below was
+added or rewritten *after* that approval, during review of PR #8 (AWCLI-01, freezing the `ctx`
+contract), and **none of it has been through a PM approval gate**. The front matter says so rather
+than continuing to assert an unqualified approval. This section exists so that a reader can tell
+"the spec was wrong" from "the spec was bent" without reconstructing it from six commits.
+
+Three review rounds are referenced, and they did different kinds of work. *Run 2* reconciled the
+artifacts against the frozen declaration in `src/contract/awcli.d.ts`. *Run 3* found what run 2's own
+amendments had left underdetermined. *Run 4* did three things: it asked run 3's question of the one
+remaining scope factory and found the answer was a ticket rather than a rule; it corrected ADR-0005,
+which still asserted the model BR-012's run-3 rewrite had retracted; and it took three decisions
+about the frozen surface before merge, each of which needed a rule to state it — every function
+member becoming one a workflow cannot assign over, log field values widening, and `ctx.env` becoming
+an accessor. Run 4 therefore rewrote four rules of its own and moved the re-approval scope, which
+the two paragraphs above and the table below now account for.
+
+| Date | Change | Driven by |
+|---|---|---|
+| 2026-08-25 | **BR-006 widened.** Statement and example rewritten: every declared profile field is required in a repository's configuration, and the run is refused at startup naming what is missing, before the lock or any working copy, whether or not a workflow would have read it. Previously the refusal fired when a workflow *read* a missing field. | Run 2. The frozen declaration asserted the wider rule while this file asserted the narrower one. |
+| 2026-08-25 | **BR-006 carried by a scenario.** Added *A missing profile field is refused even when no workflow reads it*. AWCLI-06 restated to match, and AWCLI-22 given the `awcli init` five-fields requirement the TDD already assumed. | Run 3. The widened half had no scenario, and the only ticket that could have written the five fields did not require it. |
+| 2026-08-25 | **BR-012 split, then given a mechanism.** Run 2 added the phasing note: only the `sandbox()` half is structural. Run 3 rewrote the statement, rationale and exceptions around the mechanism that makes the rest enforceable — shared state is writable from the body only while it has no agent call of its own still running. Added *A write while the body's own agents are still running is refused*; AWCLI-10 reworked and retitled. | Run 3. The split left the `agent()` half naming no mechanism, and AWCLI-10's criteria still presupposed an agent scope the split said does not exist. |
+| 2026-08-25 | **BR-014 rewritten.** Statement, rationale, actors and exceptions: the live-checkout opt-in is the operator's, on the command line; a workflow cannot request it and nothing a workflow passes selects the workspace. Scenario *Working on the live checkout requires asking for it* rewritten with it. | Run 2. The declaration kept the choice off the workflow surface while this rule let a workflow opt in. |
+| 2026-08-25 | **BR-038 added, then narrowed.** Run 2 added it, with five scenarios, to govern `ctx.fs` — one of two context members the design gave no rule and no scenario. Run 3 narrowed confinement from the working copy to the working *tree*, carving out the git administrative area on both layouts, and added a sixth scenario. | Run 3. As first written, `.git/hooks/pre-commit` was inside the confinement and ran on the next commit; on the worktree default the `.git` pointer file was inside it too, so writing it repointed the working copy at another repository. |
+| 2026-08-25 | **BR-039 added, then rewritten.** Run 2 added it, with three scenarios, to govern `ctx.env` — the other unowned member. Run 3 rewrote it around a decidable test: the variables awcli set *for this run*, not "the credentials awcli itself supplies". Two of those three scenarios rewritten, a fourth added for the empty case, AWCLI-24 reconciled throughout. | Run 3. "The credentials awcli supplies" had no membership test — an inherited API key was the subject of both scenarios at once — and on the host target the subtraction was vacuous, so the first scenario's Given could not be established. |
+| 2026-08-25 | **BR-040 added,** with three scenarios, and AWCLI-25 created to build the member. | Run 3. `ctx.exec`'s default target — a command run on the host — was owned by no unit: AWCLI-19 is the container target in every requirement it carries, and AWCLI-23 named it as the builder of `ctx.exec` itself. Third instance of the class of gap BR-038 and BR-039 closed. |
+| 2026-08-25 | **ADR-0003 corrected.** Its claim that `liveTree × container` is "excluded by construction" and "unrepresentable" was softened: two independent closed unions can name that cell, so the exclusion is a property of what awcli composes, not of the type. The two-axis decision and the frozen surface stand; no rule text changed. | Run 2. |
+| 2026-08-26 | **BR-025 rewritten, BR-028 amended.** Every function member of the context surface becomes one a workflow cannot assign over. BR-025's statement now says what makes the record unforgeable — the calls that write it are fixed at the moment the workflow receives them — and its rationale says why that is worth a change to the frozen surface: a workflow is the operator's own TypeScript with its own imports, and a module it never read could otherwise put its own function over `log.info` and leave the run agreeing with itself while recording nothing. The same fixity keeps a `sandbox()` scope's members from being swapped for the body's after the scope is made (BR-038, BR-040). Exceptions say plainly that this is hygiene and not a boundary: the workflow shares awcli's process, so an author who sets out to defeat their own audit trail can. BR-028 gains a cross-reference. Added *A workflow cannot put its own function over the one that writes the record*; AWCLI-01 requires it and carries it. | Run 4. BR-025 and BR-028 implied an unforgeable record and nothing made it one. |
+| 2026-08-26 | **BR-008 rewritten.** Log field values widen to accept anything, so the compile-time refusal that used to sit on them is gone and the rule must say where it now applies: shared state is checked at the assignment that set it, a log field when the line is written down. A field that will not serialise is named as unrepresentable and costs neither the line nor the run — the one place this requirement degrades rather than refuses, because a log is the record of what happened. What forced the widening is that the old field type refused awcli's own return shapes: an interface gets no implicit index signature, so a command's result, a commit and the run's arguments could not be logged at all without being restated by hand. The plain-data requirement on shared state is unchanged. Added *A log field that cannot be written down costs the field, not the run*; AWCLI-21 requires it and carries it. | Run 4. The rule stated one check and the surface had two, one of which refused the ordinary case. |
+| 2026-08-26 | **BR-039 rewritten again.** `ctx.env` loses its index signature for a get/has accessor, so the rule stops describing a record handed over and describes what asking by name answers. The decidable test is untouched — the variables awcli set for *this* run, known at the moment it sets them. What changes is the default: with the whole environment in hand, forwarding it into a prompt or a log line is one expression that looks like nothing in particular, and the rule could only advise against it — the more so now that log fields accept anything, which removes the last thing that objected to `ctx.log.info("env", ctx.env)`. Exceptions say the accessor is a shape and not a boundary: a workflow that names its variables can still forward every one. All three remaining record-shaped scenarios rewritten, one renamed with them, and *The environment answers by name and is never handed over whole* added. AWCLI-24 rewritten throughout, including a constraint against adding an enumerating member later. | Run 4. A rule that only advises is a rule a workflow nobody reviewed will not follow. |
+| 2026-08-26 | **ADR-0005 corrected.** Its Decision and Decision Rationale still said child scopes receive a frozen view of shared state — the model BR-012's run-3 rewrite retracted. `agent()` returns a result and not a scope, so there is no child view to freeze, and the fan-out half of the rule turns on a time window instead. Amended in place the way ADR-0003 was: the Decision states both mechanisms, the Rationale says plainly which claim was wrong and why the enforceable substitute is blunt, and the differing sharpness of the two refusals — plus the reads the window does not close — are recorded under Consequences/Negative. Loop ownership, write-through and the single writer all stand; no rule text changed. | Run 4. AWCLI-10 would otherwise have been built from an ADR contradicting the rule it implements. |
+| 2026-08-25 | **Counts and index reconciled.** `rules:` here, `requirements.rules.count` and `requirements.scenarios.count` in the manifest, the manifest's ticket list, and `.atelier/tickets/README.md`'s totals all moved with the above — leaving 40 rules, 75 scenarios, 26 tickets and 65 points *at the end of run 3*. Those four are a snapshot of that round, not the current totals; the last row of this table carries those. | Run 3. The manifest's own `updated` date had not moved across three commits that changed what it describes. |
+| 2026-08-25 | **No rule added for `ctx.sandbox`, and that is the finding.** Run 3's question — which unit builds this member — was put to the last unexamined one. `ctx.sandbox` is a scope factory, and AWCLI-19 required running *in* a container but never building the `Scope` that hands one out. Unlike BR-038, BR-039 and BR-040, nothing behavioural was missing: BR-004, BR-012, BR-015, BR-016, BR-021 and BR-036 already state everything the scope does, and WB-11's Contracts column already named `ctx.sandbox`. So the fix is entirely in the tickets — AWCLI-19 widened to own the member end to end and re-estimated 2 → 3, AWCLI-10 given the AWCLI-19 dependency its `sandbox()` criteria always had. **No rule and no scenario changed; the counts stay at 40 and 75.** Ticket totals move to 26 tickets, 66 points. | Run 4. Fourth and last instance of the class of gap BR-038 opened, and the first that a rule would have been the wrong instrument for. |
+| 2026-08-26 | **Counts audited, not just reconciled.** Every number in this section was checked against what the artifacts contain, and four were wrong. The re-approval paragraph said *four* rules rewritten — the fourth was BR-038 and BR-039's own second pass, which rewrites rules added in this same PR and already counted as added; three approved rules were rewritten in rounds 2 and 3 (BR-006, BR-012, BR-014), and round 4 rewrote three more (BR-008, BR-025, BR-028). It said *three* scenarios rewritten as though all three left the approved sixty; only one did (*Working on the live checkout requires asking for it*), the other two being BR-039 scenarios added in run 2. The BR-039 row said *both* original scenarios were rewritten when run 2 had added three. And `.atelier/tickets/README.md` asserted sixty approved scenarios two sentences after saying three were rewritten. A rewritten scenario is not an approved one, and an item added and then rewritten before any gate is one pending item and not two — so the honest totals are **31 of 40 rules and 59 of 78 scenarios still approved as written**, 9 rules and 19 scenarios pending. Current totals: 40 rules, 78 scenarios, 26 tickets, 66 points, and 17 work-breakdown units worth 62 points. | Run 4. The section written to stop a reader reconstructing the truth from six commits could not be added up. |
+
+**What re-approval would have to cover — 9 rules and 19 scenarios:**
+
+| | Rules | Scenarios |
+|---|---|---|
+| Approved 2026-08-24 | 37 | 60 |
+| Added since | 3 — BR-038, BR-039, BR-040 | 18 |
+| Of the approved, rewritten | 6 — BR-006, BR-008, BR-012, BR-014, BR-025, BR-028 | 1 — *Working on the live checkout requires asking for it* |
+| **Still approved as written** | **31** | **59** |
+| **Pending re-approval** | **9** | **19** |
+| Now on disk | 40 | 78 |
+
+The two columns are counted the same way, and the way matters, because the obvious arithmetic
+double-counts. A rule or scenario **added** during these rounds and then **rewritten** during a later
+one has never been through a gate at all: it is one pending item, not one added plus one rewritten.
+Two rules (BR-038, BR-039) and three scenarios (all three BR-039's) are in that position, and they
+are counted once, inside the added row. A rewritten item that *was* approved is different — it
+leaves the approved count and joins the pending one, which is why 31 and 59 are not 37 and 60.
+
+Until re-approval happens, this file is amended-but-not-re-approved, and the tickets derived from it
+inherit that status.
 
 ---
 

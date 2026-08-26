@@ -56,8 +56,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Proves the typecheck gate rejects a deliberate error, rather than trusting it.
-      - run: npm run verify:typecheck-gate
+      # One job for every gate that has to be watched failing, rather than one job per gate: the
+      # checkout and install dominate, and a job per script would fork again with each ticket
+      # that adds one. Each script says which gate it proved and why that gate has been wrong
+      # before, so a failure here is still attributable to one of them.
+      - run: npm run check:gates
 
   global-install:
     needs: gates

@@ -1,8 +1,75 @@
 # feature: agentic-workflow-cli
 # artifact: bdd-scenarios
-# status: Approved
+# status: Amended since approval — amendments pending PM re-approval
+# approved: 2026-08-24
+# approved_baseline: 60 scenarios
+# amended: 2026-08-26
+# amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4
+# scenarios: 78
 # source: agentic-workflow-cli-rules.md
 # Each scenario is tagged with the business rule it verifies.
+#
+# ─── Amendments since approval ─────────────────────────────────────────────────
+# Approved 2026-08-24 with 60 scenarios; now 78. Eighteen were added after
+# approval and one of the sixty was rewritten, so the honest split is
+# 59 approved / 19 pending — none of the nineteen through a PM approval gate.
+#
+# Three more scenarios were rewritten, and they are not part of that nineteen
+# twice over: all three are BR-039 scenarios added earlier in this same PR, so
+# they were never approved and are already counted among the eighteen added. A
+# rewritten scenario is not an approved one, and a scenario added and then
+# rewritten before any gate is still just one pending scenario.
+#
+# The rules file's `## Amendments` section is the authority on what changed and
+# why; this block records only which scenarios moved.
+#
+# Added, run 2 (reconciling the artifacts against the frozen contract):
+#   BR-038 x5  A workflow's paths are read against the working copy it was given
+#              A path that climbs out of the working copy is refused
+#              A path given from the root of the machine is refused
+#              A link pointing out of the working copy is refused
+#              Reaching outside the working copy on purpose is not refused
+#   BR-039 x3  (all three since rewritten — see below)
+#
+# Rewritten, run 2:
+#   BR-014     Working on the live checkout requires asking for it
+#              — the opt-in became the operator's, on the command line
+#
+# Added, run 3 (finding what run 2's amendments left underdetermined):
+#   BR-006 x1  A missing profile field is refused even when no workflow reads it
+#   BR-012 x1  A write while the body's own agents are still running is refused
+#   BR-038 x1  A path into the working copy's git administrative area is refused
+#   BR-039 x1  On the host target there may be nothing to leave out
+#   BR-040 x3  The default execution target is named for what it is
+#              A repository's declared command runs whole on the host
+#              A value from elsewhere cannot become a second command
+#
+# Rewritten, run 3 (both added in run 2, so neither leaves the approved sixty):
+#   BR-039 x2  A variable awcli set for this run is absent from the record
+#              My own environment is still there, an inherited API key included
+#              — both had turned on "the credentials awcli supplies", which does
+#                not decide the inherited-key case, so both were restated around
+#                the variables awcli set for the run
+#
+# Added, run 4 (three surface decisions taken before the contract is merged):
+#   BR-008 x1  A log field that cannot be written down costs the field, not the
+#              run — log field values widen, so the check moves to where the
+#              line is written
+#   BR-025 x1  A workflow cannot put its own function over the one that writes
+#              the record — every function member of the surface is fixed
+#   BR-039 x1  The environment answers by name and is never handed over whole
+#
+# Rewritten, run 4 (all three added in run 2 or 3; none was ever approved):
+#   BR-039 x3  A variable awcli set for this run answers as not set
+#                — renamed from "…is absent from the record"
+#              My own environment is still there, an inherited API key included
+#              On the host target there may be nothing to leave out
+#              — ctx.env becomes a get/has accessor, so "the record" is no
+#                longer a thing a workflow holds; all three now assert what
+#                asking by name answers. The third could not otherwise be
+#                asserted at all: with nothing handed over, "the record holds
+#                everything my own environment held" has no subject.
+# ───────────────────────────────────────────────────────────────────────────────
 
 Feature: Running agentic workflows from a global command-line tool
 
@@ -83,6 +150,14 @@ Feature: Running agentic workflows from a global command-line tool
     And no agent is started
 
   @BR-006
+  Scenario: A missing profile field is refused even when no workflow reads it
+    Given a repository whose profile declares no test command
+    And a workflow that never reads the test command
+    When I run that workflow against it
+    Then the run is refused at startup, naming the missing field
+    And it is refused before the run takes its lock or creates a working copy
+
+  @BR-006
   Scenario: The free-form part of a profile carries no guarantee
     Given a workflow that reads a value from the free-form part of the repository's profile
     And the repository declares no such value
@@ -103,6 +178,14 @@ Feature: Running agentic workflows from a global command-line tool
     Given a running workflow
     When it puts a value into shared state that cannot be stored as plain data
     Then the assignment fails immediately, naming the key
+
+  @BR-008
+  Scenario: A log field that cannot be written down costs the field, not the run
+    Given a running workflow
+    When it logs a value that cannot be written down as plain data
+    Then the log line is still written, with that field named as unrepresentable
+    And the run is not failed for it
+    And the same value put into shared state is still refused at the assignment
 
   @BR-009
   Scenario: Stored state no longer matching the shape the workflow declares
@@ -149,6 +232,14 @@ Feature: Running agentic workflows from a global command-line tool
     And the failure names the supported pattern — return the result and record it in the workflow body
 
   @BR-012
+  Scenario: A write while the body's own agents are still running is refused
+    Given a workflow that has started four agents and is still waiting for them
+    When it writes to shared state before any of them has returned
+    Then that write is refused
+    And the refusal says it was made while the workflow's own agents were still running
+    And it names the pattern instead — return the result, and record it once the branch returns
+
+  @BR-012
   Scenario: The workflow body records results returned from its branches
     Given a workflow that starts four agents in parallel
     When each branch returns its result to the workflow body
@@ -174,8 +265,8 @@ Feature: Running agentic workflows from a global command-line tool
 
   @BR-014
   Scenario: Working on the live checkout requires asking for it
-    Given a workflow that explicitly opts in to working on my live checkout
-    When I run it
+    Given a workflow with no say in which working copy it is given
+    When I run it and ask for my live checkout myself
     Then the agent works in my checkout directly
     And that choice is stated in the run's output
 
@@ -207,12 +298,121 @@ Feature: Running agentic workflows from a global command-line tool
     Then the output states that isolation is a working copy only
     And that the wider filesystem and the network remain reachable
 
+  @BR-038
+  Scenario: A workflow's paths are read against the working copy it was given
+    Given a workflow that reads a file named relative to the repository
+    When I run it from a completely different directory
+    Then the file it reads is the one in the working copy this iteration was given
+    And nothing is read relative to the directory I started awcli from
+
+  @BR-038
+  Scenario: A path that climbs out of the working copy is refused
+    Given a workflow whose path climbs out of the working copy by mistake
+    When I run it
+    Then the read is refused, naming the path and saying it left the working copy
+    And no file outside the working copy is read or written
+
+  @BR-038
+  Scenario: A path given from the root of the machine is refused
+    Given a workflow that names a file by its full path from the root of the machine
+    When I run it
+    Then the read is refused
+    And it is refused even when that path happens to point inside the working copy
+
+  @BR-038
+  Scenario: A link pointing out of the working copy is refused
+    Given a working copy containing a link whose target lies outside it
+    When a workflow writes through that link
+    Then the write is refused, naming the path
+    And a read through the same link is refused on the same terms
+
+  @BR-038
+  Scenario: A path into the working copy's git administrative area is refused
+    Given a workflow whose path names something inside the working copy's git administrative area
+    When I run it
+    Then the write is refused, naming the path and saying it is the git administrative area
+    And it is refused although that path never left the working copy
+    And no hook it would have written runs on the next commit awcli makes
+    And the entry naming which repository this working copy belongs to is unchanged
+
+  @BR-038
+  Scenario: Reaching outside the working copy on purpose is not refused
+    Given a workflow that runs a command reading a file elsewhere on the machine
+    When I run it
+    Then the command runs and reads that file
+    And the run is not refused
+    And the output still states that isolation is a working copy only
+
   @BR-016
   Scenario: Credentials are lent to a container, never baked into it
     Given a workflow whose agent runs in a container
     When the container is prepared and the agent runs
     Then my agent credentials are available to it for the life of the run
     And no credential is written into the container image
+
+  @BR-039
+  Scenario: A variable awcli set for this run answers as not set
+    Given awcli sets a variable of its own for this run, to lend the agent a credential
+    When a workflow asks the environment for that name
+    Then it is told the name is not set, and asking for its value yields nothing
+    And that answer is indistinguishable from the one for a name that was never set
+
+  @BR-039
+  Scenario: My own environment is still there, an inherited API key included
+    Given I have secrets of my own in the environment I started awcli from
+    And one of them is an agent API key I set myself
+    When a workflow asks the environment for those names
+    Then each answers with the value I set
+    And the API key I set answers too, because awcli did not set it
+    And only the names awcli set for this run answer as not set
+
+  @BR-039
+  Scenario: On the host target there may be nothing to leave out
+    Given a run on the default execution target, where awcli sets no variables of its own
+    When a workflow asks the environment for any name my own environment held
+    Then every one of them answers with the value I set
+    And the run does not claim that any credential was withheld
+
+  @BR-039
+  Scenario: The environment answers by name and is never handed over whole
+    Given a workflow that would write my whole environment into a prompt
+    When I run it
+    Then there is nothing it can ask for that yields the environment itself
+    And it can still forward any name it asks for, one name at a time
+    And awcli does not describe that as protection — it is a shape, not a boundary
+
+  @BR-039
+  Scenario: A command the workflow runs still sees the whole environment
+    Given a workflow that runs a command reporting its own environment
+    When I run it
+    Then that command sees the environment its execution target actually has
+    And the credentials left out of the record were not removed from the machine
+
+  @BR-040
+  Scenario: The default execution target is named for what it is
+    Given a workflow that runs a command without asking for a container
+    When I run it
+    Then the output names the host as the target that command ran on
+    And it says the wider filesystem, the network and this machine's credentials are reachable
+    And nothing in the output calls that target contained or sandboxed
+
+  @BR-040
+  Scenario: A repository's declared command runs whole on the host
+    Given a repository whose declared test command chains several commands together
+    And a workflow that runs that declared command without asking for a container
+    When I run the workflow
+    Then the command runs as the repository wrote it, chaining included
+    And the run reports it as having run on the host, with nothing containing it
+    And asking for a container is the only way offered to change that
+
+  @BR-040
+  Scenario: A value from elsewhere cannot become a second command
+    Given a workflow that runs a command as a list of arguments
+    And one of those arguments is a value the workflow did not write itself
+    When I run it
+    Then that value reaches the command as a single argument, however it is spelled
+    And it does not become a command of its own
+    And the run still reports the host as the target, with the reach any command there has
 
   # ─── Execution and termination ───
 
@@ -354,6 +554,14 @@ Feature: Running agentic workflows from a global command-line tool
     Given a run that failed overnight
     When I read its record
     Then it states which awcli version ran it, which agent version, and where the repository stood
+
+  @BR-025
+  Scenario: A workflow cannot put its own function over the one that writes the record
+    Given a workflow that assigns its own function over the one awcli gave it to log with
+    When I run it
+    Then that assignment is refused rather than taken
+    And the run's record still states the awcli version, the agent version and where the repository stood
+    And awcli does not offer this as protection from a workflow that means to defeat its own record
 
   @BR-026
   Scenario: Detail that cannot be read degrades once and loudly

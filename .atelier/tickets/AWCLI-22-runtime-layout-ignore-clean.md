@@ -16,12 +16,21 @@ context declaration. Everything mutable lives under one runtime path. The ignore
 once and then left alone, because an operator who chose to track or untrack something should not
 have that decision reverted by the next run.
 
+The configuration written here is what the profile gate then checks. BR-006 makes all five fields
+awcli defines required, and refuses at startup whether or not a workflow reads them, so a
+configuration written without them would leave `awcli init` producing a repository `awcli run`
+immediately refuses. The five are named in the TDD's command table; this ticket is where they get
+written.
+
 ## Requirements
 
 ### Functional
 
 - Write the repository's initial layout: Dockerfile, configuration, context declaration, and the
   single ignore entry.
+- Write all five required profile fields into the configuration — `commands.test`,
+  `commands.build`, `commands.lint`, `paths.docs`, `paths.standards` — so an initialised
+  repository passes the profile gate as initialised (BR-006, AWCLI-06).
 - Write the ignore entry once and never rewrite it.
 - Place all mutable state — run state, records, locks, logs, working copies — under one runtime
   path.
@@ -43,6 +52,8 @@ have that decision reverted by the next run.
 
 - [ ] Scenario: *The generated ignore entry is written once and then left alone*.
 - [ ] Scenario: *Collecting tidies only what is safe to remove*.
+- [ ] A freshly initialised repository passes AWCLI-06's profile gate with no further editing —
+      all five required fields are present, asserted against that gate rather than by inspection.
 - [ ] The three committed artifacts are absent from the ignore entry after initialisation.
 - [ ] Adding a new runtime file kind requires no ignore change — asserted by test.
 - [ ] Re-running initialisation over an existing layout changes nothing.

@@ -24,7 +24,7 @@ expressible if the workspace decision is independent of the execution decision.
 
 | Approach | Pros | Cons | Verdict |
 |---|---|---|---|
-| **Two orthogonal axes** | Collapses combinatorics; BR-004 becomes a failure on one axis without touching the other; `liveTree × container` is excluded by construction | A slightly less literal reading of the PRD's wording | ✅ **Chosen** |
+| **Two orthogonal axes** | Collapses combinatorics; BR-004 becomes a failure on one axis without touching the other; nothing awcli composes is `liveTree × container` | A slightly less literal reading of the PRD's wording; two independent fields can still *name* the excluded cell, so it is ruled out by what awcli builds rather than by the type | ✅ **Chosen** |
 | **Three isolation modes** | Matches the PRD's prose directly | Three code paths sharing most behaviour; a container request failing has to decide what happens to the workspace | ❌ Rejected |
 
 ## Decision Rationale
@@ -36,7 +36,11 @@ expressible if the workspace decision is independent of the execution decision.
 
 The excluded cell is the point: mounting the operator's live checkout into a container combines the
 weakest workspace guarantee with the strongest execution guarantee, which is confusing to explain and
-of no practical use. Making it unrepresentable removes a case rather than documenting it.
+of no practical use. awcli never composes it — `sandbox()` fixes `worktree × container`, and the live
+checkout only ever runs on the host — so the cell is a case that does not exist rather than a case
+that is documented and refused. What the published type does not do is refuse to *name* it:
+`Isolation` carries the two axes as independent fields, so a value describing the excluded cell can be
+written down even though nothing produces one.
 
 ## Consequences
 
@@ -48,6 +52,13 @@ of no practical use. Making it unrepresentable removes a case rather than docume
 ### Negative
 - The word "sandbox" in the API no longer maps one-to-one to an internal type, so naming discipline
   (BR-015) must be maintained by review.
+- The exclusion is a property of what awcli produces, not of what the type can express. `sandbox()`
+  fixes `worktree × container` and the live checkout only ever runs on the host, but `Isolation`'s two
+  independent fields can name `liveTree × container` — the reporting type admits a value nothing
+  composes. Closing it would mean replacing the two fields with a single three-member union, a change
+  to the published surface and therefore possible only before the v1 freeze. It was declined: one union
+  takes away the orthogonality this ADR chose the model for, since BR-004 as a failure on one axis
+  without touching the other is exactly what a single union collapses.
 
 ### Risks & Mitigations
 
