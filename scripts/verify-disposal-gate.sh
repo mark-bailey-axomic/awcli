@@ -23,7 +23,30 @@ SUITE="test/runtime/disposal.test.ts"
 BACKUP="$(mktemp)"
 cp "$SUBJECT" "$BACKUP"
 restore() { cp "$BACKUP" "$SUBJECT"; }
-trap 'restore; rm -f "$BACKUP"' EXIT
+# INT and TERM as well as EXIT, matching verify-contract-gate.sh: this script spends most of its
+# run with a tracked source file deliberately broken, and an interrupt in that window must not
+# leave it that way — on a developer's machine it would look like their own work in progress.
+#
+# Measured, because the reason usually given for this is not the reason that holds: bash does run
+# an EXIT trap when it dies of INT, TERM or HUP, so EXIT alone already restores the file here.
+# These are for the shells and platforms where that is not guaranteed, which is worth having in
+# the one script whose entire job is to be trustworthy about failure.
+cleanup() {
+  restore
+  rm -f "$BACKUP"
+}
+# Restore, then die of the signal rather than returning a status of our own. A gate that exits 1
+# when it was killed tells its caller the gate failed, which is a different and more alarming
+# thing than being interrupted — and misreporting how something ended is the exact failure this
+# script exists to catch in the code it tests.
+on_signal() {
+  cleanup
+  trap - EXIT INT TERM
+  kill -"$1" $$
+}
+trap cleanup EXIT
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 
 # Through the package script, like every other gate here, rather than `npx`: `npx` will fetch a
 # package when the local one is missing, so a broken install would turn this gate into a silent
