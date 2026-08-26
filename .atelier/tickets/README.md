@@ -1,15 +1,18 @@
 # awcli — implementation tickets
 
-26 tickets, 66 points, derived from the 14-unit work breakdown in
+26 tickets, 66 points, derived from the 17-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). Five of the seven
 5-point units were split into a 3 and a 2; WB-5 split into two 2-point tickets and WB-11 into two
-3-point ones, which is where two of the extra points over the design's 56 come from — separating
-the lock from the record, and the sandbox scope from the container inside it, each revealed work
-the single estimate had compressed. AWCLI-00 accounts for two more: project scaffolding the work
-breakdown never named, because a design document assumes a project exists.
-The remaining six are AWCLI-23, AWCLI-24 and AWCLI-25 at two points each, delivering the context
-members the work breakdown left unowned — the two it gave no rule at all, and the default half of
-a third, `ctx.exec` on the host, which WB-11 scoped entirely to the container.
+3-point ones, which is where two of the four extra points over the design's 62 come from —
+separating the lock from the record, and the sandbox scope from the container inside it, each
+revealed work the single estimate had compressed. AWCLI-00 accounts for the other two: project
+scaffolding the work breakdown never named, because a design document assumes a project exists.
+
+The breakdown was fourteen units and 56 points until PR #8's fourth review round. WB-15, WB-16 and
+WB-17 were added then for `ctx.fs`, `ctx.env` and `ctx.exec` on the host — the three context members
+the design had left unowned, which AWCLI-23, AWCLI-24 and AWCLI-25 had been delivering with nothing
+above them. The units carry those tickets' own estimates unchanged, so the ticket total did not move
+and the six points they contribute are no longer extra to the design.
 
 Every one of the 78 BDD scenarios appears as an acceptance criterion on exactly one ticket.
 Acceptance criteria written in *italics* are scenario names from
@@ -91,9 +94,9 @@ ticket that builds one.
 | [AWCLI-20](AWCLI-20-resolution-scaffolding-args.md) | Resolution, scaffolding, args | 3 | WB-12 | 05 |
 | [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 15 |
 | [AWCLI-22](AWCLI-22-runtime-layout-ignore-clean.md) | Runtime layout, ignore, clean | 3 | WB-14 | 07, 13, 14, 18 |
-| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | — | 01, 13, 25 |
-| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | — | 01, 19, 25 |
-| [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | — | 01, 13 |
+| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | WB-15 | 01, 13, 25 |
+| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | WB-16 | 01, 19, 25 |
+| [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | WB-17 | 01, 13 |
 
 ## Order
 
@@ -143,14 +146,15 @@ nothing installed. Everything after that is capability rather than viability.
 ## Conventions
 
 - One ticket is one session's work. Nothing here is larger than 3 points.
-- A `—` in the WB column means no work-breakdown unit owns the ticket. AWCLI-00 is one: the work
-  breakdown described the tool, not the project that holds it. AWCLI-23, AWCLI-24 and AWCLI-25
-  are the others, for the reason given above — the design gave the first two members no rules and
-  no scenarios when the units were written, and scoped the third's unit (WB-11) to the container
-  alone, so nothing was written to deliver any of them on the default path. BR-038, BR-039 and
-  BR-040 govern the members now; the units were never revisited. AWCLI-19 keeps its WB number
-  because WB-11 did name `ctx.sandbox` — there the ticket, not the work breakdown, was the thing
-  that had narrowed.
+- A `—` in the WB column means no work-breakdown unit owns the ticket, and AWCLI-00 is now the
+  only one: the work breakdown described the tool, not the project that holds it. AWCLI-23,
+  AWCLI-24 and AWCLI-25 carried a dash until PR #8's fourth review round, because the design gave
+  the first two members no rules and no scenarios when the units were written, and scoped the
+  third's unit (WB-11) to the container alone. BR-038, BR-039 and BR-040 closed the rule half in
+  round 3; WB-15, WB-16 and WB-17 close the design half, so the scenarios those tickets carry are
+  now owned at both layers rather than only at the ticket layer. AWCLI-19 keeps its original WB
+  number because WB-11 did name `ctx.sandbox` — there the ticket, not the work breakdown, was the
+  thing that had narrowed.
 - Titles carry the bare `[AWCLI]` repo tag, so they are ready to push to a tracker unchanged.
 - Tickets state *what* and *why*; the builder decides *how*. Specific shapes, paths and port
   signatures live in the TDD's Contracts section, referenced rather than duplicated.

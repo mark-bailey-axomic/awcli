@@ -1,6 +1,6 @@
 # AWCLI-25 — [AWCLI] Run commands on the host target, saying plainly what they can reach
 
-**Points:** 2 · **Source:** new — no work-breakdown unit (see Context) · **Status:** Ready
+**Points:** 2 · **Source:** WB-17 — unit added in review round 4, after this ticket (see Context) · **Status:** Ready
 
 ## Problem / Goal
 

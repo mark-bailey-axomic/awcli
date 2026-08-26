@@ -353,21 +353,21 @@ tickets:
     path: tickets/AWCLI-23-workspace-confined-filesystem.md
     title: "[AWCLI] Read and write within the working copy, refusing paths that leave it"
     points: 2
-    work_breakdown: null  # ctx.fs was a dashed context member — no WB entry; governed by BR-038
+    work_breakdown: WB-15  # unit added in review round 4; ctx.fs, governed by BR-038
     depends_on: [AWCLI-01, AWCLI-13, AWCLI-25]
     status: todo
   - id: AWCLI-24
     path: tickets/AWCLI-24-resolved-environment.md
     title: "[AWCLI] Answer the environment by name, with what awcli set for the run answering as unset"
     points: 2
-    work_breakdown: null  # ctx.env was a dashed context member — no WB entry; governed by BR-039
+    work_breakdown: WB-16  # unit added in review round 4; ctx.env, governed by BR-039
     depends_on: [AWCLI-01, AWCLI-19, AWCLI-25]
     status: todo
   - id: AWCLI-25
     path: tickets/AWCLI-25-host-exec-target.md
     title: "[AWCLI] Run commands on the host target, saying plainly what they can reach"
     points: 2
-    work_breakdown: null  # WB-11 scoped ctx.exec to the container only; the host target is BR-040
+    work_breakdown: WB-17  # unit added in review round 4; ctx.exec on the host, governed by BR-040
     depends_on: [AWCLI-01, AWCLI-13]
     status: todo
 

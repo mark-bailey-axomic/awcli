@@ -1,6 +1,6 @@
 # AWCLI-23 — [AWCLI] Read and write within the working copy, refusing paths that leave it
 
-**Points:** 2 · **Source:** new — no work-breakdown unit (see Context) · **Status:** Ready
+**Points:** 2 · **Source:** WB-15 — unit added in review round 4, after this ticket (see Context) · **Status:** Ready
 
 ## Problem / Goal
 

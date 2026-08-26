@@ -54,10 +54,12 @@ the API as an argument. Nothing is installed into the target.
 ```
 
 The context handed to the workflow is assembled per iteration by a factory closing over the ports.
-A `sandbox()` scope is the same factory with a frozen state capability, which is how BR-012 is
-enforced structurally rather than documented for that half (ADR-0005). The `agent()` fan-out half is
-not structural in v1: `agent()` hands back a result rather than a child context, so there is nothing
-to freeze and the single writer is enforced at run time. The frozen agent scope lands in AWCLI-10.
+A `sandbox()` scope is the same factory with a read-only state capability, which is how BR-012 is
+enforced structurally for that half (ADR-0005). The `agent()` fan-out half cannot be bought that
+way at all: `agent()` hands back a result rather than a child context, so a fan-out branch is the
+body's own code holding the body's own context, and there is no child scope to give a different
+capability to. That half is a run-time refusal on a time window — no shared-state write while an
+agent call the body started is still in flight. AWCLI-10 builds both.
 
 ### Component Design
 
@@ -229,6 +231,8 @@ text, `usage` possibly unknown (ADR-0004).
 - **Contracts:** Context surface; workflow module contract; `AgentDriver`
 - **Acceptance Criteria:**
   - [ ] The declaration compiles standalone and the runtime is asserted against it at build time
+  - [ ] *A workflow written earlier still runs on a later awcli*
+  - [ ] *A workflow cannot put its own function over the one that writes the record*
   - [ ] *A rehearsal is free and touches nothing real*
   - [ ] *A rehearsal still creates a working copy*
   - [ ] A real workflow can be authored and run end-to-end with no agent installed
@@ -241,6 +245,7 @@ text, `usage` possibly unknown (ADR-0004).
 - **Acceptance Criteria:**
   - [ ] Resources unwind in reverse on normal end, failure, interrupt, and a throw from the workflow body
   - [ ] *Interrupting a run leaves nothing locked and loses nothing*
+  - [ ] *Interrupting is still the immediate stop*
   - [ ] Await-then-end and interrupt-now are distinct modes of one primitive
   - [ ] A leaked resource fails a test rather than being noticed in production
 
@@ -262,8 +267,11 @@ text, `usage` possibly unknown (ADR-0004).
 - **Acceptance Criteria:**
   - [ ] *Native Windows is refused with a route forward*
   - [ ] *A directory that is not a repository is refused*
-  - [ ] *An awcli older than the repository requires is refused* / *within range proceeds* / *requires nothing accepts any version*
+  - [ ] *An awcli older than the repository requires is refused*
+  - [ ] *An awcli within the required range proceeds*
+  - [ ] *A repository that requires nothing accepts any version*
   - [ ] *A portable workflow meeting a repository that lacks a fact it needs*
+  - [ ] *A missing profile field is refused even when no workflow reads it*
   - [ ] *The free-form part of a profile carries no guarantee*
   - [ ] *Asking for tagged output the prompt never requests*
   - [ ] Gates run cheapest-first; no container work precedes any refusal
@@ -280,15 +288,23 @@ text, `usage` possibly unknown (ADR-0004).
   - [ ] *A slow run keeps its lock*
   - [ ] *Every run can be explained the next morning*
 
-### WB-6: Durable state with write-through and scope freezing
-- **Summary:** [AWCLI] Persist shared state as it changes, reject unstorable values at assignment, and freeze state inside agent and container scopes
+### WB-6: Durable state with write-through and a single writer
+- **Summary:** [AWCLI] Persist shared state as it changes, reject unstorable values at assignment, make a `sandbox()` scope's state read-only, and refuse a body write while the body's own agents are still running
 - **Story Points:** 5
 - **Dependencies:** WB-2, WB-5
 - **Contracts:** `ctx.state`; `Store.loadState`, `saveState`
+- **Note:** the single writer takes two mechanisms and this unit builds both, because the two ways a
+  workflow leaves its body have different shapes (BR-012, ADR-0005). `sandbox()` returns a scope, so
+  its read-only state is structural and a write there does not compile. `agent()` returns a result
+  and not a scope, so there is no child scope to freeze — a fan-out branch is the body's own code
+  holding the body's own context — and what is refused is a write made while an agent call the body
+  started is still in flight. Anything describing an "agent scope" is the retracted model; there is
+  no such object on the surface.
 - **Acceptance Criteria:**
   - [ ] *A value that cannot be stored is rejected where it was set*
   - [ ] *Stored state no longer matching the shape the workflow declares*
   - [ ] *A parallel branch may read shared state but not write it*
+  - [ ] *A write while the body's own agents are still running is refused*
   - [ ] *The workflow body records results returned from its branches*
   - [ ] *A crash mid-iteration does not discard what was recorded*
   - [ ] A partial write is never observable
@@ -376,6 +392,7 @@ text, `usage` possibly unknown (ADR-0004).
   - [ ] *Every agent call states how isolated it is*
   - [ ] *Spend is reported and a threshold warns*
   - [ ] *A threshold that cannot be measured says so up front*
+  - [ ] *A log field that cannot be written down costs the field, not the run*
   - [ ] Values matching known secret shapes are redacted from records and logs
 
 ### WB-14: Runtime layout, ignore-once and clean
@@ -389,8 +406,57 @@ text, `usage` possibly unknown (ADR-0004).
   - [ ] Committed artifacts are never added to the ignore entry
   - [ ] A new runtime path in a later version needs no ignore change
 
-**Total: 56 points across 14 units.** Critical path: WB-1 → WB-3 → WB-4, with WB-2 in parallel from
+### WB-15: Workspace-confined filesystem
+
+- **Summary:** [AWCLI] Resolve a workflow's paths against the working copy it was given, and refuse the ones that leave its tree
+- **Story Points:** 2
+- **Dependencies:** WB-1, WB-8, WB-17
+- **Contracts:** `ctx.fs`
+- **Acceptance Criteria:**
+  - [ ] *A workflow's paths are read against the working copy it was given*
+  - [ ] *A path that climbs out of the working copy is refused*
+  - [ ] *A path given from the root of the machine is refused*
+  - [ ] *A link pointing out of the working copy is refused*
+  - [ ] *A path into the working copy's git administrative area is refused*
+  - [ ] *Reaching outside the working copy on purpose is not refused*
+  - [ ] One resolver, shared with `promptFile`, which is confined on the same terms
+
+### WB-16: Resolved environment
+
+- **Summary:** [AWCLI] Answer the environment one name at a time, with what awcli set for this run answering as unset
+- **Story Points:** 2
+- **Dependencies:** WB-1, WB-11, WB-17
+- **Contracts:** `ctx.env`
+- **Acceptance Criteria:**
+  - [ ] *A variable awcli set for this run answers as not set*
+  - [ ] *My own environment is still there, an inherited API key included*
+  - [ ] *On the host target there may be nothing to leave out*
+  - [ ] *The environment answers by name and is never handed over whole*
+  - [ ] *A command the workflow runs still sees the whole environment*
+  - [ ] The subtracted-name set is defined once, beside the credential mount it mirrors
+
+### WB-17: Host execution target
+
+- **Summary:** [AWCLI] Run commands on the default target, reporting plainly what a command there can reach
+- **Story Points:** 2
+- **Dependencies:** WB-1, WB-8
+- **Contracts:** `ctx.exec` (host)
+- **Acceptance Criteria:**
+  - [ ] *The default execution target is named for what it is*
+  - [ ] *A repository's declared command runs whole on the host*
+  - [ ] *A value from elsewhere cannot become a second command*
+  - [ ] Nothing in the output describes the default target as containment
+
+**Total: 62 points across 17 units.** Critical path: WB-1 → WB-3 → WB-4, with WB-2 in parallel from
 day one; nothing downstream of WB-2 may register a resource before it exists.
+
+WB-15, WB-16 and WB-17 were added in PR #8's fourth review round, and they are the design layer
+catching up rather than new work: AWCLI-23, AWCLI-24 and AWCLI-25 already existed, at the same two
+points and the same dependencies, created when `ctx.fs`, `ctx.env` and `ctx.exec`-on-the-host were
+each found to be a context member no unit delivered. Until now the breakdown recorded that gap by
+having nothing to say about them, which left fourteen of the feature file's scenarios carried by no
+unit at all — the drift a builder reading this section would have inherited. Points move 56 → 62
+with them; no ticket estimate changed.
 
 ---
 
@@ -398,8 +464,8 @@ day one; nothing downstream of WB-2 may register a resource before it exists.
 
 | Type | Path | Purpose |
 |---|---|---|
-| bdd | design/agentic-workflow-cli-bdd.feature | 60 scenarios, every rule tagged |
-| rules | design/agentic-workflow-cli-rules.md | 37 approved business rules |
+| bdd | design/agentic-workflow-cli-bdd.feature | 78 scenarios, every rule tagged — 59 approved, 19 pending re-approval |
+| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 31 approved, 9 pending re-approval |
 | context | context/agentic-workflow-cli-prd-draft.md | Source PRD (13 P0 / 7 P1 / 5 P2) |
 | context | context/agentic-workflow-cli-grill-brief.md | 13 architecture decisions and their rationale |
 | flows | design/agentic-workflow-cli-flows.md | 7 diagrams |
@@ -408,7 +474,7 @@ day one; nothing downstream of WB-2 may register a resource before it exists.
 | adr | docs/adr/0002-contract-first-ambient-context-types.md | Hand-authored contract, compile-time conformance |
 | adr | docs/adr/0003-workspace-and-execution-as-orthogonal-axes.md | Two axes, not three isolation modes |
 | adr | docs/adr/0004-git-and-text-as-source-of-truth.md | Stream output is enrichment only |
-| adr | docs/adr/0005-cli-owned-loop-with-durable-single-writer-state.md | Loop ownership, write-through, frozen scopes |
+| adr | docs/adr/0005-cli-owned-loop-with-durable-single-writer-state.md | Loop ownership, write-through, one writer by two mechanisms |
 | adr | docs/adr/0006-no-published-base-image.md | Self-contained generated Dockerfile |
 | adr | docs/adr/0007-wsl2-is-the-windows-path.md | WSL2 supported, native win32 refused at startup |
 | reference | ../../mp-sandcastle | Reference implementation — read for lessons, do not depend on |
