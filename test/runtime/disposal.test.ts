@@ -14,6 +14,12 @@ import {
  */
 const QUICK = { releaseTimeoutMs: 20 };
 
+/**
+ * For the one test that has to hold a release open while other things happen, and so needs the
+ * bound to be comfortably longer than the test's own orchestration rather than a race with it.
+ */
+const PATIENT = { releaseTimeoutMs: 200 };
+
 /** Records the order releases actually happened in, which is what most of these assert. */
 function recorder() {
   const released: string[] = [];
@@ -230,17 +236,30 @@ describe("a release that never returns", () => {
     const capture = (reason: unknown) => escaped.push(reason);
     process.on("unhandledRejection", capture);
     try {
+      // Signalled through a side channel rather than by awaiting the release promise: attaching
+      // a handler to that promise is the very thing under test, so the test cannot touch it.
+      let rejectionFired!: () => void;
+      const fired = new Promise<void>((resolve) => {
+        rejectionFired = resolve;
+      });
+
       const stack = new DisposalStack(QUICK);
       await stack.acquire({
         name: "wedged container",
         open: () => "container",
         release: () =>
           new Promise<void>((_resolve, reject) =>
-            setTimeout(() => reject(new Error("rm failed, eventually")), 40),
+            setTimeout(() => {
+              reject(new Error("rm failed, eventually"));
+              rejectionFired();
+            }, 40),
           ),
       });
 
       await stack.unwind();
+      // The rejection has now definitely happened, rather than probably happened by the time a
+      // sleep was over.
+      await fired;
 
       // A control, because without one this test would pass just as happily against a listener
       // that never fires — the failure mode a test asserting an empty array is most prone to.
@@ -258,9 +277,8 @@ describe("a release that never returns", () => {
         Promise.resolve(),
       );
 
-      // Past the point the abandoned release rejects, plus a turn for Node to decide which
-      // rejections went unhandled.
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      // A turn for Node to decide which rejections went unhandled.
+      await new Promise((resolve) => setTimeout(resolve, 20));
     } finally {
       process.off("unhandledRejection", capture);
     }
@@ -461,7 +479,11 @@ describe("acquiring once the stack is unwinding", () => {
 
   it("still releases an acquisition it gave up on, if it lands while the unwind is draining", async () => {
     const log = recorder();
-    const stack = new DisposalStack(QUICK);
+    // Not QUICK. This test has to hold a release open across the moment the straggler lands,
+    // and the wait for stranding and the bound on a release are the same number — so with a
+    // tight bound the release the test is holding is racing its own abandonment. It lost that
+    // race on a CI runner. A wider bound turns a dead heat into a wide margin.
+    const stack = new DisposalStack(PATIENT);
 
     // A release the test controls, so the drain is provably still running when the straggler
     // lands. It resolves well inside the bound once let go.
@@ -490,10 +512,13 @@ describe("acquiring once the stack is unwinding", () => {
 
     const unwinding = stack.unwind();
 
-    // Past the bound, so the straggler has been given up on, and into the drain, which is now
-    // sitting on the lock's release.
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(letLockGo).toBeDefined();
+    // Wait for the event, not for a duration. `letLockGo` exists only once the drain has called
+    // the lock's release, which is the state this test needs; sleeping for a multiple of the
+    // bound instead guesses at when that happens and starts the release's own clock racing the
+    // guess. Polling gets us there within a millisecond or two of the drain arriving, leaving
+    // almost the whole bound as slack.
+    while (letLockGo === undefined)
+      await new Promise((resolve) => setTimeout(resolve, 1));
 
     finishOpening();
     await expect(straggler).rejects.toBeInstanceOf(DisposalClosedError);
@@ -501,12 +526,13 @@ describe("acquiring once the stack is unwinding", () => {
 
     const report = await unwinding;
 
+    // Asserted before the ordering below, because this is the assertion that says *why* if the
+    // timing ever slips again: a lock abandoned mid-test shows up here as a named failure,
+    // where the ordering check would only report two names in the wrong sequence.
+    expect(report.failures).toEqual([]);
     // Reverse order is over what is holdable at the time, which is the only reading that
     // survives a resource arriving after its turn has passed.
     expect(log.released).toEqual(["lock", "slow worktree"]);
-    // The stranded verdict is withdrawn: it was a statement about what was known then, and what
-    // is known now is that the resource was released.
-    expect(report.failures).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.released.map((r) => r.name)).toEqual(["lock", "slow worktree"]);
     expect(stack.leaks()).toEqual([]);
