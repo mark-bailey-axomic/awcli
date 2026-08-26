@@ -50,6 +50,16 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
+# The declaration ships with the binary or AWCLI-22 has nothing to write into a target
+# repository. verify-packaged-declaration.sh holds the tarball; this holds what an install
+# actually laid down, which is the path awcli init will read from at run time.
+DECLARATION="$PREFIX/lib/node_modules/awcli/dist/contract/awcli.d.ts"
+if [ ! -f "$DECLARATION" ]; then
+  echo "FAIL: a global install carries no dist/contract/awcli.d.ts" >&2
+  echo "      looked in $DECLARATION" >&2
+  exit 1
+fi
+
 # PATH resolution is part of the claim, so check it — against a PATH holding only this
 # install, so a stale global awcli can never answer in its place.
 WORK="$SANDBOX/unrelated"

@@ -16,15 +16,30 @@
  *
  * **Not every member described here runs on every awcli.** The contract is frozen ahead of
  * the machinery behind it (BR-033), so a given build declares members it has not implemented,
- * and calling one fails rather than doing nothing. Ask ctx.version.supports("agent") before
- * calling a member you have not seen work; that predicate answers for this build, and it is
- * the only thing in this file that describes the present rather than the contract.
+ * and calling one fails rather than doing nothing. Every member of WorkflowContext this build
+ * has not built says so in its own comment, in as many words. Ask
+ * ctx.version.supports("agent") before calling a member you have not seen work; that predicate
+ * answers for this build, and it and those disclosures are the only things in this file that
+ * describe the present rather than the contract.
  *
  * Additive-only within a major version (BR-033). A member may be added; none may be removed
  * or narrowed. Workflows are committed code calling this surface, and the semver major is the
  * only breaking-change signal the version range gate has (BR-003). Adding a member, adding an
  * optional property, or widening an argument type is additive. Anything a previously-valid
  * workflow would no longer compile against is not.
+ *
+ * Every function on this surface is a `readonly` property holding an arrow type. The arrow is
+ * for strictFunctionTypes, which method syntax opts out of (see WorkflowContext); the
+ * `readonly` is so that nothing sharing a context can substitute one. A workflow's module graph
+ * is whatever it imports, and a helper somewhere inside it assigning `ctx.log.info = () => {}`
+ * would silence the audit trail BR-025 and BR-028 depend on, or swap a confinement-enforcing
+ * function after sandbox() has handed out a scoped context.
+ *
+ * A declaration is a compile-time claim and BR-025 asks for more than one: an assignment over
+ * log.info is refused, not merely unspellable. awcli freezes the context and every sub-API on
+ * it, so the assignment throws in a module rather than quietly succeeding for a caller that
+ * reached this surface without the declaration. The `readonly` here is what makes the same
+ * mistake fail at the keyboard instead.
  */
 
 /** A commit as git reports it. Commits are the deliverable of an agent call (ADR-0004). */
@@ -41,11 +56,19 @@ interface Commit {
  * Shared state outlives the process, so a live handle — a stream, a class instance, a
  * function — cannot go into it.
  *
- * This type does not police state assignments. WorkflowState is State & { save }, and State
- * is deliberately unconstrained, so BR-008 is enforced at run time: awcli rejects an
- * unstorable value at the assignment that set it, naming the key. Where Storable does bite at
- * compile time is on log fields, and a workflow that wants the check early can ask for it
- * with ctx.schema.storable() rather than finding out when it assigns.
+ * This type constrains nothing a workflow writes, and after v1 it never did. State assignments
+ * are not policed by it: WorkflowState is State & { save }, and State is deliberately
+ * unconstrained, so BR-008 is enforced at run time — awcli rejects an unstorable value at the
+ * assignment that set it, naming the key. Log fields are not policed by it either; they are
+ * `unknown`, and LogApi says why. Its last appearance on this surface is as the type
+ * ctx.schema.storable() narrows to.
+ *
+ * That is the whole of its job, and it is not a small one. BR-008 has to be checked against
+ * something, and this is what awcli checks against when a value lands: the vocabulary of what
+ * comes back intact. A workflow that wants the answer before the assignment asks for it with
+ * ctx.schema.storable(). What no longer exists anywhere is a caller this type refuses at
+ * compile time — widening it would not break a single call site, which is why
+ * test/fixtures/v1-rejected/storable.ts pins the type by construction instead.
  */
 type Storable =
   | null
@@ -65,14 +88,16 @@ type SchemaCheck<T> =
  *
  * Structural on purpose. A target repository cannot install a validation library, so a schema
  * here is anything with a check method — a hand-written predicate, or a thin adapter around
- * whatever the author does happen to have.
+ * whatever the author does happen to have. `readonly` costs that nothing: TypeScript ignores
+ * the modifier when it relates two types, so an object whose own `check` is writable still
+ * satisfies this.
  *
  * There are no constructors for building one. That is a real gap for an author who wants
  * BR-009 state validation without a library, and it is a gap that can be closed additively;
  * freezing a combinator vocabulary now would be guessing at one.
  */
 interface Schema<T = unknown> {
-  check: (value: unknown) => SchemaCheck<T>;
+  readonly check: (value: unknown) => SchemaCheck<T>;
 }
 
 /**
@@ -88,7 +113,7 @@ interface SchemaApi {
    * assignment; a workflow can apply it first to decide what is worth keeping, rather than
    * discovering at the assignment that a value cannot cross an iteration boundary.
    */
-  storable: (value: unknown) => SchemaCheck<Storable>;
+  readonly storable: (value: unknown) => SchemaCheck<Storable>;
 }
 
 /**
@@ -146,7 +171,7 @@ interface Usage {
  *
  * A prompt leaves the machine. Everything interpolated into one reaches a third-party model
  * and is recorded in this call's log (BR-028), so a workflow must decide deliberately what
- * goes in — ctx.env in particular is not material to paste into a prompt.
+ * goes in — a value read out of ctx.env in particular is not material to paste into a prompt.
  *
  * Every optional here admits undefined explicitly. awcli does not control the author's
  * compiler flags, and under exactOptionalPropertyTypes a bare `model?: string` refuses
@@ -159,9 +184,9 @@ interface AgentOptions<T = string> {
   /**
    * A file whose contents join the prompt — for one too long to sit in the workflow.
    *
-   * Resolved within the working copy and confined to it, on the same terms as ctx.fs.read: a
-   * path escaping the working copy is refused rather than resolved. This one is the sharper
-   * of the two, because its contents are transmitted off the machine by construction.
+   * Resolved within the working copy's tree and confined to it, on the same terms as
+   * ctx.fs.read: a path escaping the tree is refused rather than resolved. This one is the
+   * sharper of the two, because its contents are transmitted off the machine by construction.
    */
   promptFile?: string | undefined;
   /** Overrides the model the repository declares as its default. */
@@ -171,6 +196,11 @@ interface AgentOptions<T = string> {
    * this tag, or the run is refused at startup rather than after all the work (BR-007). A
    * block that fails the schema costs one narrow re-ask and then the iteration — never the
    * run, because the agent's real work is already committed (BR-020).
+   *
+   * Both fields are required, and the required-key witnesses in
+   * test/fixtures/v1-corpus/construction.ts are the only thing that says so structurally:
+   * conformance.ts never reaches inside AgentOptions, and an object literal supplying both
+   * compiles whether or not the declaration still asks for them.
    */
   output?: { tag: string; schema: Schema<T> } | undefined;
   /** Wall-clock ceiling for this one call. */
@@ -219,6 +249,11 @@ interface SandboxOptions {
  * agent() hands back a result, not a child context, so branches share the writable body
  * context and awcli enforces the single writer at run time. Giving that case a frozen context
  * of its own is AWCLI-10; because it would be a new member or overload, it stays additive.
+ *
+ * No runtime is held against this shape. conformance.ts walks the members of ctx and one level
+ * into each, and a Scope arrives from behind a function rather than as a member, so the runtime
+ * never restates it and there is nothing there to compare. The construction fixture in
+ * test/fixtures/v1-corpus is what holds it.
  */
 interface Scope<State = Record<string, unknown>> {
   /** The context to use inside the sandbox. */
@@ -229,7 +264,7 @@ interface Scope<State = Record<string, unknown>> {
    * Remove the container and release the working copy. The working copy stays on disk and its
    * branch is never deleted — the commits are the deliverable (BR-021, BR-036).
    */
-  dispose: () => Promise<void>;
+  readonly dispose: () => Promise<void>;
 }
 
 /**
@@ -239,6 +274,13 @@ interface Scope<State = Record<string, unknown>> {
  * `state.labels.push(x)` from inside a fan-out would still compile — and BR-012 has no
  * exceptions.
  *
+ * One mapped type covers arrays, tuples and plain objects, rather than an array branch of its
+ * own. A homomorphic mapped type over `keyof T` is the form TypeScript carries across an array
+ * or a tuple intact, so `[string, number]` comes back as `readonly [string, number]` with both
+ * positions and its length. Mapping the element type instead — `readonly DeepReadonly<E>[]` over
+ * an inferred E — reads more naturally and flattens a tuple to `readonly (string | number)[]`,
+ * which loses every position a workflow would index and turns `.length` from `2` into `number`.
+ *
  * It walks whatever shape the author declared, which nothing constrains: BR-008 rejects an
  * unstorable value at run time, but a state shape declaring a Date or a Map still reaches the
  * object branch here and comes back mapped rather than intact. Declare state as plain data
@@ -247,11 +289,9 @@ interface Scope<State = Record<string, unknown>> {
  */
 type DeepReadonly<T> = T extends (...args: never[]) => unknown
   ? T
-  : T extends readonly (infer Element)[]
-    ? readonly DeepReadonly<Element>[]
-    : T extends object
-      ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
-      : T;
+  : T extends object
+    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+    : T;
 
 /** The workflow's own surface with the single-writer rule applied to it (BR-012). */
 type ScopedContext<State = Record<string, unknown>> = Omit<
@@ -276,7 +316,7 @@ type ScopedContext<State = Record<string, unknown>> = Omit<
  * misbehaving later.
  */
 type WorkflowState<State = Record<string, unknown>> = State & {
-  save: () => Promise<void>;
+  readonly save: () => Promise<void>;
 };
 
 /**
@@ -334,17 +374,17 @@ interface GitApi {
   /** Absolute path to the working copy. The directory ctx.exec and ctx.fs operate in. */
   readonly dir: string;
   /** The branch the working copy is on, derived from run and slot (BR-036). */
-  branch: () => Promise<string>;
+  readonly branch: () => Promise<string>;
   /** The commit the working copy is currently on. Recorded against the run (BR-025). */
-  head: () => Promise<string>;
+  readonly head: () => Promise<string>;
   /** Whether the working copy has uncommitted changes — what a resumed run inherited. */
-  dirty: () => Promise<boolean>;
+  readonly dirty: () => Promise<boolean>;
   /** Commits on this branch that are not on the base it was cut from. */
-  log: () => Promise<readonly Commit[]>;
+  readonly log: () => Promise<readonly Commit[]>;
   /** Unified diff of everything uncommitted. */
-  diff: () => Promise<string>;
+  readonly diff: () => Promise<string>;
   /** Commit the working copy's current changes; refuses when there is nothing to commit. */
-  commit: (message: string) => Promise<Commit>;
+  readonly commit: (message: string) => Promise<Commit>;
 }
 
 /** What a command left behind. */
@@ -389,7 +429,7 @@ interface ExecOptions {
  * On the default execution target there is no container, so a declared command runs with the
  * operator's own reach — the filesystem beyond the working copy, the network, and whatever
  * credentials this machine holds. BR-040 states that rather than leaving it to be inferred, and
- * requires the run to report the target a command actually ran on. Working-copy confinement
+ * requires the run to report the target a command actually ran on. Working-tree confinement
  * (BR-038) governs the paths a workflow names, not what a command reaches once it is running.
  *
  * Which execution target this runs on comes from the context rather than from an argument:
@@ -404,21 +444,28 @@ type ExecApi = (
 ) => Promise<ExecResult>;
 
 /**
- * ctx.fs — read and write within the working copy.
+ * ctx.fs — read and write within the working copy's tree.
  *
- * Paths are resolved against the working copy and confined to it: one that escapes, by `..`
- * or by being absolute or through a symlink, is refused rather than resolved. Reaching outside
- * deliberately is what ctx.exec is for — an explicit act, rather than something a mistyped
- * path does by accident.
+ * Paths are resolved against the working copy and confined to its tree: one that escapes, by
+ * `..` or by being absolute or through a symlink, is refused rather than resolved. Reaching
+ * outside deliberately is what ctx.exec is for — an explicit act, rather than something a
+ * mistyped path does by accident.
  *
- * Confinement protects the operator's other files. It is not a boundary around the agent: git
- * hooks living in the working copy are executed by ctx.git.commit() and by any ctx.exec that
- * runs git, and they run with the workflow's own reach. Only a container is a boundary
- * (BR-015).
+ * The tree, and not the working copy entire. The git administrative area lies inside the
+ * working copy and is refused all the same (BR-038): a hook written there is run by the next
+ * commit awcli makes, and on the worktree default the `.git` entry is a single line naming
+ * which repository this working copy belongs to, so writing it repoints the working copy at a
+ * different repository without any path having left anything.
+ *
+ * Confinement protects the operator's other files. It is not a boundary around the agent, and
+ * the carve-out is not a boundary around the administrative area either: git hooks living in
+ * the working copy are executed by ctx.git.commit() and by any ctx.exec that runs git and they
+ * run with the workflow's own reach, and a command the workflow runs may still write anything
+ * there, on BR-040's terms. Only a container is a boundary (BR-015).
  */
 interface FsApi {
-  read: (path: string) => Promise<string>;
-  write: (path: string, contents: string) => Promise<void>;
+  readonly read: (path: string) => Promise<string>;
+  readonly write: (path: string, contents: string) => Promise<void>;
 }
 
 /**
@@ -426,33 +473,81 @@ interface FsApi {
  *
  * Output goes to this call's own log file and the terminal carries a summary, because four
  * parallel agents interleaved on one terminal is unreadable, and the detail is exactly what is
- * wanted afterwards (BR-028). Fields are Storable for the same reason state is: a log line
- * that cannot be serialised is a log line that is not there.
+ * wanted afterwards (BR-028).
+ *
+ * A field value is `unknown` rather than Storable. BR-008 still governs both state and a log
+ * field, and on both it is enforced at run time — this was the last place on the surface where
+ * Storable refused a caller at compile time, and widening it here removes that. What it did not
+ * do was make state safer: State is an unconstrained type parameter, so a state assignment was
+ * never compile-checked against Storable and is not now.
+ *
+ * Where the two differ is what run time then does. State crosses to disk *and back*, so a value
+ * that cannot make the round trip is one the next iteration cannot read, and awcli refuses it at
+ * the assignment that set it, naming the key; ctx.schema.storable() is how a workflow asks the
+ * same question first. A log line crosses once and is never read back into a workflow, so a
+ * field is BR-008's business at serialisation only — awcli writes what it can represent and says
+ * so where it cannot, rather than refusing the call.
+ *
+ * Typing the fields Storable put that refusal in the worst possible place. The values most
+ * worth logging are this contract's own return types, and an interface has no implicit index
+ * signature, so `ExecResult`, `Commit` and `ctx.args` were each rejected by a field record that
+ * a bare string or number sailed through. What the refusal bought was a call site spreading a
+ * result by hand, or logging less than it meant to, to satisfy a constraint a log line does not
+ * need. `unknown` also subsumes the undefined case a log has always had to carry: spend the
+ * agent did not report (ADR-0004), an argument nobody passed.
  *
  * A log is durable and is read later by people and by other agents. awcli redacts values
  * matching known secret shapes from logs and run records, which is a net cast over shapes it
  * recognises rather than a guarantee about a value it does not — logging a credential on
  * purpose still writes it down. The workflow decides what is worth recording.
- *
- * Unlike state, a field may be undefined. Storable is what survives a round trip to disk, and
- * undefined does not — but a log line is written once and never read back, and the most
- * ordinary thing to log is a value that might be absent: spend the agent did not report
- * (ADR-0004), an argument nobody passed. Refusing those would push a ?? "" onto every call
- * site to buy nothing.
  */
 interface LogApi {
-  info: (
-    message: string,
-    fields?: Readonly<Record<string, Storable | undefined>>,
-  ) => void;
-  warn: (
-    message: string,
-    fields?: Readonly<Record<string, Storable | undefined>>,
-  ) => void;
-  error: (
-    message: string,
-    fields?: Readonly<Record<string, Storable | undefined>>,
-  ) => void;
+  readonly info: (message: string, fields?: Readonly<Record<string, unknown>>) => void;
+  readonly warn: (message: string, fields?: Readonly<Record<string, unknown>>) => void;
+  readonly error: (message: string, fields?: Readonly<Record<string, unknown>>) => void;
+}
+
+/**
+ * ctx.env — the environment the execution target resolved for this run, one name at a time.
+ *
+ * An accessor and not a record, and the shape is the rule. What survives the subtraction below
+ * is the operator's own environment, which is theirs and may hold secrets of its own, so this
+ * is somewhere to read a specific known variable from and not somewhere to enumerate and
+ * forward. `Readonly<Record<string, string | undefined>>` was the earlier spelling, and it made
+ * enumerate-and-forward the default affordance while only advising against it in prose: a
+ * record goes wherever a record is taken, and `ctx.log.info("env", ctx.env)` type-checked
+ * against a field record and wrote every variable the operator had set into a durable file.
+ * Neither move can be spelled through get and has. There is no listing member; adding one is
+ * additive, so its absence is a decision that stays open rather than one this type could never
+ * revisit.
+ *
+ * The variables awcli sets for a run are meant to be absent from what this answers. The ones
+ * that matter are the agent credentials it lends a container as a read-only mount for the life
+ * of the run and never copies (BR-016); answering with one would copy it into every prompt and
+ * every run record that reads it, which is the thing BR-016 exists to prevent.
+ *
+ * What awcli set is the whole of the test, and it is a lookup rather than a judgement: awcli
+ * knows which names it set at the moment it sets them, so nothing here rests on recognising
+ * what looks like a credential. An agent API key the operator set themselves is present, value
+ * included, because awcli did not set it (BR-039). On the host target awcli often sets nothing,
+ * and the answers are then the operator's environment unchanged, with nothing withheld. A name
+ * awcli removed is indistinguishable from one that was never set.
+ *
+ * That subtraction is a promise about the environment awcli resolves, not something this type
+ * states or enforces — and it is not built. BR-039 governs it and AWCLI-24 delivers it, so on
+ * this build both members refuse rather than answering out of an unfiltered environment; ask
+ * ctx.version.supports("env") first (BR-033). Read the promise as what the member must do
+ * before it can ship, not as what a present awcli does.
+ *
+ * awcli redacts values matching known secret shapes from logs and run records, which is a net
+ * over shapes it recognises rather than a guarantee about a value it does not. A value read
+ * from here and logged on purpose is still written down.
+ */
+interface EnvApi {
+  /** One variable's value, or undefined when it is unset or awcli removed it (BR-039). */
+  readonly get: (name: string) => string | undefined;
+  /** Whether one variable is present. False for a name awcli removed, as for one never set. */
+  readonly has: (name: string) => boolean;
 }
 
 /**
@@ -486,7 +581,7 @@ interface ContractVersion {
    * skips a member that works. Ask supports("git"), then call the method. Teaching it dotted
    * names is additive if it ever earns its place.
    */
-  supports: (member: string) => boolean;
+  readonly supports: (member: string) => boolean;
 }
 
 /**
@@ -498,65 +593,100 @@ interface ContractVersion {
  * an interface does not satisfy that constraint and an interface is how an author will write
  * their state shape.
  *
- * Every function on this surface — here and in the sub-APIs above — is a property with an
- * arrow type rather than a method, so strictFunctionTypes applies to it. Method syntax is
- * bivariant in its parameters, which would let a runtime narrowing `commit(message: "feat")`
- * pass as a GitApi and the conformance check see nothing. Callers cannot tell the two apart.
+ * Every function on this surface — here and in the sub-APIs above — is a `readonly` property
+ * holding an arrow type rather than a method. The arrow is for strictFunctionTypes: method
+ * syntax is bivariant in its parameters, which would let a runtime narrowing
+ * `commit(message: "feat")` pass as a GitApi and the conformance check see nothing, and callers
+ * cannot tell the two apart. The `readonly` is so that nothing sharing a context can substitute
+ * one. The two cannot both be had any other way — `readonly` on method syntax is an error
+ * (TS1024), which is the second reason not to write a method here.
+ *
+ * A member this build has not implemented says so in its own comment below. That is a statement
+ * about this build rather than about the contract, so it is the one thing here meant to go out
+ * of date: a member's disclosure goes when the member ships, and
+ * test/contract/unbuilt-disclosure.test.ts holds these comments and the runtime's own table of
+ * unbuilt members to each other in both directions.
  */
 interface WorkflowContext<State = Record<string, unknown>> {
-  /** Run an agent and wait for it (BR-013, BR-020, BR-022). */
+  /**
+   * Run an agent and wait for it (BR-013, BR-020, BR-022).
+   *
+   * Not built on this awcli: calling it refuses rather than doing nothing, so ask
+   * ctx.version.supports("agent") first (BR-033).
+   */
   readonly agent: <T = string>(options: AgentOptions<T>) => Promise<AgentResult<T>>;
-  /** Obtain a container and a working copy of its own (BR-004, BR-016). */
+  /**
+   * Obtain a container and a working copy of its own (BR-004, BR-016).
+   *
+   * Not built on this awcli: calling it refuses rather than doing nothing, so ask
+   * ctx.version.supports("sandbox") first (BR-033).
+   */
   readonly sandbox: (options?: SandboxOptions) => Promise<Scope<State>>;
-  /** Shared state: mutable in the body, read-only inside a scope (BR-008, BR-012, BR-023). */
+  /**
+   * Shared state: mutable in the body, read-only inside a scope (BR-008, BR-012, BR-023).
+   *
+   * Not built on this awcli: reading it refuses rather than handing back an empty record, so
+   * nothing reachable through it — save() included — can be held. Ask
+   * ctx.version.supports("state") first (BR-033).
+   */
   readonly state: WorkflowState<State>;
-  /** Whatever was passed as --arg key=value. An argument not passed is absent. */
+  /**
+   * Whatever was passed as --arg key=value. An argument not passed is absent.
+   *
+   * Not built on this awcli: reading it refuses rather than handing back an empty record, so
+   * ask ctx.version.supports("args") first (BR-033).
+   */
   readonly args: Readonly<Record<string, string | undefined>>;
-  /** What the repository declares about itself (BR-006). */
+  /**
+   * What the repository declares about itself (BR-006).
+   *
+   * Not built on this awcli: reading it refuses rather than handing back a blank profile, so
+   * ask ctx.version.supports("project") first (BR-033).
+   */
   readonly project: Project;
-  /** The working copy this iteration is operating in (BR-036). */
+  /**
+   * The working copy this iteration is operating in (BR-036).
+   *
+   * Not built on this awcli: reading dir refuses and calling any of the rest refuses, so ask
+   * ctx.version.supports("git") first (BR-033).
+   */
   readonly git: GitApi;
-  /** Run a command here (BR-032). */
+  /**
+   * Run a command here (BR-032).
+   *
+   * Not built on this awcli: calling it refuses rather than doing nothing, so ask
+   * ctx.version.supports("exec") first (BR-033).
+   */
   readonly exec: ExecApi;
-  /** Read and write here. */
+  /**
+   * Read and write here, within the working copy's tree (BR-038).
+   *
+   * Not built on this awcli: calling either member refuses rather than doing nothing, so ask
+   * ctx.version.supports("fs") first (BR-033).
+   */
   readonly fs: FsApi;
-  /** Say something, attributably (BR-025, BR-028). */
+  /**
+   * Say something, attributably (BR-025, BR-028).
+   *
+   * Not built on this awcli: calling any of the three refuses rather than dropping the line,
+   * so ask ctx.version.supports("log") first (BR-033).
+   */
   readonly log: LogApi;
   /**
-   * The environment the execution target resolves for this run.
+   * Read one variable of the environment resolved for this run (BR-039).
    *
-   * The variables awcli set for this run are meant to be absent from it. The ones that matter are
-   * the agent credentials it lends a container as a read-only mount for the life of the run and
-   * never copies (BR-016); handing them back through this record would copy them into every
-   * prompt and every run record that reads it, which is the thing BR-016 exists to prevent.
-   *
-   * What awcli set is the whole of the test, and it is a lookup rather than a judgement: awcli
-   * knows which names it set at the moment it sets them, so nothing here rests on recognising
-   * what looks like a credential. An agent API key the operator set themselves is present, value
-   * included, because awcli did not set it (BR-039). On the host target awcli often sets nothing,
-   * and the record is then the operator's environment unchanged, with nothing withheld.
-   *
-   * That subtraction is a promise about the record awcli builds, not something this type states
-   * or enforces — and it is not built. BR-039 governs it and AWCLI-24 delivers it, so on this
-   * build reading env throws rather than returning a filtered record; ask
-   * ctx.version.supports("env") first (BR-033). Read the promise as what the member must do
-   * before it can ship, not as what a present awcli does.
-   *
-   * Nor can the type keep the record out of a log. `Readonly<Record<string, string | undefined>>`
-   * is a valid LogApi field record, so `ctx.log.info("env", ctx.env)` compiles; branding the
-   * record to refuse it would distort LogApi for every caller and still be defeated by a spread
-   * or by naming one variable. awcli redacts values matching known secret shapes from logs and
-   * run records, which is a net over shapes it recognises rather than a guarantee about a value
-   * it does not.
-   *
-   * What remains is the operator's environment, which is theirs and may hold secrets of its own —
-   * so this is somewhere to read a specific known variable from, not somewhere to enumerate and
-   * forward. A variable that is not set, or that awcli removed, is absent.
+   * Not built on this awcli: calling either member refuses rather than answering out of an
+   * unfiltered environment, so ask ctx.version.supports("env") first (BR-033).
    */
-  readonly env: Readonly<Record<string, string | undefined>>;
-  /** The rules awcli applies that a workflow cannot reimplement (BR-008). */
+  readonly env: EnvApi;
+  /**
+   * The rules awcli applies that a workflow cannot reimplement (BR-008).
+   *
+   * Not built on this awcli: calling it refuses rather than approving everything, so ask
+   * ctx.version.supports("schema") first (BR-033).
+   */
   readonly schema: SchemaApi;
-  /** Feature-detect rather than crash (BR-033). */
+  /** Feature-detect rather than crash (BR-033). The one member every build has. */
   readonly version: ContractVersion;
 }
 
@@ -602,7 +732,7 @@ type Workflow<State = Record<string, unknown>> = (
  * any run state exists — a missing entry point is a typo, not a run (BR-005).
  */
 interface WorkflowModule<State = Record<string, unknown>> {
-  default: Workflow<State>;
+  readonly default: Workflow<State>;
   /** Absent means { exhaustionIsCompletion: false }. */
   limits?: WorkflowLimits | undefined;
   /** Absent means stored state is loaded without validation (BR-009). */

@@ -81,7 +81,7 @@ function laterAwcli(extraMembers: readonly string[] = ["http"]): WorkflowContext
     exec: () => Promise.resolve({ exitCode: 0, stdout: "", stderr: "" }),
     fs: { read: () => Promise.resolve(""), write: () => Promise.resolve() },
     log: { info: () => undefined, warn: () => undefined, error: () => undefined },
-    env: {},
+    env: { get: () => undefined, has: () => false },
     schema: { storable: (value) => ({ ok: true, value: value as Storable }) },
     version: {
       contract: "1.4.0",

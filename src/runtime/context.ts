@@ -25,15 +25,49 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * to move; the point is that an id in this table naming a real ticket is not on its own proof that
  * the ticket builds the whole member.
  *
- * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
- * one that surprises people. Adding a member to CONTEXT_SURFACE fails to compile here until
- * someone says who builds it.
+ * schema is the fourth, and it is the one where this table and the TDD still disagree. The TDD's
+ * work breakdown lists `ctx.schema` in WB-10's Contracts line, which is AWCLI-17 — extract a
+ * tagged result and re-ask for it once. AWCLI-09 is what this table names, and that is the
+ * defensible half of the disagreement: the only member SchemaApi declares is storable(), which
+ * answers BR-008's question about shared state, and AWCLI-09 is the unit that has to answer it
+ * anyway to reject an unstorable value at the assignment that set it. AWCLI-17 validates against
+ * the Schema the *workflow* supplied through AgentOptions.output and never needs ctx.schema at
+ * all. So the code side stays AWCLI-09 and the TDD's WB-10 Contracts line is what needs
+ * correcting. Recorded rather than quietly fixed, because this comment claims to be an audit and
+ * an audit that lists three discrepancies while a fourth stands is worse than one that lists
+ * none.
  *
- * When a member is implemented, update this table and the corresponding stubs in createContext
- * together so supports() and NotYetImplementedError stay aligned; do not loosen the types here.
+ * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
+ * one that surprises people. A member added to the declaration and to CONTEXT_SURFACE fails to
+ * compile here until someone says who builds it: Exclude<ContextMember, "version"> gains the
+ * name, and Record then requires a key this object does not have (TS2741).
+ *
+ * *Implementing* a member fails here too, and the sequence is worth writing out because it is
+ * three steps rather than one and the middle one is the easy one to miss:
+ *
+ *   1. Delete the member's entry here. That leaves the same TS2741 on the clause below — the
+ *      Record still requires the key that has just gone.
+ *   2. Name the member in the Exclude beside "version". That is the line that actually says
+ *      "this one is built now", and it is what clears the error from step 1.
+ *   3. Delete its stub in createContext, which the compiler insists on rather than merely
+ *      suggests: from step 1 onward keyof typeof DELIVERED_BY no longer holds the name, so
+ *      every sync() and async() call passing it stops compiling (TS2345) — three of them for
+ *      a member like log, one per method.
+ *
+ * The codes above are what TypeScript 7 reports; a failing `satisfies` under 5.x wrapped the
+ * same mismatch in TS1360 instead. Read them as which check fired, not as literals to grep.
+ *
+ * Nothing has to be added to a list of implemented members, because there is no such list to
+ * add to. IMPLEMENTED_MEMBERS filters CONTEXT_SURFACE against the keys here and UNBUILT_MEMBERS
+ * is those keys, so both follow from the three steps on their own. Loosening this type to make
+ * any of those three errors go away is how the exhaustiveness gets lost.
  *
  * What it does not check is that a value names anything: every key carries a string, so a
- * placeholder like "unassigned" compiles. not-implemented.test.ts is what rejects one.
+ * placeholder like "unassigned" compiles. not-implemented.test.ts is what rejects one. What it
+ * also does not check is that the declaration admits to any of this: every key here is a member
+ * a workflow author will find declared and cannot call, and
+ * test/contract/unbuilt-disclosure.test.ts is what holds this table and the declaration's own
+ * doc comments to each other.
  */
 const DELIVERED_BY = {
   agent: "AWCLI-02",
@@ -59,6 +93,9 @@ const DELIVERED_BY = {
 const IMPLEMENTED_MEMBERS: readonly string[] = CONTEXT_SURFACE.filter(
   (member) => !Object.hasOwn(DELIVERED_BY, member),
 );
+
+/** The members this build declares and cannot run, for the disclosure test to read. */
+export const UNBUILT_MEMBERS: readonly string[] = Object.keys(DELIVERED_BY);
 
 /**
  * Everything the context factory reads from outside itself, so the surface stays testable
@@ -103,6 +140,10 @@ function refusal(
  * pass forever. Two independent statements of one shape is the cost ADR-0002 accepts in
  * exchange for a declaration that leads the implementation instead of following it.
  *
+ * Restating it means restating the modifiers too. Every function the declaration marks
+ * `readonly` is marked `readonly` here, at both levels, because SameReadonly is what compares
+ * them and a modifier dropped from one side is exactly the drift it exists to catch.
+ *
  * What that does and does not reach: each member's own signature is restated here, so a
  * parameter or return type drifting from the declaration is caught. The types those signatures
  * mention — AgentOptions, AgentResult, Scope, Project, ExecResult — are the contract's own and
@@ -115,53 +156,48 @@ function refusal(
  * refuses at the property read, which is earlier than either — so `const { state } = ctx`
  * throws at the destructure, and nothing reachable through ctx.state, including its save(),
  * can be called at all on this build. Only the members carrying functions can be held without
- * being invoked.
+ * being invoked, and ctx.env became one of those when it stopped being a record: reading it is
+ * safe now and get("HOME") is where it refuses.
  */
 export function createContext<State = Record<string, unknown>>(
   environment: ContextEnvironment = runningEnvironment(),
 ): {
   readonly agent: <T = string>(options: AgentOptions<T>) => Promise<AgentResult<T>>;
   readonly sandbox: (options?: SandboxOptions) => Promise<Scope<State>>;
-  readonly state: State & { save: () => Promise<void> };
+  readonly state: State & { readonly save: () => Promise<void> };
   readonly args: Readonly<Record<string, string | undefined>>;
   readonly project: Project;
   readonly git: {
     readonly dir: string;
-    branch: () => Promise<string>;
-    head: () => Promise<string>;
-    dirty: () => Promise<boolean>;
-    log: () => Promise<readonly Commit[]>;
-    diff: () => Promise<string>;
-    commit: (message: string) => Promise<Commit>;
+    readonly branch: () => Promise<string>;
+    readonly head: () => Promise<string>;
+    readonly dirty: () => Promise<boolean>;
+    readonly log: () => Promise<readonly Commit[]>;
+    readonly diff: () => Promise<string>;
+    readonly commit: (message: string) => Promise<Commit>;
   };
   readonly exec: (
     command: string | readonly string[],
     options?: ExecOptions,
   ) => Promise<ExecResult>;
   readonly fs: {
-    read: (path: string) => Promise<string>;
-    write: (path: string, contents: string) => Promise<void>;
+    readonly read: (path: string) => Promise<string>;
+    readonly write: (path: string, contents: string) => Promise<void>;
   };
   readonly log: {
-    info: (
-      message: string,
-      fields?: Readonly<Record<string, Storable | undefined>>,
-    ) => void;
-    warn: (
-      message: string,
-      fields?: Readonly<Record<string, Storable | undefined>>,
-    ) => void;
-    error: (
-      message: string,
-      fields?: Readonly<Record<string, Storable | undefined>>,
-    ) => void;
+    readonly info: (message: string, fields?: Readonly<Record<string, unknown>>) => void;
+    readonly warn: (message: string, fields?: Readonly<Record<string, unknown>>) => void;
+    readonly error: (message: string, fields?: Readonly<Record<string, unknown>>) => void;
   };
-  readonly env: Readonly<Record<string, string | undefined>>;
-  readonly schema: { storable: (value: unknown) => SchemaCheck<Storable> };
+  readonly env: {
+    readonly get: (name: string) => string | undefined;
+    readonly has: (name: string) => boolean;
+  };
+  readonly schema: { readonly storable: (value: unknown) => SchemaCheck<Storable> };
   readonly version: {
     readonly contract: string;
     readonly awcli: string;
-    supports: (member: string) => boolean;
+    readonly supports: (member: string) => boolean;
   };
 } {
   /** Refuse a member that answers synchronously. Never returns. */
@@ -180,7 +216,24 @@ export function createContext<State = Record<string, unknown>>(
   const async = (member: keyof typeof DELIVERED_BY, method?: string): Promise<never> =>
     Promise.reject(refusal(environment, member, method));
 
-  return {
+  /**
+   * Freeze one object of the surface, keeping its literal type.
+   *
+   * The declaration marks every function `readonly`, and that is a compile-time claim about
+   * code that was compiled against it. BR-025 asks for more: an assignment over log.info is to
+   * be refused, and a caller that reached this context from JavaScript, or through a cast, or
+   * from a workflow whose editor never loaded awcli.d.ts, has had nothing standing in its way.
+   * Freezing makes that assignment throw — a workflow module is ESM and therefore strict, so a
+   * write to a frozen property is a TypeError rather than a silent no-op.
+   *
+   * Shallow, so each sub-API is frozen in its own right on the way past: freezing the context
+   * alone would stop `ctx.log = x` and leave `ctx.log.info = x`, which is the assignment BR-025
+   * actually names. Object.freeze returns Readonly<T>; the annotation hands back T so that the
+   * object literals below keep the types conformance.ts compares.
+   */
+  const frozen = <T extends object>(value: T): T => Object.freeze(value);
+
+  return frozen({
     agent: () => async("agent"),
     sandbox: () => async("sandbox"),
     get state() {
@@ -192,7 +245,7 @@ export function createContext<State = Record<string, unknown>>(
     get project() {
       return sync("project");
     },
-    git: {
+    git: frozen({
       get dir() {
         return sync("git", "dir");
       },
@@ -202,24 +255,25 @@ export function createContext<State = Record<string, unknown>>(
       log: () => async("git", "log"),
       diff: () => async("git", "diff"),
       commit: () => async("git", "commit"),
-    },
+    }),
     exec: () => async("exec"),
-    fs: {
+    fs: frozen({
       read: () => async("fs", "read"),
       write: () => async("fs", "write"),
-    },
-    log: {
+    }),
+    log: frozen({
       info: () => sync("log", "info"),
       warn: () => sync("log", "warn"),
       error: () => sync("log", "error"),
-    },
-    get env() {
-      return sync("env");
-    },
-    schema: {
+    }),
+    env: frozen({
+      get: () => sync("env", "get"),
+      has: () => sync("env", "has"),
+    }),
+    schema: frozen({
       storable: () => sync("schema", "storable"),
-    },
-    version: {
+    }),
+    version: frozen({
       contract: environment.contract,
       awcli: environment.awcli,
       // Answers "can this be called", not "is this declared" — see ContractVersion.supports.
@@ -227,8 +281,8 @@ export function createContext<State = Record<string, unknown>>(
       // heard of and gets false; one written against this contract asks about a member that is
       // declared but unbuilt and gets false too, which is the only answer it can act on.
       supports: (member) => environment.implemented.includes(member),
-    },
-  };
+    }),
+  });
 }
 
 /** The runtime's shape, for conformance.ts to hold against the declaration. */

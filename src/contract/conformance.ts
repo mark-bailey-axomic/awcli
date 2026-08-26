@@ -24,9 +24,15 @@ import type { RuntimeContext, RuntimeContextFor } from "../runtime/context.js";
  *    that verdict where it was.
  * 3. Optionality. Caught, by Exact — `T` and `T | undefined` each fail one direction.
  * 4. A `readonly` modifier. Caught, by SameReadonly, at the top level and one level down: a
- *    `readonly` dropped from `git.dir` is now reached by DriftedWithin, which asks SameReadonly
- *    the same question of the sub-API's own members. Exact cannot see a modifier at all, because
- *    TypeScript ignores `readonly` when it relates two types.
+ *    `readonly` dropped from any member of a sub-API is reached by DriftedWithin, which asks
+ *    SameReadonly the same question of the sub-API's own members. Exact cannot see a modifier at
+ *    all, because TypeScript ignores `readonly` when it relates two types.
+ *
+ *    That reach is why marking every function on the declaration `readonly` needed no new
+ *    machinery. DriftedWithin already asked SameReadonly of every member of every sub-API; until
+ *    the declaration said so, a writable function simply was not drift, and git.dir was the only
+ *    member the question had a non-trivial answer for. The gate script watches one of each kind —
+ *    git.dir, which is data, and git.commit and log.info, which are not.
  * 5. A restated signature widened or narrowed — `string` for a literal union, `unknown` for a
  *    parameter, a different return type. Caught, by Exact.
  * 6. The runtime naming the contract's own interface — `git: GitApi` — instead of restating the
@@ -51,17 +57,37 @@ import type { RuntimeContext, RuntimeContextFor } from "../runtime/context.js";
  *    level and within a sub-API, by Exact, which fails one direction on the added `undefined`.
  *    Not caught inside an interface both sides merely name: that is the orthogonal limit below.
  *
+ * **Naming the offender when more than one member drifted.** Each check collapses to a union of
+ * names, and TypeScript resolves a union in a constraint failure only when it holds one member.
+ * For one drift the error reads `Type '"exec"' does not satisfy the constraint 'never'`; for two
+ * it reads `Type 'DriftedIn<Record<string, unknown>>' ...` and puts an offender on the
+ * elaboration line beneath — a line that carries no file name, which is neither what the gate
+ * script greps nor what a truncated log keeps. So the acceptance criterion held for a single
+ * drift and no further. OneOf below reduces the union to one member before the constraint sees
+ * it, so the first line of the error is a name however many drifted, and the rest arrive one per
+ * build. verify-contract-gate.sh diverges two members at once and asserts that one of the two is
+ * named.
+ *
  * One limit is orthogonal to all ten: this file never reaches inside the interfaces the members
  * mention. Both sides name AgentOptions and Project, so comparing those members compares a type
  * with itself, and deleting or narrowing a field within one is invisible. That is also why the
  * limit is not a hole in the runtime's direction — there is nowhere in a shared interface for the
  * runtime to put an `any`, because it does not restate one. What the limit leaves unguarded is the
  * declaration changing under the workflows already written against it, and the
- * construction-position fixtures under test/fixtures/v1-corpus are the gate for that. For class 10
- * they needed help: an object literal supplying every field still compiles when one of them turns
- * optional, so an exhaustive sweep of the declaration found eight fields nothing objected to. The
- * required-key witnesses at the foot of test/fixtures/v1-corpus/construction.ts are what closes it
- * there, and scripts/verify-contract-gate.sh watches one of the eight fail.
+ * construction-position fixtures under test/fixtures/v1-corpus are the gate for that.
+ *
+ * For class 10 they needed help: an object literal supplying every field still compiles when one
+ * of them turns optional. The sweep behind the fix flips each of the declaration's 65 required
+ * property signatures to optional in turn and asks `npm run typecheck` — 57 members of an
+ * interface, and 8 members of an object type written inline inside one. Twelve go unnoticed with
+ * the witnesses removed: eight top-level, and four nested. An earlier pass reported itself
+ * exhaustive over "all 59 required properties", and it had swept top-level interface members
+ * only, never descending into an inline object type — so the four nested ones were not among the
+ * fields it counted, and the number it quoted counted neither set. The required-key witnesses at
+ * the foot of test/fixtures/v1-corpus/construction.ts now close all twelve, so the sweep run
+ * against this tree finds nothing, and scripts/verify-contract-gate.sh watches three of them
+ * fail: one top-level field, one member of an inline object type, and one member of a single
+ * branch of a union, which needed a witness that distributes because RequiredKeys does not.
  */
 
 /** True only for `any`, which is assignable in both directions to everything. */
@@ -244,19 +270,53 @@ type Undeclared = Exclude<keyof RuntimeContext, keyof WorkflowContext>;
 /** Members the declaration has that CONTEXT_SURFACE forgot, so supports() would deny them. */
 type Unenumerated = Exclude<keyof WorkflowContext, ContextMember>;
 
+/** Every name of a union, as a union of one-argument functions, for OneOf to intersect. */
+type AsArguments<Names> = Names extends unknown ? (seen: Names) => void : never;
+
+/**
+ * One member of a union of names, or `never` when the union is empty.
+ *
+ * Every check below collapses to a union, and TypeScript resolves a union in a constraint
+ * failure only when it holds a single member. With one drifting member the error reads
+ * `Type '"exec"' does not satisfy the constraint 'never'`; with two it names the alias instead
+ * and pushes an offender onto an elaboration line that carries no file name. A name the compiler
+ * prints somewhere is not a name the build failure leads with, and the difference is what a grep
+ * and a truncated log see.
+ *
+ * Intersecting `(seen: Name) => void` over the union and inferring back out picks the last
+ * signature of the resulting overload set. Which name that is depends on the order the mapped
+ * type produced and is not worth relying on: the claim is that *an* offender is always named,
+ * and the remaining ones arrive one per build, which is how fixing compiler errors works.
+ * Nothing downstream may assert which — verify-contract-gate.sh accepts either of the two
+ * members it diverges together.
+ */
+type OneOf<Names> =
+  UnionToIntersection<AsArguments<Names>> extends (seen: infer Single) => void
+    ? Single
+    : Names;
+
+/** The intersection of a union, by inferring from a contravariant position. */
+type UnionToIntersection<Union> = (
+  Union extends unknown ? (seen: Union) => void : never
+) extends (seen: infer Single) => void
+  ? Single
+  : never;
+
 /** Fails to compile unless its argument is `never`, quoting whatever was not. */
 type NoneOf<Members extends never> = Members;
 
-export type RuntimeMatchesContract = NoneOf<DriftedIn<Record<string, unknown>>>;
+export type RuntimeMatchesContract = NoneOf<OneOf<DriftedIn<Record<string, unknown>>>>;
 export type RuntimeMatchesContractForADeclaredState = NoneOf<
-  DriftedIn<DeclaredStateProbe>
+  OneOf<DriftedIn<DeclaredStateProbe>>
 >;
-export type SubApisMatchContract = NoneOf<DriftedWithinAnyOf<Record<string, unknown>>>;
+export type SubApisMatchContract = NoneOf<
+  OneOf<DriftedWithinAnyOf<Record<string, unknown>>>
+>;
 export type SubApisMatchContractForADeclaredState = NoneOf<
-  DriftedWithinAnyOf<DeclaredStateProbe>
+  OneOf<DriftedWithinAnyOf<DeclaredStateProbe>>
 >;
 export type RuntimeDeliversEveryDeclaredMember = NoneOf<
-  MissingFrom<Record<string, unknown>>
+  OneOf<MissingFrom<Record<string, unknown>>>
 >;
-export type RuntimePromisesNothingExtra = NoneOf<Undeclared>;
-export type SurfaceListIsComplete = NoneOf<Unenumerated>;
+export type RuntimePromisesNothingExtra = NoneOf<OneOf<Undeclared>>;
+export type SurfaceListIsComplete = NoneOf<OneOf<Unenumerated>>;
