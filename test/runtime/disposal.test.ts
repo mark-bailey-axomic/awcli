@@ -242,10 +242,21 @@ describe("a release that never returns", () => {
 
       await stack.unwind();
 
-      // A control rejection, floated in the same window with nothing watching it. Without it
-      // this test would pass just as happily against a listener that never fires — which is
-      // the failure mode a test asserting an empty array is most prone to.
-      void Promise.reject(new Error("control: nothing is handling me"));
+      // A control, because without one this test would pass just as happily against a listener
+      // that never fires — the failure mode a test asserting an empty array is most prone to.
+      //
+      // Emitted rather than floated. An earlier version created a genuine unhandled rejection
+      // here, which works but leaves a runner-dependent hazard in the suite: some vitest
+      // configurations treat any unhandled rejection as a hard file-level failure, and a test
+      // that guards against flakiness has no business being a source of it. What this needs to
+      // prove is only that the listener is attached and recording, and emitting the event
+      // proves exactly that. Whether Node delivers a real one is Node's contract, not a thing
+      // this suite has to re-establish.
+      process.emit(
+        "unhandledRejection",
+        new Error("control: nothing is handling me"),
+        Promise.resolve(),
+      );
 
       // Past the point the abandoned release rejects, plus a turn for Node to decide which
       // rejections went unhandled.

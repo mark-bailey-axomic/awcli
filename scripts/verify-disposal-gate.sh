@@ -25,10 +25,14 @@ cp "$SUBJECT" "$BACKUP"
 restore() { cp "$BACKUP" "$SUBJECT"; }
 trap 'restore; rm -f "$BACKUP"' EXIT
 
-# A short per-test timeout so the unbounded-wait mutation is caught by vitest quickly rather
-# than sitting on the default. The real suite runs in well under a second.
+# Through the package script, like every other gate here, rather than `npx`: `npx` will fetch a
+# package when the local one is missing, so a broken install would turn this gate into a silent
+# download of some other version of vitest. A gate has to run the pinned one or fail.
+#
+# The short per-test timeout is so the unbounded-wait mutation is caught quickly rather than
+# sitting on the default. The real suite runs in well under a second.
 run_suite() {
-  npx vitest run "$SUITE" --testTimeout=1500 >/dev/null 2>&1
+  npm run test --silent -- "$SUITE" --testTimeout=1500 >/dev/null 2>&1
 }
 
 # expect_red <criterion> <perl-substitution>
