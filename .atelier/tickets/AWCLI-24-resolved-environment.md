@@ -93,8 +93,9 @@ not a refusal.
   does — a `names()`, an `all()` or a spreadable view would restore exactly the default BR-039
   removed, and is additive enough to look harmless.
 - Changing `ctx.env` from a record to an accessor is a narrowing of the published surface and is
-  therefore only possible before the v1 freeze (BR-033). It lands with AWCLI-01's declaration, not
-  after it.
+  therefore only possible before the v1 freeze (BR-033). It lands with the declaration rather than
+  after it, and AWCLI-26 is the ticket that lands it — PR #8 merged AWCLI-01 without that change,
+  so this ticket is blocked on AWCLI-26 and not on AWCLI-01 alone.
 
 ## Acceptance Criteria
 
@@ -134,5 +135,5 @@ not a refusal.
 
 ## Dependencies
 
-**Blocked by:** AWCLI-01, AWCLI-19, AWCLI-25
+**Blocked by:** AWCLI-01, AWCLI-19, AWCLI-25, AWCLI-26
 **Blocks:** None — no other ticket names `ctx.env` in its requirements.

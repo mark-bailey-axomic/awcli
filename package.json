@@ -20,9 +20,10 @@
     "format:check": "prettier --check .",
     "verify:global": "bash scripts/verify-global-install.sh",
     "check": "npm run format:check && npm run test && npm run build",
-    "check:gates": "npm run verify:typecheck-gate && npm run verify:contract-gate && npm run verify:spec-invariants",
+    "check:gates": "npm run verify:typecheck-gate && npm run verify:contract-gate && npm run verify:packaged-declaration && npm run verify:spec-invariants",
     "verify:typecheck-gate": "bash scripts/verify-typecheck-gate.sh",
     "verify:contract-gate": "bash scripts/verify-contract-gate.sh",
+    "verify:packaged-declaration": "bash scripts/verify-packaged-declaration.sh",
     "verify:spec-invariants": "bash scripts/verify-spec-invariants.sh"
   },
   "files": [

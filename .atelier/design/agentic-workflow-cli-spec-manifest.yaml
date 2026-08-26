@@ -197,9 +197,9 @@ tickets:
     points: 2
     work_breakdown: WB-1
     depends_on: [AWCLI-00]
-    # in-review: on branch feat/awcli-01-freeze-context-contract, PR #8, five of
-    # seven criteria confirmed by review round 4; the other two were added by it.
-    status: in-review
+    # done: PR #8 merged. Five criteria confirmed by review round 4; the two that round
+    # added moved to AWCLI-26, whose code PR #8 merged without.
+    status: done
   - id: AWCLI-02
     path: tickets/AWCLI-02-fake-rehearsal-driver.md
     title: "[AWCLI] Ship the fake agent driver so workflows run with no agent installed"
@@ -363,7 +363,7 @@ tickets:
     title: "[AWCLI] Answer the environment by name, with what awcli set for the run answering as unset"
     points: 2
     work_breakdown: WB-16  # unit added in review round 4; ctx.env, governed by BR-039
-    depends_on: [AWCLI-01, AWCLI-19, AWCLI-25]
+    depends_on: [AWCLI-01, AWCLI-19, AWCLI-25, AWCLI-26]
     status: todo
   - id: AWCLI-25
     path: tickets/AWCLI-25-host-exec-target.md
@@ -372,6 +372,15 @@ tickets:
     work_breakdown: WB-17  # unit added in review round 4; ctx.exec on the host, governed by BR-040
     depends_on: [AWCLI-01, AWCLI-13]
     status: todo
+  - id: AWCLI-26
+    path: tickets/AWCLI-26-land-frozen-surface.md
+    title: "[AWCLI] Land the frozen context surface's final shape, and prove it ships"
+    points: 2
+    work_breakdown: null  # no unit: PR #8 merged round 4's surface decisions without their code
+    depends_on: [AWCLI-01]
+    # in-review: on branch feat/awcli-26-land-frozen-surface; every criterion is confirmed by a
+    # gate that runs in the branch, so the outstanding step is review rather than build.
+    status: in-review
 
 plans: []
 

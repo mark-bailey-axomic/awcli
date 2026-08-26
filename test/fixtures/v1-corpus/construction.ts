@@ -131,10 +131,19 @@ const fsApi: FsApi = {
   write: (_path: string, _contents: string) => Promise.resolve(),
 };
 
+// Fields are `unknown`, not Storable. The three calls below the literal are the half of that
+// change worth pinning: an ExecResult, a Commit and the args record are the values a workflow
+// most wants in a log line, and every one of them was refused while the field record was
+// `Record<string, Storable | undefined>` — an interface has no implicit index signature.
 const logApi: LogApi = {
-  info: (_message: string, _fields?: Readonly<Record<string, Storable | undefined>>) => undefined,
-  warn: (_message: string, _fields?: Readonly<Record<string, Storable | undefined>>) => undefined,
-  error: (_message: string, _fields?: Readonly<Record<string, Storable | undefined>>) => undefined,
+  info: (_message: string, _fields?: Readonly<Record<string, unknown>>) => undefined,
+  warn: (_message: string, _fields?: Readonly<Record<string, unknown>>) => undefined,
+  error: (_message: string, _fields?: Readonly<Record<string, unknown>>) => undefined,
+};
+
+const envApi: EnvApi = {
+  get: (name: string) => (name === "HOME" ? "/home/someone" : undefined),
+  has: (name: string) => name === "HOME",
 };
 
 const schemaApi: SchemaApi = {
@@ -168,10 +177,18 @@ const context: WorkflowContext<CorpusState> = {
   exec: execApi,
   fs: fsApi,
   log: logApi,
-  env: { HOME: "/home/someone", UNSET: undefined },
+  env: envApi,
   schema: schemaApi,
   version,
 };
+
+// What a log field record now accepts, and it is the contract's own return types. Each of these
+// three was a compile error under `Record<string, Storable | undefined>`, for the same reason:
+// TypeScript infers an implicit index signature for an object literal type and never for an
+// interface, so ExecResult and Commit are not records of Storable however they are spelled.
+context.log.info("a command ran", { result: execResult, head: commit });
+context.log.warn("with the arguments it was given", { args: context.args });
+context.log.error("and a value that is simply absent", { spend: textResult.usage?.costUsd });
 
 const scopedContext: ScopedContext<CorpusState> = {
   ...context,
@@ -236,13 +253,33 @@ const schemaCheckDiscriminant: keyof SchemaCheck<Plan> = "ok";
 // The other class of change no object literal above can notice: a field that stayed and turned
 // optional. Excess-property checking sees a field that disappeared, and the values are chosen so
 // a narrowed one no longer fits — but a literal supplying every field compiles whether or not the
-// declaration still requires them. An exhaustive required-to-optional sweep of every field in the
-// declaration found eight that nothing in this repository noticed: Schema.check,
-// ProjectCommands.build, ProjectPaths.standards, Project.custom, ExecResult.stdout and .stderr,
-// WorkflowLimits.exhaustionIsCompletion, and WorkflowModule.default. Each of the eight breaks a
-// committed workflow, which is what BR-033 forbids — `const e: string = result.stderr` stops
-// compiling the moment stderr may be absent — and conformance.ts cannot reach any of them,
-// because every one lives inside an interface both the declaration and the runtime merely name.
+// declaration still requires them.
+//
+// The sweep behind the witnesses below flips every required property signature in the
+// declaration to optional, one at a time, and asks `npm run typecheck`. There are 65 of them: 57
+// members of an interface, and 8 members of an object type written inline inside one —
+// AgentOptions.output's `tag` and `schema`, `ok` and its payload in each of SchemaCheck's two
+// branches, ScopedContext's restated `state`, and WorkflowState's `save`. An earlier pass
+// reported itself exhaustive over "all 59 required properties" and was not: it swept top-level
+// interface members only and never descended into an inline object type, so the eight nested
+// ones were never flipped at all, and the number it quoted was the size of neither set.
+//
+// Re-run over all 65 with these witnesses removed, twelve flips go unnoticed by anything in this
+// repository. Eight are top-level, and they are the eight the witnesses were written for:
+// Schema.check, ProjectCommands.build, ProjectPaths.standards, Project.custom, ExecResult.stdout
+// and .stderr, WorkflowLimits.exhaustionIsCompletion, and WorkflowModule.default. Each of the
+// eight breaks a committed workflow, which is what BR-033 forbids — `const e: string =
+// result.stderr` stops compiling the moment stderr may be absent — and conformance.ts cannot
+// reach any of them, because every one lives inside an interface both the declaration and the
+// runtime merely name.
+//
+// The other four are nested, and were among the ones the earlier sweep never reached. All four
+// are closed below: AgentOptions.output's two by naming the inline type through an indexed
+// access, and SchemaCheck's two by asking the question of each branch of the union separately.
+// The second needed a helper of its own, because RequiredKeys collapses a union's branches
+// together — `ok` turning optional in one branch is answered for by the other branch's `ok`, and
+// the payload beside it inherits that blindness. With all twelve closed the sweep run against
+// this tree finds nothing, which is a claim that can be re-checked rather than taken.
 //
 // A key drops out of RequiredKeys the moment it turns optional, because the empty object type is
 // assignable to a shape whose every field is optional and to no other. Below, each shape's
@@ -260,16 +297,37 @@ type RequiredKeys<Shape> = {
 /** The named fields of Shape that the declaration no longer requires. */
 type NotRequired<Shape, Keys extends keyof Shape> = Exclude<Keys, RequiredKeys<Shape>>;
 
+/**
+ * The same question asked of each branch of a union separately.
+ *
+ * NotRequired cannot be pointed at a union: `keyof` a union is what its branches share, and
+ * RequiredKeys over one collapses the branches together, so a field required in one branch
+ * answers for the same field turned optional in another. This distributes first and intersects
+ * the field set with each branch's own keys, so a branch is asked only about the fields it has.
+ */
+type NotRequiredInAnyBranch<Union, Keys extends PropertyKey> = Union extends unknown
+  ? Exclude<Keys & keyof Union, RequiredKeys<Union>>
+  : never;
+
 /** Fails to compile unless its argument is `never`, quoting whatever was not. */
 type NoneOf<Fields extends never> = Fields;
 
 export type CommitFieldsRequired = NoneOf<NotRequired<Commit, "sha" | "subject">>;
 export type SchemaFieldsRequired = NoneOf<NotRequired<Schema, "check">>;
 export type SchemaApiFieldsRequired = NoneOf<NotRequired<SchemaApi, "storable">>;
+export type SchemaCheckFieldsRequired = NoneOf<
+  NotRequiredInAnyBranch<SchemaCheck<Plan>, "ok" | "value" | "errors">
+>;
 export type IsolationFieldsRequired = NoneOf<
   NotRequired<Isolation, "workspace" | "target" | "description">
 >;
 export type AgentOptionsFieldsRequired = NoneOf<NotRequired<AgentOptions, "prompt">>;
+// The inline object type behind AgentOptions.output, named through an indexed access so the
+// witness follows the declaration rather than restating its shape. Deleting `output` outright
+// fails on this line instead, which is the deletion probe doing the same job twice again.
+export type AgentOutputFieldsRequired = NoneOf<
+  NotRequired<NonNullable<AgentOptions<Plan>["output"]>, "tag" | "schema">
+>;
 export type AgentResultFieldsRequired = NoneOf<
   NotRequired<AgentResult, "commits" | "output" | "isolation" | "logPath">
 >;
@@ -289,11 +347,15 @@ export type ExecResultFieldsRequired = NoneOf<
 >;
 export type FsApiFieldsRequired = NoneOf<NotRequired<FsApi, "read" | "write">>;
 export type LogApiFieldsRequired = NoneOf<NotRequired<LogApi, "info" | "warn" | "error">>;
+export type EnvApiFieldsRequired = NoneOf<NotRequired<EnvApi, "get" | "has">>;
 export type ContractVersionFieldsRequired = NoneOf<
   NotRequired<ContractVersion, "contract" | "awcli" | "supports">
 >;
 export type WorkflowStateFieldsRequired = NoneOf<
   NotRequired<WorkflowState<CorpusState>, "items" | "nested" | "save">
+>;
+export type ScopedContextStateRequired = NoneOf<
+  NotRequired<ScopedContext<CorpusState>, "state">
 >;
 export type WorkflowLimitsFieldsRequired = NoneOf<
   NotRequired<WorkflowLimits, "exhaustionIsCompletion">
@@ -317,10 +379,9 @@ export type WorkflowContextFieldsRequired = NoneOf<
   >
 >;
 
-// Usage, SandboxOptions, ExecOptions and WorkflowResult have no required field to witness, and
-// SchemaCheck cannot have one: RequiredKeys distributes over a union, so `ok` turning optional in
-// one branch is covered by the other and this would not notice. The explicit-undefined literals
-// above pin those from the opposite direction — an optional field turning required.
+// Usage, SandboxOptions, ExecOptions and WorkflowResult have no required field to witness. The
+// explicit-undefined literals above pin those from the opposite direction — an optional field
+// turning required.
 
 export default workflow;
 
@@ -343,6 +404,7 @@ export const built = {
   sandboxOptions,
   anonymousSandbox,
   project,
+  envApi,
   scope,
   openEndedResult,
   asModule,

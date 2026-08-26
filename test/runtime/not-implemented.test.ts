@@ -148,6 +148,10 @@ describe("how an unbuilt member refuses", () => {
     const ctx = createContext();
     expect(() => ctx.log.info("hello")).toThrow(NotYetImplementedError);
     expect(() => ctx.schema.storable({})).toThrow(NotYetImplementedError);
+    // ctx.env answers synchronously too, and it is the member that moved: it was a record,
+    // so it used to refuse at the read below. An accessor can be held and refuses at the call.
+    expect(() => ctx.env.get("HOME")).toThrow(NotYetImplementedError);
+    expect(() => ctx.env.has("HOME")).toThrow(NotYetImplementedError);
   });
 
   it("throws at the read for data, which is earlier than either", () => {
@@ -157,8 +161,10 @@ describe("how an unbuilt member refuses", () => {
     expect(() => ctx.state).toThrow(NotYetImplementedError);
     expect(() => ctx.args).toThrow(NotYetImplementedError);
     expect(() => ctx.project).toThrow(NotYetImplementedError);
-    expect(() => ctx.env).toThrow(NotYetImplementedError);
     expect(() => ctx.git.dir).toThrow(NotYetImplementedError);
+    // The other side of the same rule: a member carrying functions can be held without being
+    // invoked, so a workflow can feature-detect around it. ctx.env is one of those now.
+    expect(() => ctx.env).not.toThrow();
     expect(() => {
       const { state } = ctx;
       return state;

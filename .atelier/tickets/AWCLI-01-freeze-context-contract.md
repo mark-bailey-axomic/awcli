@@ -1,6 +1,6 @@
 # AWCLI-01 — [AWCLI] Freeze the context contract and assert the runtime against it
 
-**Points:** 2 · **Source:** WB-1 (part 1 of 2) · **Status:** In Review
+**Points:** 2 · **Source:** WB-1 (part 1 of 2) · **Status:** Done
 
 ## Problem / Goal
 
@@ -25,11 +25,6 @@ surface and its per-member rules are tabulated in the TDD's Contracts section.
 - Publish the workflow module contract: the default export, and the optional `limits` and
   `state` exports.
 - Expose the running contract version so a workflow can feature-detect rather than crash.
-- Declare every function on the surface as a member that cannot be reassigned, so a workflow —
-  or a module it imported without reading — cannot put its own function over the one awcli gave
-  it (BR-025). This covers the logging calls the run's record is written through, and the
-  members a `sandbox()` scope binds to its own working copy and execution target (BR-038,
-  BR-040).
 - Enforce agreement between the declaration and the runtime at build time, in a way that fails
   the build when they drift.
 
@@ -54,23 +49,27 @@ surface and its per-member rules are tabulated in the TDD's Contracts section.
 - [x] Scenario: *A workflow written earlier still runs on a later awcli*.
 - [x] Unimplemented members throw a named "not yet implemented" error rather than returning undefined.
 - [x] All tests pass, lint clean, type check clean.
-- [ ] Scenario: *A workflow cannot put its own function over the one that writes the record*.
-- [ ] No function anywhere on the surface — including inside the sub-APIs — can be assigned
-      over, asserted by a test that tries it for each one rather than by inspection.
 
-**On the ticked five:** each was confirmed by PR #8's fourth review round, against the branch as it
-stood at `7e5a9b5`, not by the author asserting it. **On the two unticked:** they were added by that
-same round, along with the `readonly` requirement above, and are being built now — this ticket is not
-finished, and the status says so.
+**On the five:** each was confirmed by PR #8's fourth review round, against the branch as it stood
+at `7e5a9b5`, not by the author asserting it. **On the two that are no longer here:** that same round
+added a `readonly` requirement and two criteria for it, and PR #8 merged without the code for either.
+They are AWCLI-26's, requirement and criteria together, so that exactly one ticket carries them —
+which is why this one is `Done` at five criteria rather than sitting at `In Review` behind work it
+does not own.
 
 ## Out of Scope
 
 - Writing the declaration into a target repository — that is AWCLI-22, which writes the whole
   initial layout: Dockerfile, configuration, context declaration and the single ignore entry.
   AWCLI-21 is logging, isolation reporting and spend, which this pointer named by mistake.
+- The final shape of the surface — every function `readonly` and the context frozen at run time,
+  `ctx.env` as an accessor, `LogApi` accepting the contract's own return types — and proving the
+  declaration ships in the tarball and in a global install. That is AWCLI-26. This ticket froze the
+  contract and asserted the runtime against it; AWCLI-26 lands the three shape decisions PR #8's
+  fourth review round took after that assertion was already in place.
 - Any driver, loader or loop behaviour.
 
 ## Dependencies
 
 **Blocked by:** AWCLI-00
-**Blocks:** AWCLI-02, AWCLI-05, AWCLI-15
+**Blocks:** AWCLI-02, AWCLI-05, AWCLI-15, AWCLI-26
