@@ -1,12 +1,15 @@
 # awcli — implementation tickets
 
-26 tickets, 66 points, derived from the 17-unit work breakdown in
+27 tickets, 68 points, derived from the 17-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). Five of the seven
 5-point units were split into a 3 and a 2; WB-5 split into two 2-point tickets and WB-11 into two
-3-point ones, which is where two of the four extra points over the design's 62 come from —
+3-point ones, which is where two of the six extra points over the design's 62 come from —
 separating the lock from the record, and the sandbox scope from the container inside it, each
 revealed work the single estimate had compressed. AWCLI-00 accounts for the other two: project
 scaffolding the work breakdown never named, because a design document assumes a project exists.
+AWCLI-26 accounts for the last two, and for a different reason again: no unit was missing and no
+estimate was wrong — PR #8 merged the specification of the context surface's final shape without the
+code that implements it, so the work exists as a ticket only because a merge left it behind.
 
 The breakdown was fourteen units and 56 points until PR #8's fourth review round. WB-15, WB-16 and
 WB-17 were added then for `ctx.fs`, `ctx.env` and `ctx.exec` on the host — the three context members
@@ -35,7 +38,7 @@ The `## Amendments` section of
 [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md) records each
 change, its date and the finding that drove it. Every ticket below derived from an amended rule
 inherits that pending status: AWCLI-01, AWCLI-06, AWCLI-09, AWCLI-10, AWCLI-13, AWCLI-21, AWCLI-22,
-AWCLI-23, AWCLI-24 and AWCLI-25.
+AWCLI-23, AWCLI-24, AWCLI-25 and AWCLI-26.
 
 The converse does not hold, and it applies to four tickets: AWCLI-00, AWCLI-03, AWCLI-15 and
 AWCLI-18 carry no scenario at all. Scaffolding, the disposal stack, the agent driver and the
@@ -95,8 +98,9 @@ ticket that builds one.
 | [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 15 |
 | [AWCLI-22](AWCLI-22-runtime-layout-ignore-clean.md) | Runtime layout, ignore, clean | 3 | WB-14 | 07, 13, 14, 18 |
 | [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | WB-15 | 01, 13, 25 |
-| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | WB-16 | 01, 19, 25 |
+| [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | WB-16 | 01, 19, 25, 26 |
 | [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | WB-17 | 01, 13 |
+| [AWCLI-26](AWCLI-26-land-frozen-surface.md) | Frozen surface's final shape | 2 | — | 01 |
 
 ## Order
 
@@ -112,7 +116,7 @@ a blocker has landed; the waves are a reading of the dependencies, not a schedul
 ```
 wave 0    00
 wave 1    01    03    18
-wave 2    02    04    05    07
+wave 2    02    04    05    07    26
 wave 3    06    08    09    13    20
 wave 4    11    14    15    19    25
 wave 5    10    12    16    17    21    22    23    24
@@ -131,7 +135,7 @@ The multi-parent tickets, which the waves alone do not show:
 | AWCLI-21 | 07, 08, 15 |
 | AWCLI-22 | 07, 13, 14, 18 |
 | AWCLI-23 | 01, 13, 25 |
-| AWCLI-24 | 01, 19, 25 |
+| AWCLI-24 | 01, 19, 25, 26 |
 | AWCLI-25 | 01, 13 |
 
 Longest chain is six deep — **00 → 03 → 07 → 13 → 14 → 22**, and equally
@@ -152,8 +156,12 @@ nothing installed. Everything after that is capability rather than viability.
   are not. *Done* means merged with every box ticked. A ticket whose PR is still being reviewed is
   never *Done*, however complete it looks from the inside — AWCLI-01 sat at *Ready* with every box
   unchecked through four review rounds, which is the failure this line exists to prevent.
-- A `—` in the WB column means no work-breakdown unit owns the ticket, and AWCLI-00 is now the
-  only one: the work breakdown described the tool, not the project that holds it. AWCLI-23,
+- A `—` in the WB column means no work-breakdown unit owns the ticket, and two carry it for
+  unrelated reasons. AWCLI-00 is scaffolding: the work breakdown described the tool, not the
+  project that holds it. AWCLI-26 is the residue of a merge — WB-1 does own the context contract,
+  but the unit is already spent across AWCLI-01 and AWCLI-02, and what AWCLI-26 carries is the
+  shape decisions review round 4 took after both were written. Giving it a WB number would say the
+  breakdown had planned for a specification merging ahead of its code, and it had not. AWCLI-23,
   AWCLI-24 and AWCLI-25 carried a dash until PR #8's fourth review round, because the design gave
   the first two members no rules and no scenarios when the units were written, and scoped the
   third's unit (WB-11) to the container alone. BR-038, BR-039 and BR-040 closed the rule half in
