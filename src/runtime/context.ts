@@ -11,8 +11,13 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * owned; AWCLI-23 and AWCLI-24 were opened to build them. That attribution used to be weaker
  * than the rest, because the design governed neither member with a business rule or a scenario
  * and a ticket's acceptance criteria come from scenarios. BR-038 now governs fs and BR-039
- * governs env, each with scenarios behind it, so both tickets carry approved scenario criteria
- * like every other id here.
+ * governs env, each with scenarios behind it, so both tickets carry scenario criteria like every
+ * other id here — pending the PM re-approval the amended spec now records as outstanding.
+ *
+ * ctx.exec had a third form of the same gap, without a dash to show it: the design's Rules column
+ * cited BR-032, but every requirement naming the member lived on AWCLI-19, which is the container
+ * target throughout — so the default target, a command on the host, was owned by nothing. BR-040
+ * states what that target is and AWCLI-25 builds it; AWCLI-19 keeps sandbox.
  *
  * sandbox has always pointed at AWCLI-19 and still does, but that ticket used to build only the
  * container a scope runs in and not the scope itself — a member is not delivered until something
@@ -37,7 +42,7 @@ const DELIVERED_BY = {
   args: "AWCLI-20",
   project: "AWCLI-06",
   git: "AWCLI-13",
-  exec: "AWCLI-19",
+  exec: "AWCLI-25",
   fs: "AWCLI-23",
   log: "AWCLI-21",
   env: "AWCLI-24",

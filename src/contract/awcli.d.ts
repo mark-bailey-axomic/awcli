@@ -386,6 +386,12 @@ interface ExecOptions {
  * strings rather than argv. What guards that case is a container, not a form of this call
  * (BR-004, BR-015).
  *
+ * On the default execution target there is no container, so a declared command runs with the
+ * operator's own reach — the filesystem beyond the working copy, the network, and whatever
+ * credentials this machine holds. BR-040 states that rather than leaving it to be inferred, and
+ * requires the run to report the target a command actually ran on. Working-copy confinement
+ * (BR-038) governs the paths a workflow names, not what a command reaches once it is running.
+ *
  * Which execution target this runs on comes from the context rather than from an argument:
  * both axes are fixed when the scope is made (ADR-0003).
  *
@@ -519,14 +525,20 @@ interface WorkflowContext<State = Record<string, unknown>> {
   /**
    * The environment the execution target resolves for this run.
    *
-   * awcli's own agent credentials are meant to be absent from it. They are lent to a container as
-   * a read-only mount for the life of the run and never copied (BR-016), and handing them back
-   * through this record would copy them into every prompt and every run record that reads it,
-   * which is the thing BR-016 exists to prevent.
+   * The variables awcli set for this run are meant to be absent from it. The ones that matter are
+   * the agent credentials it lends a container as a read-only mount for the life of the run and
+   * never copies (BR-016); handing them back through this record would copy them into every
+   * prompt and every run record that reads it, which is the thing BR-016 exists to prevent.
+   *
+   * What awcli set is the whole of the test, and it is a lookup rather than a judgement: awcli
+   * knows which names it set at the moment it sets them, so nothing here rests on recognising
+   * what looks like a credential. An agent API key the operator set themselves is present, value
+   * included, because awcli did not set it (BR-039). On the host target awcli often sets nothing,
+   * and the record is then the operator's environment unchanged, with nothing withheld.
    *
    * That subtraction is a promise about the record awcli builds, not something this type states
-   * or enforces — and it is not built. No unit in the current breakdown owns delivering env, so
-   * on this build reading it throws rather than returning a filtered record; ask
+   * or enforces — and it is not built. BR-039 governs it and AWCLI-24 delivers it, so on this
+   * build reading env throws rather than returning a filtered record; ask
    * ctx.version.supports("env") first (BR-033). Read the promise as what the member must do
    * before it can ship, not as what a present awcli does.
    *
