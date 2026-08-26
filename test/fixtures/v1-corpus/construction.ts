@@ -232,6 +232,96 @@ const workflowLimitsField: keyof WorkflowLimits = "exhaustionIsCompletion";
 // branch's `ok` still covers it in an excess-property check.
 const schemaCheckDiscriminant: keyof SchemaCheck<Plan> = "ok";
 
+
+// The other class of change no object literal above can notice: a field that stayed and turned
+// optional. Excess-property checking sees a field that disappeared, and the values are chosen so
+// a narrowed one no longer fits — but a literal supplying every field compiles whether or not the
+// declaration still requires them. An exhaustive required-to-optional sweep of every field in the
+// declaration found eight that nothing in this repository noticed: Schema.check,
+// ProjectCommands.build, ProjectPaths.standards, Project.custom, ExecResult.stdout and .stderr,
+// WorkflowLimits.exhaustionIsCompletion, and WorkflowModule.default. Each of the eight breaks a
+// committed workflow, which is what BR-033 forbids — `const e: string = result.stderr` stops
+// compiling the moment stderr may be absent — and conformance.ts cannot reach any of them,
+// because every one lives inside an interface both the declaration and the runtime merely name.
+//
+// A key drops out of RequiredKeys the moment it turns optional, because the empty object type is
+// assignable to a shape whose every field is optional and to no other. Below, each shape's
+// declared field set is subtracted from that, and the remainder must be nothing — so a flip fails
+// quoting the field rather than the shape. The field sets are written out rather than derived from
+// `keyof`, for the reason every literal above is written out: a witness generated from the
+// declaration agrees with whatever the declaration now says.
+//
+// The same lines catch a deletion twice over, from the Keys constraint. That is redundancy, not
+// coverage — the literals above are the deletion probe, and these are here for the flip.
+type RequiredKeys<Shape> = {
+  [Key in keyof Shape]-?: Record<never, never> extends Pick<Shape, Key> ? never : Key;
+}[keyof Shape];
+
+/** The named fields of Shape that the declaration no longer requires. */
+type NotRequired<Shape, Keys extends keyof Shape> = Exclude<Keys, RequiredKeys<Shape>>;
+
+/** Fails to compile unless its argument is `never`, quoting whatever was not. */
+type NoneOf<Fields extends never> = Fields;
+
+export type CommitFieldsRequired = NoneOf<NotRequired<Commit, "sha" | "subject">>;
+export type SchemaFieldsRequired = NoneOf<NotRequired<Schema, "check">>;
+export type SchemaApiFieldsRequired = NoneOf<NotRequired<SchemaApi, "storable">>;
+export type IsolationFieldsRequired = NoneOf<
+  NotRequired<Isolation, "workspace" | "target" | "description">
+>;
+export type AgentOptionsFieldsRequired = NoneOf<NotRequired<AgentOptions, "prompt">>;
+export type AgentResultFieldsRequired = NoneOf<
+  NotRequired<AgentResult, "commits" | "output" | "isolation" | "logPath">
+>;
+export type ScopeFieldsRequired = NoneOf<NotRequired<Scope, "ctx" | "isolation" | "dispose">>;
+export type ProjectCommandsFieldsRequired = NoneOf<
+  NotRequired<ProjectCommands, "test" | "build" | "lint">
+>;
+export type ProjectPathsFieldsRequired = NoneOf<NotRequired<ProjectPaths, "docs" | "standards">>;
+export type ProjectFieldsRequired = NoneOf<
+  NotRequired<Project, "commands" | "paths" | "custom">
+>;
+export type GitApiFieldsRequired = NoneOf<
+  NotRequired<GitApi, "dir" | "branch" | "head" | "dirty" | "log" | "diff" | "commit">
+>;
+export type ExecResultFieldsRequired = NoneOf<
+  NotRequired<ExecResult, "exitCode" | "stdout" | "stderr">
+>;
+export type FsApiFieldsRequired = NoneOf<NotRequired<FsApi, "read" | "write">>;
+export type LogApiFieldsRequired = NoneOf<NotRequired<LogApi, "info" | "warn" | "error">>;
+export type ContractVersionFieldsRequired = NoneOf<
+  NotRequired<ContractVersion, "contract" | "awcli" | "supports">
+>;
+export type WorkflowStateFieldsRequired = NoneOf<
+  NotRequired<WorkflowState<CorpusState>, "items" | "nested" | "save">
+>;
+export type WorkflowLimitsFieldsRequired = NoneOf<
+  NotRequired<WorkflowLimits, "exhaustionIsCompletion">
+>;
+export type WorkflowModuleFieldsRequired = NoneOf<NotRequired<WorkflowModule, "default">>;
+export type WorkflowContextFieldsRequired = NoneOf<
+  NotRequired<
+    WorkflowContext,
+    | "agent"
+    | "sandbox"
+    | "state"
+    | "args"
+    | "project"
+    | "git"
+    | "exec"
+    | "fs"
+    | "log"
+    | "env"
+    | "schema"
+    | "version"
+  >
+>;
+
+// Usage, SandboxOptions, ExecOptions and WorkflowResult have no required field to witness, and
+// SchemaCheck cannot have one: RequiredKeys distributes over a union, so `ok` turning optional in
+// one branch is covered by the other and this would not notice. The explicit-undefined literals
+// above pin those from the opposite direction — an optional field turning required.
+
 export default workflow;
 
 export const built = {

@@ -19,6 +19,12 @@ workflows.
   the only fixture that catches a narrowing in an *output* position — a workflow that merely
   reads `const n: number = result.exitCode` keeps compiling when `exitCode` becomes `0 | 1`,
   because `0 | 1` is assignable to `number`.
+
+  A literal cannot notice a field that stayed and turned optional, though: supplying every field
+  compiles whether or not the declaration still requires them. An exhaustive required-to-optional
+  sweep of the declaration found eight fields nothing in this repository objected to, so the file
+  ends with a required-key witness per shape. Those are the only lines here that are not object
+  literals, and they are the ones that catch a required field turning optional.
 - **The workflow fixtures** (`review-workflow.ts`, `text-agent-workflow.ts`,
   `nested-state-workflow.ts`) read the surface the way an author does. They catch a member or
   field being removed outright, and a narrowing in an *input* position — a parameter they pass a
