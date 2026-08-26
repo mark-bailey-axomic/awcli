@@ -1,3 +1,7 @@
 node_modules/
 dist/
 *.tgz
+
+# Per-run build and review output from the toolchain, written per branch. The rest of
+# .atelier/ is the specification and is tracked; this is what a run left behind.
+.atelier/builds/
