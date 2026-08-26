@@ -1,6 +1,6 @@
 # AWCLI-03 — [AWCLI] Build the disposal stack before anything registers with it
 
-**Points:** 3 · **Source:** WB-2 (part 1 of 2) · **Status:** Ready
+**Points:** 3 · **Source:** WB-2 (part 1 of 2) · **Status:** Done
 
 ## Problem / Goal
 
@@ -40,11 +40,11 @@ before this exists.
 
 ## Acceptance Criteria
 
-- [ ] Resources unwind in reverse on normal end, on failure, and on a throw from the workflow body.
-- [ ] A failing release does not prevent the remaining releases; all failures are reported.
-- [ ] A test asserts that no resource is leaked after each exit path, and fails when one is.
-- [ ] A release that never returns is abandoned after a bounded wait, and that is reported.
-- [ ] All tests pass, lint clean, type check clean.
+- [x] Resources unwind in reverse on normal end, on failure, and on a throw from the workflow body.
+- [x] A failing release does not prevent the remaining releases; all failures are reported.
+- [x] A test asserts that no resource is leaked after each exit path, and fails when one is.
+- [x] A release that never returns is abandoned after a bounded wait, and that is reported.
+- [x] All tests pass, lint clean, type check clean.
 
 ## Out of Scope
 
