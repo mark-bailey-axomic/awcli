@@ -110,6 +110,25 @@ all sequential, and both properties above exist *only* to survive concurrency.
   `Date.parse` reads as NaN, so on a French-locale machine no run could ever take a lock. `LC_ALL`
   is pinned, and a test asks under a locale that would otherwise break it.
 
+A third review round (Copilot) found three more, all in the same reclamation area:
+
+- **Symlink refusal covered only the run directory.** `mkdir` with `recursive` follows an existing
+  symlink at any level, so a repository carrying a committed symlink at `.awcli` or `.awcli/run`
+  had its run directory and lock created outside the repository — and the check saw a real
+  directory at the level it inspected and passed. Reproduced before fixing; every ancestor from the
+  repository root down is now checked, before the mkdir and again after it.
+- **The re-judge inside a reclamation was looser than the acquisition path, in both directions at
+  once.** A lock from another host counted as *stale* there, so a reclamation that took it aside
+  deleted it — while the acquisition path refuses to judge another machine's pid at all. And a
+  recycled process id counted as *live*, so a genuinely abandoned lock was put back and the attempt
+  spun instead of reclaiming it. Both now go through the same judgement.
+- **`let stats;` was an implicit `any`**, which would have hidden a mistake in the `Stats` API
+  rather than failing the typecheck.
+
+Fixing the second of those exposed a reporting bug: the reclamation reused the caller's verdict,
+which on the mismatch path describes a file still on disk rather than the one removed. The removal
+now returns the verdict for what it actually took away.
+
 Also from review: the validated run name is branded, so an unvalidated string can no longer reach a
 path (`"../../../etc"` escaped, `""` collapsed every run onto one lock); names ending in `.lock` and
 names differing only by case are refused, both of which git or a case-insensitive filesystem would

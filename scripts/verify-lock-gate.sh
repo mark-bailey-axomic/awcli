@@ -47,7 +47,7 @@ expect_red "A lock left by a killed run is reclaimed automatically" src/runtime/
 # Reclamation happens but says nothing. The lock works; the operator cannot tell a reclaimed run
 # from a first one, which BR-035 explicitly forbids.
 expect_red "reclamation is reported, never silent" src/runtime/run-lock.ts \
-  's/          reclaimed = \{\n            reason,/          reclaimed = undefined; void {\n            reason,/'
+  's/          reclaimed = \{\n            reason: removal\.reason,/          reclaimed = undefined; void {\n            reason: removal.reason,/'
 
 # ── Scenario: A slow run keeps its lock ──────────────────────────────────────────────────────
 # Staleness decided by the lock's age instead of by its owner — the implementation the ticket's
@@ -147,5 +147,29 @@ expect_red "a lock from another machine is not judged by local pids" src/runtime
 expect_red "the acquisition loop is bounded on every path" src/runtime/run-lock.ts \
   's/  if \(stats\.isSymbolicLink\(\)\) \{/  if (false) {/' \
   's/      for \(let attempt = 1; attempt <= MAX_ATTEMPTS; attempt\+\+\) \{/      for (let attempt = 1; ; attempt++) {/'
+
+# ── Found in the Copilot review round: three more that shipped ──────────────────────────────
+#
+# Symlink refusal that looks only at the run directory. `mkdir` with `recursive` follows an existing
+# symlink at any level, so a committed symlink at `.awcli` or `.awcli/run` put the lock outside the
+# repository and the check saw a real directory at the level it inspected.
+expect_red "a symlink above the run directory is refused too" src/runtime/run-lock.ts \
+  's/  for \(const ancestor of ancestors\) \{/  for (const ancestor of ancestors.slice(-1)) {/'
+
+# The re-judge inside a reclamation, looser than the acquisition path in both directions at once: a
+# lock from another host counted as stale, so a reclamation that took it aside deleted it — while
+# the acquisition path refuses to judge another machine's pid at all.
+expect_red "a reclamation puts back a lock from another machine" src/runtime/run-lock.ts \
+  's/      : taken\.contents\.host !== hostname\(\)\n        \? "undecidable"/      : false\n        ? "undecidable"/'
+
+# The other direction: a recycled process id read as live in the re-judge, so an abandoned lock was
+# put back and the attempt spun instead of reclaiming it.
+expect_red "a recycled-pid lock taken aside is still stale" src/runtime/run-lock.ts \
+  's/  const takenIsStale = takenLiveness === "gone" \|\| takenLiveness === "different";/  const takenIsStale = takenLiveness === "gone";/'
+
+# The reclamation must describe the lock it actually removed. On the mismatch path the caller's
+# verdict is about a file that is no longer there, so reusing it reports the wrong reason and owner.
+expect_red "a reclamation reports the lock it actually removed" src/runtime/run-lock.ts \
+  's/      reason: staleReasonFrom\(taken, takenLiveness\),\n      previousOwner: taken\.kind === "lock" \? taken\.contents\.owner : undefined,/      reason: judged.reason,\n      previousOwner: judged.read.kind === "lock" ? judged.read.contents.owner : undefined,/'
 
 mutation_gate_finish "each run-lock criterion has a test that fails when it is broken"

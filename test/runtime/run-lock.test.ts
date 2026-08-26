@@ -73,9 +73,22 @@ function fakeProbe(
     readonly unknown?: readonly number[];
     readonly gate?: () => Promise<void>;
     readonly gateSelf?: () => Promise<void>;
+    /**
+     * Answers to hand out for a pid, in order, before falling back to the default behaviour.
+     *
+     * For the cases where the interesting thing is that the OS's answer *changed* between two asks.
+     * Without it, some wrong implementations are indistinguishable from the right one because they
+     * merely take an extra turn round the acquisition loop and reach the same end state.
+     */
+    readonly answers?: ReadonlyMap<number, readonly ProbeAnswer[]>;
   } = {},
 ): ProcessProbe {
   const living = new Map([self, ...alive].map((identity) => [identity.pid, identity]));
+  const queued = new Map<number, ProbeAnswer[]>(
+    [...(options.answers ?? new Map<number, readonly ProbeAnswer[]>())].map(
+      ([pid, list]) => [pid, [...list]],
+    ),
+  );
   return {
     self: async () => {
       await options.gateSelf?.();
@@ -85,6 +98,8 @@ function fakeProbe(
       // The gate is what makes the concurrency tests deterministic: a probe held open here parks
       // one acquisition at exactly the point the reclaim race used to open.
       await options.gate?.();
+      const next = queued.get(pid)?.shift();
+      if (next !== undefined) return next;
       if (options.unknown?.includes(pid) === true) {
         return { kind: "unknown", reason: "test: the probe was not able to answer" };
       }
@@ -759,6 +774,125 @@ describe("refusing rather than guessing", () => {
    * and ENOENT to `readFile` at the same time, which is the pair the acquisition loop used to spin
    * on for ever. This test times out rather than fails if that bound is removed.
    */
+  /**
+   * The re-judge inside a reclamation must make the same call the acquisition path makes. It used
+   * to be looser in both directions at once, and this is the dangerous half: a lock from another
+   * host counted as *stale*, so a reclamation that took it aside deleted it — while the acquisition
+   * path refuses to judge another machine's pid at all.
+   */
+  it("puts back a lock from another machine that a reclamation took aside", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    const dead: ProcessIdentity = { pid: 9300, startedAt: 1_600_000_000_000 };
+    await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(dead),
+    });
+
+    const parked = latch();
+    const reclaimer = acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [], { gate: parked.gate }),
+    });
+    await parked.arrival;
+
+    // While it is parked, the file it judged is replaced by a lock from another machine.
+    const elsewhere: RunLockContents = {
+      run: "triage",
+      owner: { pid: 999_999, startedAt: 1_700_000_000_000 },
+      acquiredAt: Date.now(),
+      host: "another-machine",
+    };
+    const foreign = JSON.stringify(elsewhere);
+    await writeFile(path, foreign, "utf8");
+    parked.release();
+
+    const outcome = await reclaimer;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("undecidable");
+    // Put back byte for byte, not deleted.
+    expect(await readFile(path, "utf8")).toBe(foreign);
+  });
+
+  /**
+   * The other direction of the same defect: a recycled process id counted as *live* in the
+   * re-judge, so a genuinely abandoned lock was put back and the attempt spun instead of
+   * reclaiming it. And the reclamation reports the lock it actually removed, which on this path is
+   * not the one it originally judged.
+   */
+  /**
+   * The other direction of the same defect: a recycled process id counted as *live* in the
+   * re-judge, so a genuinely abandoned lock was put back and the attempt spun instead of
+   * reclaiming it. And the reclamation reports the lock it actually removed, which on this path is
+   * not the one it originally judged.
+   *
+   * The probe stops being able to answer about that pid after the first ask, which is what makes
+   * this discriminating: an implementation that puts the lock back and tries again gets
+   * "undecidable" on its second ask and refuses, where the correct one has already reclaimed. Two
+   * implementations differing only by a wasted turn round the loop would otherwise reach the same
+   * end state, and no assertion here could tell them apart.
+   */
+  it("reclaims a recycled-pid lock that a reclamation took aside, and reports that one", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    const dead: ProcessIdentity = { pid: 9400, startedAt: 1_600_000_000_000 };
+    await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(dead),
+    });
+
+    // A lock whose recorded pid is held by a process that started later: the owner is gone.
+    const recycled: ProcessIdentity = { pid: 9500, startedAt: 1_650_000_000_000 };
+    const impostor: ProcessIdentity = { pid: 9500, startedAt: 1_700_000_777_000 };
+
+    const parked = latch();
+    const stack = new DisposalStack();
+    const reclaimer = acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [], {
+        gate: parked.gate,
+        answers: new Map<number, readonly ProbeAnswer[]>([
+          [
+            recycled.pid,
+            [
+              { kind: "running", identity: impostor },
+              { kind: "unknown", reason: "test: the probe stopped answering" },
+            ],
+          ],
+        ]),
+      }),
+    });
+    await parked.arrival;
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        run: "triage",
+        owner: recycled,
+        acquiredAt: Date.now(),
+        host: HERE,
+      }),
+      "utf8",
+    );
+    parked.release();
+
+    const outcome = await reclaimer;
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // The verdict is about the lock actually removed — the recycled-pid one — not about the dead
+    // owner that was judged before the swap.
+    expect(outcome.reclaimed?.reason).toBe("owner-replaced");
+    expect(outcome.reclaimed?.previousOwner).toEqual(recycled);
+    expect(outcome.reclaimed?.message).toContain("different process");
+    expect((await readLockFile(repositoryPath, TRIAGE)).owner).toEqual(SCHEDULER);
+    await stack.unwind();
+  });
+
   it("refuses a symlink at the lock path instead of spinning on it", async () => {
     const repositoryPath = await repository();
     const path = runLockPath(repositoryPath, TRIAGE);
@@ -773,6 +907,38 @@ describe("refusing rather than guessing", () => {
       }),
     ).rejects.toThrow(/symbolic link/);
   });
+
+  /**
+   * The symlink does not have to be at the lock path to redirect it. `mkdir` with `recursive`
+   * follows an existing symlink at any level, so a repository carrying a committed symlink at
+   * `.awcli` or `.awcli/run` had its run directory and its lock created outside the repository —
+   * and the check that looked only at the run directory saw a real directory there and passed.
+   */
+  it.each([
+    { label: ".awcli", segments: [".awcli"] },
+    { label: ".awcli/run", segments: [".awcli", "run"] },
+  ])(
+    "refuses a symlink at $label, which would put the lock outside the repository",
+    async ({ segments }) => {
+      const repositoryPath = await repository();
+      const outside = await mkdtemp(join(tmpdir(), "awcli-outside-"));
+      const linkAt = join(repositoryPath, ...segments);
+      await mkdir(dirname(linkAt), { recursive: true });
+      await symlink(outside, linkAt);
+
+      await expect(
+        acquireRunLock(new DisposalStack(), {
+          repositoryPath,
+          runName: TRIAGE,
+          probe: fakeProbe(OPERATOR),
+        }),
+      ).rejects.toThrow(/symbolic link/);
+
+      // And nothing was written through it: the whole point is that the lock never lands here.
+      expect(await readdir(outside)).toEqual([]);
+      await rm(outside, { recursive: true, force: true });
+    },
+  );
 
   it("refuses a symlinked run directory", async () => {
     const repositoryPath = await repository();

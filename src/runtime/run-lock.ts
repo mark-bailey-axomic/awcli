@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import {
   link,
   lstat,
@@ -194,8 +195,14 @@ export async function acquireRunLock(
     // preserved is a run name nobody can use again (BR-021).
     disposition: "destroy",
     open: async () => {
+      // Before the mkdir, and then again after it. `mkdir` with `recursive` *follows* an existing
+      // symlink at any level, so a repository carrying a committed symlink at `.awcli` or
+      // `.awcli/run` would have its run directory and its lock created outside the repository
+      // entirely — and the old check, which looked only at the run directory, saw a real directory
+      // there and passed. Reported by review; reproduced before fixing.
+      await refuseSymlinkedAncestors(request.repositoryPath, request.runName);
       await mkdir(dirname(path), { recursive: true });
-      await refuseSymlink(dirname(path), "run directory");
+      await refuseSymlinkedAncestors(request.repositoryPath, request.runName);
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (attempt > 1) await pause(RETRY_BACKOFF_MS);
@@ -224,8 +231,6 @@ export async function acquireRunLock(
         // A lock nobody can parse is reclaimable, because `writeIfAbsent` links a complete file
         // into place: a live run cannot have left this. Anything else is decided by asking after
         // the owner — never by the lock's age, which is why a three-hour run keeps its lock.
-        const previousOwner =
-          existing.kind === "lock" ? existing.contents.owner : undefined;
         const liveness: Liveness =
           existing.kind !== "lock"
             ? "gone"
@@ -255,22 +260,21 @@ export async function acquireRunLock(
           );
         }
 
-        const reason: StaleReason =
-          existing.kind !== "lock"
-            ? "unreadable"
-            : liveness === "gone"
-              ? "owner-gone"
-              : "owner-replaced";
+        const reason = staleReasonFrom(existing, liveness);
 
         // The judged file's own bytes are what the removal verifies against.
-        const removal = await removeExactly(path, existing.raw, probe);
-        if (removal === "removed") {
+        const removal = await removeExactly(path, { read: existing, reason }, probe);
+        if (removal.kind === "removed") {
           reclaimed = {
-            reason,
-            previousOwner,
-            message: reclaimedMessage(request.runName, reason, previousOwner),
+            reason: removal.reason,
+            previousOwner: removal.previousOwner,
+            message: reclaimedMessage(
+              request.runName,
+              removal.reason,
+              removal.previousOwner,
+            ),
           };
-        } else if (removal === "disturbed") {
+        } else if (removal.kind === "disturbed") {
           // The file at the path changed between the judgement and the removal, the removal was
           // undone, and this attempt has no verdict. Round again rather than guess.
           continue;
@@ -384,19 +388,17 @@ async function writeIfAbsent(path: string, contents: RunLockContents): Promise<b
 /**
  * Refuses a symlink where awcli expects a real file or directory.
  *
- * The lock path and its directory are both attack-shaped: a repository can carry a committed
- * symlink at `.awcli/run/<run>/lock`, and following it would put the lock — and the removal of the
- * lock — anywhere the symlink points. A dangling one is worse than a misdirected one, because it
- * answers EEXIST and ENOENT at the same time and the acquisition loop used to spin on the pair.
+ * The whole path down to the lock is attack-shaped: a repository can carry a committed symlink at
+ * `.awcli`, at `.awcli/run`, at the run directory, or at the lock itself, and following any of them
+ * would put the lock — and the removal of the lock — wherever it points. A dangling one is worse
+ * than a misdirected one, because it answers EEXIST and ENOENT at the same time and the acquisition
+ * loop used to spin on the pair.
  */
 async function refuseSymlink(path: string, what: string): Promise<void> {
-  let stats;
-  try {
-    stats = await lstat(path);
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) return;
-    throw error;
-  }
+  // Annotated: an unannotated `let` assigned inside a `try` is an implicit `any`, which would hide
+  // a mistake in the Stats API rather than failing the typecheck. Flagged by review.
+  const stats: Stats | undefined = await lstatOrMissing(path);
+  if (stats === undefined) return;
   if (stats.isSymbolicLink()) {
     throw new Error(
       `${path} is a symbolic link, and awcli will not use one as a run ${what}: it would put the run's lock outside ${RUNTIME_ROOT_HINT}. Remove it and run again.`,
@@ -404,16 +406,71 @@ async function refuseSymlink(path: string, what: string): Promise<void> {
   }
 }
 
+/**
+ * Refuses a symlink anywhere between the repository root and the run directory.
+ *
+ * Walked from the outside in, and it stops at the first component that does not exist: nothing can
+ * be below a path that is not there, and `mkdir` will create the rest as real directories.
+ */
+async function refuseSymlinkedAncestors(
+  repositoryPath: string,
+  runName: RunName,
+): Promise<void> {
+  const runDir = dirname(runLockPath(repositoryPath, runName));
+  const ancestors: string[] = [];
+  for (let current = runDir; current !== repositoryPath; current = dirname(current)) {
+    ancestors.unshift(current);
+    // Defensive: a `runLockPath` that ever stopped being under the repository would otherwise walk
+    // to the filesystem root. Nothing above the repository is ours to inspect.
+    if (dirname(current) === current) break;
+  }
+
+  for (const ancestor of ancestors) {
+    const stats = await lstatOrMissing(ancestor);
+    if (stats === undefined) return;
+    if (stats.isSymbolicLink()) {
+      throw new Error(
+        `${ancestor} is a symbolic link, and awcli will not follow one to reach a run's lock: the lock, and its removal, would land outside the repository. Remove it and run again.`,
+      );
+    }
+  }
+}
+
+async function lstatOrMissing(path: string): Promise<Stats | undefined> {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (isErrno(error, "ENOENT")) return undefined;
+    throw error;
+  }
+}
+
 const RUNTIME_ROOT_HINT = "the repository's .awcli/run directory";
 
-/** What a verified removal did. */
+/**
+ * What a verified removal did.
+ *
+ * `removed` carries the verdict on the file it *actually* removed rather than reusing the caller's.
+ * On the mismatch path those differ — the caller judged one lock and the removal may legitimately
+ * have taken away a second, also-stale one — and reporting the first would tell the operator a
+ * reclamation happened for a reason that was true of a file still on disk.
+ */
 type Removal =
-  /** The judged file is gone, and this process is the one that removed it. */
-  | "removed"
+  | {
+      readonly kind: "removed";
+      readonly reason: StaleReason;
+      readonly previousOwner: ProcessIdentity | undefined;
+    }
   /** Another process removed or replaced it first; nothing was destroyed here. */
-  | "lost"
+  | { readonly kind: "lost" }
   /** Something else was at the path; it was put back, and this attempt has no verdict. */
-  | "disturbed";
+  | { readonly kind: "disturbed" };
+
+/** The verdict a stale lock gets, from how it read and what its owner turned out to be. */
+function staleReasonFrom(read: LockRead, liveness: Liveness): StaleReason {
+  if (read.kind !== "lock") return "unreadable";
+  return liveness === "different" ? "owner-replaced" : "owner-gone";
+}
 
 /**
  * Removes the lock file, but only if it is still the file that was judged stale.
@@ -448,7 +505,7 @@ type Removal =
  */
 async function removeExactly(
   path: string,
-  judgedRaw: string,
+  judged: { readonly read: LockRead; readonly reason: StaleReason },
   probe: ProcessProbe,
 ): Promise<Removal> {
   const aside = `${path}.stale.${randomUUID()}`;
@@ -457,26 +514,47 @@ async function removeExactly(
   } catch (error) {
     // Another process got there first, or it was released normally in the meantime. Either way
     // this process did not reclaim anything and must not say that it did.
-    if (isErrno(error, "ENOENT")) return "lost";
+    if (isErrno(error, "ENOENT")) return { kind: "lost" };
     throw error;
   }
 
+  const judgedRaw = judged.read.kind === "absent" ? undefined : judged.read.raw;
   const taken = await readLock(aside);
   if (taken.kind !== "absent" && taken.raw === judgedRaw) {
     await unlink(aside).catch(ignoreMissing);
-    return "removed";
+    return {
+      kind: "removed",
+      reason: judged.reason,
+      previousOwner: judged.read.kind === "lock" ? judged.read.contents.owner : undefined,
+    };
   }
 
   // Not the file that was judged. If what was taken is itself stale, removing it was legitimate
-  // and the loop can carry on; if it is live, it must go back.
-  const takenIsStale =
-    taken.kind !== "lock" ||
-    taken.contents.host !== hostname() ||
-    (await livenessOf(taken.contents.owner, probe)) === "gone";
+  // and the loop can carry on; anything else must go back.
+  //
+  // The two ways this judgement can be wrong are not symmetric, so it is deliberately the same
+  // judgement the acquisition path makes and not a looser one. Review caught it being looser in
+  // both directions at once: a lock from another host counted as *stale* here — so it was deleted,
+  // while the acquisition path refuses to judge another machine's pid at all — and a recycled pid
+  // counted as *live*, so a genuinely abandoned lock was restored and the attempt spun instead of
+  // reclaiming it. Deleting a lock this machine cannot speak for is the dangerous half.
+  const takenLiveness: Liveness =
+    taken.kind !== "lock"
+      ? "gone"
+      : taken.contents.host !== hostname()
+        ? "undecidable"
+        : await livenessOf(taken.contents.owner, probe);
+  // `different` is a recycled process id: the owner recorded in that lock is as gone as one whose
+  // id nothing holds.
+  const takenIsStale = takenLiveness === "gone" || takenLiveness === "different";
 
   if (takenIsStale) {
     await unlink(aside).catch(ignoreMissing);
-    return "removed";
+    return {
+      kind: "removed",
+      reason: staleReasonFrom(taken, takenLiveness),
+      previousOwner: taken.kind === "lock" ? taken.contents.owner : undefined,
+    };
   }
 
   try {
@@ -491,7 +569,7 @@ async function removeExactly(
   } finally {
     await unlink(aside).catch(ignoreMissing);
   }
-  return "disturbed";
+  return { kind: "disturbed" };
 }
 
 /**
