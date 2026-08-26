@@ -241,7 +241,7 @@ tickets:
     points: 2
     work_breakdown: WB-5
     depends_on: [AWCLI-03]
-    status: todo
+    status: done
   - id: AWCLI-08
     path: tickets/AWCLI-08-run-record.md
     title: "[AWCLI] Record every run so it can be explained the next morning"

@@ -1,6 +1,6 @@
 # AWCLI-07 — [AWCLI] Name runs and take a reclaimable exclusive lock
 
-**Points:** 2 · **Source:** WB-5 (part 1 of 2) · **Status:** Ready
+**Points:** 2 · **Source:** WB-5 (part 1 of 2) · **Status:** Done
 
 ## Problem / Goal
 
@@ -39,12 +39,12 @@ different writers and may proceed together.
 
 ## Acceptance Criteria
 
-- [ ] Scenario: *Two runs of the same name cannot overlap*.
-- [ ] Scenario: *Differently named runs may overlap*.
-- [ ] Scenario: *A lock left by a killed run is reclaimed automatically*.
-- [ ] Scenario: *A slow run keeps its lock*.
-- [ ] A reused process ID belonging to a different process does not read as the original owner.
-- [ ] All tests pass, lint clean, type check clean.
+- [x] Scenario: *Two runs of the same name cannot overlap*.
+- [x] Scenario: *Differently named runs may overlap*.
+- [x] Scenario: *A lock left by a killed run is reclaimed automatically*.
+- [x] Scenario: *A slow run keeps its lock*.
+- [x] A reused process ID belonging to a different process does not read as the original owner.
+- [x] All tests pass, lint clean, type check clean.
 
 ## Out of Scope
 
@@ -55,3 +55,25 @@ different writers and may proceed together.
 
 **Blocked by:** AWCLI-03
 **Blocks:** AWCLI-08, AWCLI-09, AWCLI-13, AWCLI-21, AWCLI-22
+
+## Notes
+
+Each criterion above was watched failing before it was ticked. `scripts/verify-lock-gate.sh`
+(wired into `npm run check:gates`, and so into CI) applies thirteen plausible wrong
+implementations — trust the pid alone, reclaim anything older than an hour, refuse every existing
+lock, one lock file per repository, unlink whatever is at the path, slugify what the operator
+typed — and fails if the suite still passes with any of them applied.
+
+Two properties came out of building it that the ticket did not name, and both are load-bearing:
+
+- The lock file is linked into place from a staging file, so a lock is never observed
+  half-written. That is what makes "unreadable therefore reclaimable" sound rather than a guess;
+  without it, a corrupted lock would have to be treated as live and would block the run name for
+  ever.
+- Reclamation renames the stale lock aside rather than deleting it in place. Two runs meeting the
+  same stale lock rename to different names, so exactly one wins; the loser meets the winner's
+  live lock and is refused, which is correct.
+
+`worktrees` is refused as a run name: the layout puts working copies at
+`run/worktrees/<run>/<slot>`, a sibling of `run/<run>/`, so that name would put a run's state
+directory and the worktree root at one path.
