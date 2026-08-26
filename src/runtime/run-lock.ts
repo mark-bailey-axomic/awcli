@@ -216,46 +216,54 @@ export async function acquireRunLock(
           return { run: request.runName, path, contents };
         }
 
-        // The identity of the file about to be judged, captured before the judging. Everything
-        // below that removes a file checks that it is still removing *this* one.
-        const before = await identifyFile(path);
         const existing = await readLock(path);
         // Gone between the failed create and the read: whoever held it has released it. Round
         // again — under the attempt bound, which is the point.
-        if (existing === "absent" || before === undefined) continue;
+        if (existing.kind === "absent") continue;
 
         // A lock nobody can parse is reclaimable, because `writeIfAbsent` links a complete file
         // into place: a live run cannot have left this. Anything else is decided by asking after
         // the owner — never by the lock's age, which is why a three-hour run keeps its lock.
-        const previousOwner = existing === "unreadable" ? undefined : existing.owner;
+        const previousOwner =
+          existing.kind === "lock" ? existing.contents.owner : undefined;
         const liveness: Liveness =
-          existing === "unreadable"
+          existing.kind !== "lock"
             ? "gone"
-            : existing.host !== contents.host
+            : existing.contents.host !== contents.host
               ? // Another machine's pid is not a question this machine's process table can
                 // answer. Refusing is the only honest move.
                 "undecidable"
-              : await livenessOf(existing.owner, probe);
+              : await livenessOf(existing.contents.owner, probe);
 
-        if (existing !== "unreadable" && liveness === "live") {
-          refuse("held", existing, heldMessage(request.runName, existing, reclaimed));
+        if (existing.kind === "lock" && liveness === "live") {
+          refuse(
+            "held",
+            existing.contents,
+            heldMessage(request.runName, existing.contents, reclaimed),
+          );
         }
-        if (existing !== "unreadable" && liveness === "undecidable") {
+        if (existing.kind === "lock" && liveness === "undecidable") {
           refuse(
             "undecidable",
-            existing,
-            undecidableMessage(request.runName, existing, contents.host, reclaimed),
+            existing.contents,
+            undecidableMessage(
+              request.runName,
+              existing.contents,
+              contents.host,
+              reclaimed,
+            ),
           );
         }
 
         const reason: StaleReason =
-          existing === "unreadable"
+          existing.kind !== "lock"
             ? "unreadable"
             : liveness === "gone"
               ? "owner-gone"
               : "owner-replaced";
 
-        const removal = await removeExactly(path, before, probe);
+        // The judged file's own bytes are what the removal verifies against.
+        const removal = await removeExactly(path, existing.raw, probe);
         if (removal === "removed") {
           reclaimed = {
             reason,
@@ -314,12 +322,12 @@ class RunLockHeldError extends Error {
  */
 async function releaseRunLock(held: RunLockHandle): Promise<void> {
   const current = await readLock(held.path);
-  if (current === "absent") return;
+  if (current.kind === "absent") return;
   if (
-    current === "unreadable" ||
-    current.owner.pid !== held.contents.owner.pid ||
-    current.owner.startedAt !== held.contents.owner.startedAt ||
-    current.acquiredAt !== held.contents.acquiredAt
+    current.kind !== "lock" ||
+    current.contents.owner.pid !== held.contents.owner.pid ||
+    current.contents.owner.startedAt !== held.contents.owner.startedAt ||
+    current.contents.acquiredAt !== held.contents.acquiredAt
   ) {
     // Someone else's lock now. Leaving it is the only safe move; the run that owns it will
     // release it, and if it will not, the next run reclaims it as stale.
@@ -373,22 +381,6 @@ async function writeIfAbsent(path: string, contents: RunLockContents): Promise<b
   }
 }
 
-/** A file's identity on disk, for checking that the thing removed is the thing judged. */
-interface FileIdentity {
-  readonly dev: number;
-  readonly ino: number;
-}
-
-async function identifyFile(path: string): Promise<FileIdentity | undefined> {
-  try {
-    const stats = await lstat(path);
-    return { dev: Number(stats.dev), ino: Number(stats.ino) };
-  } catch (error) {
-    if (isErrno(error, "ENOENT")) return undefined;
-    throw error;
-  }
-}
-
 /**
  * Refuses a symlink where awcli expects a real file or directory.
  *
@@ -437,18 +429,26 @@ type Removal =
  * mutual exclusion. It is not. It is atomic *removal*; the exclusion has to come from checking
  * what was removed.
  *
- * So: take custody by renaming, then check the inode. A mismatch means the file was replaced in
- * the window, and the replacement is re-judged rather than assumed — if it is live, it goes back
- * and this attempt reports no verdict.
+ * So: take custody by renaming, then check that what was taken is what was judged. A mismatch
+ * means the file was replaced in the window, and the replacement is re-judged rather than assumed —
+ * if it is live, it goes back and this attempt reports no verdict.
+ *
+ * **Identity is the file's contents, not its inode.** The first attempt at this fix compared inode
+ * numbers, and CI caught it on ext4: reclaiming the stale lock frees its inode, the very next
+ * staging file is handed the same number, and so the winner's *live* lock compared equal to the
+ * dead one and was deleted. That is the same bug one layer down — inode numbers are recycled,
+ * exactly like the process ids this whole unit exists to stop trusting. macOS did not reproduce it,
+ * which is what the Linux CI leg was for. A lock's bytes carry its pid, start time, host and
+ * acquisition instant, so two distinct acquisitions cannot collide the way two inode numbers can.
  *
  * The residual window is the one between the rename and the restoring link, which is two syscalls
  * rather than a subprocess spawn. If a third process links its own lock into that gap the restore
- * fails, and this throws rather than proceeding: at that point the tree is in a state no run
- * should build on, and saying so is better than taking a lock over it.
+ * fails, and this throws rather than proceeding: at that point the tree is in a state no run should
+ * build on, and saying so is better than taking a lock over it.
  */
 async function removeExactly(
   path: string,
-  judged: FileIdentity,
+  judgedRaw: string,
   probe: ProcessProbe,
 ): Promise<Removal> {
   const aside = `${path}.stale.${randomUUID()}`;
@@ -461,20 +461,18 @@ async function removeExactly(
     throw error;
   }
 
-  const taken = await identifyFile(aside);
-  if (taken !== undefined && taken.dev === judged.dev && taken.ino === judged.ino) {
+  const taken = await readLock(aside);
+  if (taken.kind !== "absent" && taken.raw === judgedRaw) {
     await unlink(aside).catch(ignoreMissing);
     return "removed";
   }
 
   // Not the file that was judged. If what was taken is itself stale, removing it was legitimate
   // and the loop can carry on; if it is live, it must go back.
-  const takenContents = await readLock(aside);
   const takenIsStale =
-    takenContents === "absent" ||
-    takenContents === "unreadable" ||
-    takenContents.host !== hostname() ||
-    (await livenessOf(takenContents.owner, probe)) === "gone";
+    taken.kind !== "lock" ||
+    taken.contents.host !== hostname() ||
+    (await livenessOf(taken.contents.owner, probe)) === "gone";
 
   if (takenIsStale) {
     await unlink(aside).catch(ignoreMissing);
@@ -496,15 +494,23 @@ async function removeExactly(
   return "disturbed";
 }
 
-/** The lock's contents, or why they could not be had. */
-async function readLock(
-  path: string,
-): Promise<RunLockContents | "absent" | "unreadable"> {
+/**
+ * What was at the lock path: the exact bytes, and the parse of them if they parse.
+ *
+ * The raw text is carried because it *is* the lock's identity. See `removeExactly` for why nothing
+ * here identifies a file by its inode.
+ */
+type LockRead =
+  | { readonly kind: "absent" }
+  | { readonly kind: "unreadable"; readonly raw: string }
+  | { readonly kind: "lock"; readonly raw: string; readonly contents: RunLockContents };
+
+async function readLock(path: string): Promise<LockRead> {
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
-    if (isErrno(error, "ENOENT")) return "absent";
+    if (isErrno(error, "ENOENT")) return { kind: "absent" };
     throw error;
   }
 
@@ -512,9 +518,11 @@ async function readLock(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return "unreadable";
+    return { kind: "unreadable", raw };
   }
-  return isLockContents(parsed) ? parsed : "unreadable";
+  return isLockContents(parsed)
+    ? { kind: "lock", raw, contents: parsed }
+    : { kind: "unreadable", raw };
 }
 
 function isLockContents(value: unknown): value is RunLockContents {

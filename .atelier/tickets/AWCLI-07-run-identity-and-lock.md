@@ -71,7 +71,8 @@ Two properties came out of building it that the ticket did not name, and both ar
   half-written. That is what makes "unreadable therefore reclaimable" sound rather than a guess;
   without it, a corrupted lock would have to be treated as live and would block the run name for
   ever.
-- Reclamation removes only the file it judged stale, verified by inode after taking custody of it.
+- Reclamation removes only the file it judged stale, verified by the file's own bytes after taking
+  custody of it — not by its inode, which is recycled just as a process id is.
 
 `worktrees` is refused as a run name: the layout puts working copies at
 `run/worktrees/<run>/<slot>`, a sibling of `run/<run>/`, so that name would put a run's state
@@ -89,6 +90,12 @@ all sequential, and both properties above exist *only* to survive concurrency.
   away holding the name. Now: take custody, verify the inode, re-judge and restore if it was not
   the file judged. The regression test parks one acquisition inside the probe with a latch, so the
   interleaving is deterministic rather than hoped for.
+
+  The first fix for this compared inode numbers, and the Linux CI leg caught it: on ext4,
+  reclaiming the stale lock frees its inode and the next staging file is handed the same number, so
+  the winner's *live* lock compared equal to the dead one and was deleted. Identity is the file's
+  bytes now. Worth recording as its own lesson — the fix repeated the ticket's own mistake one layer
+  down, and macOS could not reproduce it.
 - **The acquisition loop was unbounded.** A `continue` jumped the attempt check, and a dangling
   symlink at the lock path pins both branches for ever (`link` answers EEXIST, `readFile` answers
   ENOENT), so awcli spun at startup. The bound now covers every path, and a symlink at the lock

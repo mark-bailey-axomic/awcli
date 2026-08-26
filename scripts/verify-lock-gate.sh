@@ -30,7 +30,7 @@ mutation_gate_init \
 # The lock is taken regardless of who holds it. This is the shape of every lock written without a
 # liveness question at all.
 expect_red "Two runs of the same name cannot overlap" src/runtime/run-lock.ts \
-  's/if \(existing !== "unreadable" && liveness === "live"\)/if (false \&\& liveness === "live")/'
+  's/if \(existing\.kind === "lock" && liveness === "live"\)/if (false \&\& liveness === "live")/'
 
 # ── Scenario: Differently named runs may overlap ─────────────────────────────────────────────
 # One lock file for the whole repository, which is what you get from treating the lock as a
@@ -42,7 +42,7 @@ expect_red "Differently named runs may overlap" src/runtime/run-identity.ts \
 # Every existing lock refuses. A correct-looking conservative choice, and the one that makes a
 # rebooted machine lose the run name for ever.
 expect_red "A lock left by a killed run is reclaimed automatically" src/runtime/run-lock.ts \
-  's/if \(existing !== "unreadable" && liveness === "live"\)/if (existing !== "unreadable")/'
+  's/if \(existing\.kind === "lock" && liveness === "live"\)/if (existing.kind === "lock")/'
 
 # Reclamation happens but says nothing. The lock works; the operator cannot tell a reclaimed run
 # from a first one, which BR-035 explicitly forbids.
@@ -53,7 +53,7 @@ expect_red "reclamation is reported, never silent" src/runtime/run-lock.ts \
 # Staleness decided by the lock's age instead of by its owner — the implementation the ticket's
 # constraint rules out by name, and the one a reviewer proposes when a stale lock blocks them.
 expect_red "A slow run keeps its lock" src/runtime/run-lock.ts \
-  's/              : await livenessOf\(existing\.owner, probe\);/              : Date.now() - existing.acquiredAt > 60 * 60 * 1000 ? "gone" : "live";/'
+  's/              : await livenessOf\(existing\.contents\.owner, probe\);/              : Date.now() - existing.contents.acquiredAt > 60 * 60 * 1000 ? "gone" : "live";/'
 
 # ── A reused process id does not read as the original owner ──────────────────────────────────
 # Trust the pid alone. This is the lock file everyone writes first, and on a busy machine it starts
@@ -81,7 +81,7 @@ expect_red "the lock is destroyed on release, not preserved" src/runtime/run-loc
 # Unlink whatever is at the path. Deletes a live run's lock when this one's was reclaimed from
 # under it, letting a third run start alongside it.
 expect_red "release does not delete a lock that is no longer ours" src/runtime/run-lock.ts \
-  's/  const current = await readLock\(held\.path\);\n  if \(current === "absent"\) return;/  const current = await readLock(held.path);\n  if (current === "absent") return;\n  await unlink(held.path).catch(ignoreMissing);\n  if (current) return;/'
+  's/  if \(current\.kind === "absent"\) return;/  if (current.kind === "absent") return;\n  await unlink(held.path).catch(ignoreMissing);\n  if (current) return;/'
 
 # ── An explicit run name is validated, never rewritten ──────────────────────────────────────
 # Slugify what the operator typed. Two distinct --name values can then collide on one lock file,
@@ -120,7 +120,15 @@ expect_red "a run name that only differs by case is refused" src/runtime/run-ide
 # stale lock after a reboot — the ordinary case reclamation exists for — could both end up holding
 # the name, because the second removed the first's *live* lock and linked its own over the gap.
 expect_red "reclaiming removes only the file it judged stale" src/runtime/run-lock.ts \
-  's/  const taken = await identifyFile\(aside\);\n  if \(taken !== undefined && taken\.dev === judged\.dev && taken\.ino === judged\.ino\) \{/  const taken = await identifyFile(aside);\n  void judged;\n  if (taken !== undefined) {/'
+  's/  if \(taken\.kind !== "absent" && taken\.raw === judgedRaw\) \{/  void judgedRaw;\n  if (taken.kind !== "absent") {/'
+
+# The second version of that fix compared inode numbers, and CI on ext4 caught it: reclaiming the
+# stale lock frees its inode, the next staging file is handed the same number, and the winner's live
+# lock compared equal to the dead one. Inode numbers are recycled exactly like the process ids this
+# unit exists to stop trusting. macOS does not reproduce it, so this mutation stands in for the
+# collision — without it, the regression test only fails on the filesystems that happen to reuse.
+expect_red "the removal's identity check cannot be fooled by a recycled identifier" src/runtime/run-lock.ts \
+  's/  if \(taken\.kind !== "absent" && taken\.raw === judgedRaw\) \{/  if (taken.kind !== "absent" \&\& (taken.raw === judgedRaw || true)) {/'
 
 # An unanswerable probe read as "the owner is gone". A `ps` that timed out on a loaded box, an
 # EAGAIN from fork, or `ps` missing from a container image all evicted a live owner's lock — and
@@ -131,7 +139,7 @@ expect_red "a probe that cannot answer does not read as a dead process" src/runt
 # Another machine's pid judged against this machine's process table. Reclaimed a synced-checkout
 # lock and told the operator its owner "was killed", which was false.
 expect_red "a lock from another machine is not judged by local pids" src/runtime/run-lock.ts \
-  's/            : existing\.host !== contents\.host/            : false/'
+  's/            : existing\.contents\.host !== contents\.host/            : false/'
 
 # The `continue` that jumped the attempt bound. A dangling symlink at the lock path answers EEXIST
 # to `link` and ENOENT to `readFile` at once, so awcli spun at startup burning a core. Both halves
