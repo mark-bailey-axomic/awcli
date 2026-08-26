@@ -25,6 +25,11 @@ surface and its per-member rules are tabulated in the TDD's Contracts section.
 - Publish the workflow module contract: the default export, and the optional `limits` and
   `state` exports.
 - Expose the running contract version so a workflow can feature-detect rather than crash.
+- Declare every function on the surface as a member that cannot be reassigned, so a workflow —
+  or a module it imported without reading — cannot put its own function over the one awcli gave
+  it (BR-025). This covers the logging calls the run's record is written through, and the
+  members a `sandbox()` scope binds to its own working copy and execution target (BR-038,
+  BR-040).
 - Enforce agreement between the declaration and the runtime at build time, in a way that fails
   the build when they drift.
 
@@ -47,6 +52,9 @@ surface and its per-member rules are tabulated in the TDD's Contracts section.
 - [ ] The declaration type-checks standalone, in a directory with no installed packages.
 - [ ] A deliberate divergence between runtime and declaration fails the build, naming the member.
 - [ ] Scenario: *A workflow written earlier still runs on a later awcli*.
+- [ ] Scenario: *A workflow cannot put its own function over the one that writes the record*.
+- [ ] No function anywhere on the surface — including inside the sub-APIs — can be assigned
+      over, asserted by a test that tries it for each one rather than by inspection.
 - [ ] Unimplemented members throw a named "not yet implemented" error rather than returning undefined.
 - [ ] All tests pass, lint clean, type check clean.
 

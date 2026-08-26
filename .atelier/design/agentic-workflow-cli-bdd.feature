@@ -3,17 +3,25 @@
 # status: Amended since approval — amendments pending PM re-approval
 # approved: 2026-08-24
 # approved_baseline: 60 scenarios
-# amended: 2026-08-25
-# amended_in: PR #8 (AWCLI-01) review rounds 2 and 3
-# scenarios: 75
+# amended: 2026-08-26
+# amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4
+# scenarios: 78
 # source: agentic-workflow-cli-rules.md
 # Each scenario is tagged with the business rule it verifies.
 #
 # ─── Amendments since approval ─────────────────────────────────────────────────
-# Approved 2026-08-24 with 60 scenarios; now 75. Fifteen were added and three
-# rewritten after approval, and none of the fifteen has been through a PM
-# approval gate. The rules file's `## Amendments` section is the authority on
-# what changed and why; this block records only which scenarios moved.
+# Approved 2026-08-24 with 60 scenarios; now 78. Eighteen were added after
+# approval and one of the sixty was rewritten, so the honest split is
+# 59 approved / 19 pending — none of the nineteen through a PM approval gate.
+#
+# Three more scenarios were rewritten, and they are not part of that nineteen
+# twice over: all three are BR-039 scenarios added earlier in this same PR, so
+# they were never approved and are already counted among the eighteen added. A
+# rewritten scenario is not an approved one, and a scenario added and then
+# rewritten before any gate is still just one pending scenario.
+#
+# The rules file's `## Amendments` section is the authority on what changed and
+# why; this block records only which scenarios moved.
 #
 # Added, run 2 (reconciling the artifacts against the frozen contract):
 #   BR-038 x5  A workflow's paths are read against the working copy it was given
@@ -36,12 +44,31 @@
 #              A repository's declared command runs whole on the host
 #              A value from elsewhere cannot become a second command
 #
-# Rewritten, run 3:
+# Rewritten, run 3 (both added in run 2, so neither leaves the approved sixty):
 #   BR-039 x2  A variable awcli set for this run is absent from the record
 #              My own environment is still there, an inherited API key included
 #              — both had turned on "the credentials awcli supplies", which does
 #                not decide the inherited-key case, so both were restated around
 #                the variables awcli set for the run
+#
+# Added, run 4 (three surface decisions taken before the contract is merged):
+#   BR-008 x1  A log field that cannot be written down costs the field, not the
+#              run — log field values widen, so the check moves to where the
+#              line is written
+#   BR-025 x1  A workflow cannot put its own function over the one that writes
+#              the record — every function member of the surface is fixed
+#   BR-039 x1  The environment answers by name and is never handed over whole
+#
+# Rewritten, run 4 (all three added in run 2 or 3; none was ever approved):
+#   BR-039 x3  A variable awcli set for this run answers as not set
+#                — renamed from "…is absent from the record"
+#              My own environment is still there, an inherited API key included
+#              On the host target there may be nothing to leave out
+#              — ctx.env becomes a get/has accessor, so "the record" is no
+#                longer a thing a workflow holds; all three now assert what
+#                asking by name answers. The third could not otherwise be
+#                asserted at all: with nothing handed over, "the record holds
+#                everything my own environment held" has no subject.
 # ───────────────────────────────────────────────────────────────────────────────
 
 Feature: Running agentic workflows from a global command-line tool
@@ -151,6 +178,14 @@ Feature: Running agentic workflows from a global command-line tool
     Given a running workflow
     When it puts a value into shared state that cannot be stored as plain data
     Then the assignment fails immediately, naming the key
+
+  @BR-008
+  Scenario: A log field that cannot be written down costs the field, not the run
+    Given a running workflow
+    When it logs a value that cannot be written down as plain data
+    Then the log line is still written, with that field named as unrepresentable
+    And the run is not failed for it
+    And the same value put into shared state is still refused at the assignment
 
   @BR-009
   Scenario: Stored state no longer matching the shape the workflow declares
@@ -316,27 +351,35 @@ Feature: Running agentic workflows from a global command-line tool
     And no credential is written into the container image
 
   @BR-039
-  Scenario: A variable awcli set for this run is absent from the record
+  Scenario: A variable awcli set for this run answers as not set
     Given awcli sets a variable of its own for this run, to lend the agent a credential
-    When a workflow reads the environment it was given
-    Then that variable is absent from the record, under the name awcli set it
-    And it is indistinguishable from a variable that was never set
+    When a workflow asks the environment for that name
+    Then it is told the name is not set, and asking for its value yields nothing
+    And that answer is indistinguishable from the one for a name that was never set
 
   @BR-039
   Scenario: My own environment is still there, an inherited API key included
     Given I have secrets of my own in the environment I started awcli from
     And one of them is an agent API key I set myself
-    When a workflow reads the environment it was given
-    Then my own variables are readable by name, values included
-    And the API key I set is among them, because awcli did not set it
-    And only the names awcli set for this run were left out
+    When a workflow asks the environment for those names
+    Then each answers with the value I set
+    And the API key I set answers too, because awcli did not set it
+    And only the names awcli set for this run answer as not set
 
   @BR-039
   Scenario: On the host target there may be nothing to leave out
     Given a run on the default execution target, where awcli sets no variables of its own
-    When a workflow reads the environment it was given
-    Then the record holds everything my own environment held, with nothing removed
+    When a workflow asks the environment for any name my own environment held
+    Then every one of them answers with the value I set
     And the run does not claim that any credential was withheld
+
+  @BR-039
+  Scenario: The environment answers by name and is never handed over whole
+    Given a workflow that would write my whole environment into a prompt
+    When I run it
+    Then there is nothing it can ask for that yields the environment itself
+    And it can still forward any name it asks for, one name at a time
+    And awcli does not describe that as protection — it is a shape, not a boundary
 
   @BR-039
   Scenario: A command the workflow runs still sees the whole environment
@@ -511,6 +554,14 @@ Feature: Running agentic workflows from a global command-line tool
     Given a run that failed overnight
     When I read its record
     Then it states which awcli version ran it, which agent version, and where the repository stood
+
+  @BR-025
+  Scenario: A workflow cannot put its own function over the one that writes the record
+    Given a workflow that assigns its own function over the one awcli gave it to log with
+    When I run it
+    Then that assignment is refused rather than taken
+    And the run's record still states the awcli version, the agent version and where the repository stood
+    And awcli does not offer this as protection from a workflow that means to defeat its own record
 
   @BR-026
   Scenario: Detail that cannot be read degrades once and loudly

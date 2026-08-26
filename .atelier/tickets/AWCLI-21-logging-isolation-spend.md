@@ -28,6 +28,11 @@ an operator assumes containment they did not get.
 - Warn when a configured spend threshold is crossed, and warn at the start of the run when the
   threshold cannot be measured at all.
 - Redact values matching known secret shapes from logs as well as records.
+- Write a log field that cannot be written down as plain data as unrepresentable, naming the
+  field, and keep both the line and the run (BR-008). The check is at the point the line is
+  serialised, because a log field's type no longer refuses one at the call site — and it must
+  not: a command's result, a commit and the run's arguments are awcli's own shapes and are the
+  ordinary things to log.
 
 ### Non-Functional
 
@@ -46,6 +51,9 @@ an operator assumes containment they did not get.
 - [ ] Scenario: *Every agent call states how isolated it is*.
 - [ ] Scenario: *Spend is reported and a threshold warns*.
 - [ ] Scenario: *A threshold that cannot be measured says so up front*.
+- [ ] Scenario: *A log field that cannot be written down costs the field, not the run*.
+- [ ] A command's result, a commit and the run's arguments each log without being restated by
+      hand — asserted against the contract's own types, not against a hand-built object.
 - [ ] Values matching known secret shapes are absent from logs.
 - [ ] All tests pass, lint clean, type check clean.
 

@@ -10,11 +10,11 @@ metadata:
   source_ticket: ""
   version: 1
   created: "2026-08-24T16:57:51Z"
-  updated: "2026-08-25T16:05:00Z"
+  updated: "2026-08-26T00:00:00Z"
   # The rules and scenarios this manifest describes were amended after their
-  # 2026-08-24 approval, during PR #8 (AWCLI-01) review rounds 2 and 3. See the
-  # `## Amendments` section of design/agentic-workflow-cli-rules.md.
-  amended: "2026-08-25"
+  # 2026-08-24 approval, during PR #8 (AWCLI-01) review rounds 2, 3 and 4. See
+  # the `## Amendments` section of design/agentic-workflow-cli-rules.md.
+  amended: "2026-08-26"
   amendments_status: pending-pm-re-approval
 
 requirements:
@@ -22,10 +22,15 @@ requirements:
     source: file
     path: design/agentic-workflow-cli-rules.md
     items: []
-    # Approved 2026-08-24 at 37 rules; three added and four rewritten since,
-    # pending PM re-approval. Provenance: the rules file's `## Amendments`.
+    # Approved 2026-08-24 at 37 rules; three added and six of the thirty-seven
+    # rewritten since, pending PM re-approval — so 31 approved / 9 pending. The
+    # second passes over BR-038 and BR-039 are rewrites of rules added in the
+    # same PR and are inside the three added, not additional to them.
+    # Provenance: the rules file's `## Amendments`.
     status: approved-with-pending-amendments
     approved_baseline_count: 37
+    approved_unchanged_count: 31
+    pending_count: 9
     count: 40
     categories:
       - environment-preconditions
@@ -39,10 +44,15 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    # Approved 2026-08-24 at 60; fifteen added and three rewritten since.
+    # Approved 2026-08-24 at 60; eighteen added since, and one of the sixty
+    # rewritten — so 59 approved / 19 pending. Three further rewrites were of
+    # scenarios added earlier in the same PR and are inside the eighteen, not
+    # additional to them.
     status: approved-with-pending-amendments
     approved_baseline_count: 60
-    count: 75
+    approved_unchanged_count: 59
+    pending_count: 19
+    count: 78
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7
@@ -348,7 +358,7 @@ tickets:
     status: todo
   - id: AWCLI-24
     path: tickets/AWCLI-24-resolved-environment.md
-    title: "[AWCLI] Resolve the run's environment, with what awcli set for the run subtracted"
+    title: "[AWCLI] Answer the environment by name, with what awcli set for the run answering as unset"
     points: 2
     work_breakdown: null  # ctx.env was a dashed context member — no WB entry; governed by BR-039
     depends_on: [AWCLI-01, AWCLI-19, AWCLI-25]
