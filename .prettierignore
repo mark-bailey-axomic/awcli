@@ -6,6 +6,14 @@ LICENSE
 # Fixtures are deliberately shaped — a formatter rewriting them changes what they test.
 test/fixtures
 
+# The same fixtures again, seen through the session worktrees the agent tooling nests inside
+# the repository. A pattern containing a slash is anchored to this file's directory, so
+# `test/fixtures` above does not match the copy at .claude/worktrees/<session>/test/fixtures —
+# and a deliberately malformed fixture found down there turned `npm run check` red for anyone
+# holding a session worktree, while CI stayed green on a fresh checkout that has none.
+# Git ignores this directory via .git/info/exclude, which prettier does not read.
+.claude/worktrees
+
 # Design artifacts are approved documents, not source. A code formatter must never
 # rewrite them — a whitespace diff on an approved manifest is noise at best and an
 # unreviewed change at worst.
