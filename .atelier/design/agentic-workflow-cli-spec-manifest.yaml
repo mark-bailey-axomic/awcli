@@ -213,7 +213,7 @@ tickets:
     points: 3
     work_breakdown: WB-2
     depends_on: [AWCLI-00]
-    status: todo
+    status: done
   - id: AWCLI-04
     path: tickets/AWCLI-04-cancellation-primitive.md
     title: "[AWCLI] Two cancellation modes over one primitive"
