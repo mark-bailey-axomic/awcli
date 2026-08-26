@@ -49,7 +49,7 @@ expect_red() {
 }
 
 expect_red "resources unwind in reverse" \
-  's/\[\.\.\.this\.#entries\]\.reverse\(\)/[...this.#entries]/'
+  's/for \(let index = this\.#entries\.length - 1; index >= 0; index--\)/for (let index = 0; index < this.#entries.length; index++)/'
 
 expect_red "a failing release does not stop the rest" \
   's/else failures\.push\(failure\);/else { failures.push(failure); break; }/'
@@ -65,7 +65,20 @@ expect_red "a hung release is abandoned after a bounded wait" \
 # tests written for the other four criteria all passed against that. This mutation is the one
 # that would have failed.
 expect_red "an in-flight acquisition is unwound, not raced" \
-  's/for \(const name of await this\.#awaitOpening\(\)\)/for (const name of [])/'
+  's/for \(const entry of await this\.#awaitOpening\(\)\)/for (const entry of [])/'
+
+# The second review round on PR #10 found two more, both from the same root cause: stranded
+# acquisitions were tracked in a list of their own, separate from the entries, and the two were
+# never reconciled. One ledger fixes that by construction — these three mutations are what keeps
+# the behaviour that used to depend on the reconciliation from quietly going missing again.
+expect_red "an acquisition that lands mid-drain is still released" \
+  's/entry\.state = "held";/entry.state = this.#closed ? "stranded" : "held";/'
+
+expect_red "an acquisition that lands after the drain is released by acquire" \
+  's/if \(this\.#unwound\) await this\.#release\(entry\);/if (false) await this.#release(entry);/'
+
+expect_red "a stranded verdict is withdrawn when the resource turns up" \
+  's/failures\.splice\(failures\.indexOf\(stranded\), 1\);/void stranded;/'
 
 restore
 if ! run_suite; then

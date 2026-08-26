@@ -443,5 +443,80 @@ describe("acquiring once the stack is unwinding", () => {
     // Nobody was left to release it, so acquire does — the report already said it was stranded,
     // which was true when it was written and is the honest thing to have told the caller.
     expect(log.released).toEqual(["late worktree"]);
+    // And it stops being a leak. It was released; a check that kept naming it would be crying
+    // wolf at whatever reads this next.
+    expect(stack.leaks()).toEqual([]);
+  });
+
+  it("still releases an acquisition it gave up on, if it lands while the unwind is draining", async () => {
+    const log = recorder();
+    const stack = new DisposalStack(QUICK);
+
+    // A release the test controls, so the drain is provably still running when the straggler
+    // lands. It resolves well inside the bound once let go.
+    let letLockGo: (() => void) | undefined;
+    await stack.acquire({
+      name: "lock",
+      open: () => "lock",
+      release: () =>
+        new Promise<void>((resolve) => {
+          letLockGo = () => {
+            log.released.push("lock");
+            resolve();
+          };
+        }),
+    });
+
+    let finishOpening!: () => void;
+    const straggler = stack.acquire({
+      name: "slow worktree",
+      open: () =>
+        new Promise<string>((resolve) => {
+          finishOpening = () => resolve("slow worktree");
+        }),
+      release: () => void log.released.push("slow worktree"),
+    });
+
+    const unwinding = stack.unwind();
+
+    // Past the bound, so the straggler has been given up on, and into the drain, which is now
+    // sitting on the lock's release.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(letLockGo).toBeDefined();
+
+    finishOpening();
+    await expect(straggler).rejects.toBeInstanceOf(DisposalClosedError);
+    letLockGo?.();
+
+    const report = await unwinding;
+
+    // Reverse order is over what is holdable at the time, which is the only reading that
+    // survives a resource arriving after its turn has passed.
+    expect(log.released).toEqual(["lock", "slow worktree"]);
+    // The stranded verdict is withdrawn: it was a statement about what was known then, and what
+    // is known now is that the resource was released.
+    expect(report.failures).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(report.released.map((r) => r.name)).toEqual(["lock", "slow worktree"]);
+    expect(stack.leaks()).toEqual([]);
+  });
+
+  it("does not count an acquisition whose open threw as a leak", async () => {
+    const stack = new DisposalStack();
+    const boom = new Error("git worktree add failed");
+
+    await expect(
+      stack.acquire({
+        name: "worktree",
+        open: () => {
+          throw boom;
+        },
+        release: () => undefined,
+      }),
+    ).rejects.toBe(boom);
+
+    // Nothing was acquired, so there is nothing to release and nothing to warn about.
+    expect(stack.leaks()).toEqual([]);
+    expect((await stack.unwind()).ok).toBe(true);
   });
 });
