@@ -146,6 +146,12 @@ nothing installed. Everything after that is capability rather than viability.
 ## Conventions
 
 - One ticket is one session's work. Nothing here is larger than 3 points.
+- **Status** is one of *Ready*, *In Review* or *Done*, and the middle one is not optional
+  politeness. *In Review* means the work is on a branch with an open PR and review rounds still
+  outstanding: criteria a reviewer has confirmed are ticked, criteria a review round has just added
+  are not. *Done* means merged with every box ticked. A ticket whose PR is still being reviewed is
+  never *Done*, however complete it looks from the inside — AWCLI-01 sat at *Ready* with every box
+  unchecked through four review rounds, which is the failure this line exists to prevent.
 - A `—` in the WB column means no work-breakdown unit owns the ticket, and AWCLI-00 is now the
   only one: the work breakdown described the tool, not the project that holds it. AWCLI-23,
   AWCLI-24 and AWCLI-25 carried a dash until PR #8's fourth review round, because the design gave

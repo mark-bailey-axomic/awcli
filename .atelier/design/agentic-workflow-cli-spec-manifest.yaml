@@ -197,7 +197,9 @@ tickets:
     points: 2
     work_breakdown: WB-1
     depends_on: [AWCLI-00]
-    status: todo
+    # in-review: on branch feat/awcli-01-freeze-context-contract, PR #8, five of
+    # seven criteria confirmed by review round 4; the other two were added by it.
+    status: in-review
   - id: AWCLI-02
     path: tickets/AWCLI-02-fake-rehearsal-driver.md
     title: "[AWCLI] Ship the fake agent driver so workflows run with no agent installed"
