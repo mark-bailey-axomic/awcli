@@ -27,10 +27,10 @@ import { NotYetImplementedError } from "./not-implemented.js";
  *
  * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
  * one that surprises people. Adding a member to CONTEXT_SURFACE fails to compile here until
- * someone says who builds it — but *implementing* a member means deleting its entry, and that
- * fails here too, because Record requires every key. That error is the reminder to add the
- * member to the implemented list below and to drop its stub; loosening this type to make it go
- * away is how the exhaustiveness gets lost.
+ * someone says who builds it.
+ *
+ * When a member is implemented, update this table and the corresponding stubs in createContext
+ * together so supports() and NotYetImplementedError stay aligned; do not loosen the types here.
  *
  * What it does not check is that a value names anything: every key carries a string, so a
  * placeholder like "unassigned" compiles. not-implemented.test.ts is what rejects one.
