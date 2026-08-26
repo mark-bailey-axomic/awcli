@@ -60,6 +60,13 @@ expect_red "a leak is reported" \
 expect_red "a hung release is abandoned after a bounded wait" \
   's/Promise\.race\(\[attempt, abandonment\]\)/attempt/'
 
+# Added after review on PR #10 caught this one for real: the first version of unwind snapshotted
+# the stack and so could report cleanup complete while an acquisition was still opening. The
+# tests written for the other four criteria all passed against that. This mutation is the one
+# that would have failed.
+expect_red "an in-flight acquisition is unwound, not raced" \
+  's/for \(const name of await this\.#awaitOpening\(\)\)/for (const name of [])/'
+
 restore
 if ! run_suite; then
   echo "FAIL: the suite does not pass on the restored tree — it was already broken" >&2

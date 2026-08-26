@@ -333,9 +333,11 @@ describe("acquiring once the stack is unwinding", () => {
     expect(stack.leaks()).toEqual([]);
   });
 
-  it("releases a resource whose opening finished after the unwind started", async () => {
+  it("releases a resource whose opening finished after the unwind started, and reports it", async () => {
     const log = recorder();
     const stack = new DisposalStack();
+    await stack.acquire(log.resource("lock"));
+
     let finishOpening!: () => void;
     const slow = stack.acquire({
       name: "worktree",
@@ -346,13 +348,100 @@ describe("acquiring once the stack is unwinding", () => {
       release: () => void log.released.push("worktree"),
     });
 
-    const unwound = stack.unwind();
+    const unwinding = stack.unwind();
     finishOpening();
 
     await expect(slow).rejects.toBeInstanceOf(DisposalClosedError);
-    await unwound;
-    // Refused, but not stranded: the resource was real by the time it arrived.
-    expect(log.released).toEqual(["worktree"]);
+    const report = await unwinding;
+
+    // Refused, but not stranded, and not silently dropped either: it was acquired last, so it
+    // is released first, and it says so in the report the caller is handed.
+    expect(log.released).toEqual(["worktree", "lock"]);
+    expect(report.ok).toBe(true);
+    expect(report.released.map((r) => r.name)).toEqual(["worktree", "lock"]);
     expect(stack.leaks()).toEqual([]);
+  });
+
+  it("does not report cleanup complete while an acquisition is still in flight", async () => {
+    const stack = new DisposalStack();
+    let finishOpening!: () => void;
+    let releaseSeen = false;
+
+    void stack
+      .acquire({
+        name: "container",
+        open: () =>
+          new Promise<string>((resolve) => {
+            finishOpening = () => resolve("container");
+          }),
+        release: () => void (releaseSeen = true),
+      })
+      .catch(() => undefined);
+
+    let unwound = false;
+    const unwinding = stack.unwind().then((report) => {
+      unwound = true;
+      return report;
+    });
+
+    // Several turns of the loop: long enough that an unwind which ignored the in-flight
+    // acquisition would have finished by now.
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+    expect(unwound).toBe(false);
+
+    finishOpening();
+    const report = await unwinding;
+
+    expect(releaseSeen).toBe(true);
+    expect(report.released.map((r) => r.name)).toEqual(["container"]);
+  });
+
+  it("gives up on an acquisition that never opens, and reports it as stranded", async () => {
+    const log = recorder();
+    const stack = new DisposalStack(QUICK);
+    await stack.acquire(log.resource("lock"));
+    void stack
+      .acquire({
+        name: "wedged worktree",
+        open: () => new Promise<string>(() => undefined),
+        release: () => void log.released.push("wedged worktree"),
+      })
+      .catch(() => undefined);
+
+    const report = await stack.unwind();
+
+    expect(report.ok).toBe(false);
+    expect(report.failures.map((f) => [f.name, f.reason])).toEqual([
+      ["wedged worktree", "stranded"],
+    ]);
+    // The bound is what makes this finish at all, and the rest of the stack still came down.
+    expect(log.released).toEqual(["lock"]);
+    // Nothing to release and possibly something on disk: that is a leak and must be named.
+    expect(stack.leaks()).toContain("wedged worktree");
+  });
+
+  it("releases a resource that arrives after the unwind has already finished", async () => {
+    const log = recorder();
+    const stack = new DisposalStack(QUICK);
+    let finishOpening!: () => void;
+    const slow = stack.acquire({
+      name: "late worktree",
+      open: () =>
+        new Promise<string>((resolve) => {
+          finishOpening = () => resolve("late worktree");
+        }),
+      release: () => void log.released.push("late worktree"),
+    });
+
+    // Times out waiting, reports it stranded, and finishes.
+    await stack.unwind();
+    expect(log.released).toEqual([]);
+
+    finishOpening();
+    await expect(slow).rejects.toBeInstanceOf(DisposalClosedError);
+
+    // Nobody was left to release it, so acquire does — the report already said it was stranded,
+    // which was true when it was written and is the honest thing to have told the caller.
+    expect(log.released).toEqual(["late worktree"]);
   });
 });

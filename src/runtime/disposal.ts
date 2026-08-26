@@ -35,14 +35,19 @@ export type Disposition = "destroy" | "preserve";
  * holds may or may not have been let go. It is reported as a failure rather than a success for
  * exactly that reason — nobody knows, and a leak nobody knows about is the failure mode this
  * whole unit exists to prevent.
+ *
+ * `stranded` is the same admission one step earlier: an acquisition was still opening when the
+ * unwind gave up waiting for it. There may be a lock file or a container behind it and there is
+ * no handle with which to release it. That is strictly worse than an abandoned release, and the
+ * one thing it must never do is go unmentioned.
  */
-export type ReleaseFailureReason = "threw" | "abandoned";
+export type ReleaseFailureReason = "threw" | "abandoned" | "stranded";
 
 export interface ReleaseFailure {
   /** The resource's name, as given at acquisition. */
   readonly name: string;
   readonly reason: ReleaseFailureReason;
-  /** The error thrown, or for `abandoned` the wait that elapsed. */
+  /** The error thrown, or for `abandoned` and `stranded` the wait that elapsed. */
   readonly cause: unknown;
 }
 
@@ -112,6 +117,13 @@ export class DisposalClosedError extends Error {
 
 type EntryState = "held" | "released" | "failed" | "abandoned";
 
+/** An acquisition between "open has been called" and "the stack knows how to release it". */
+interface Opening {
+  readonly name: string;
+  /** Settles when the acquisition has registered an entry, or failed to open at all. */
+  readonly settled: Promise<void>;
+}
+
 interface Entry {
   readonly name: string;
   readonly disposition: Disposition;
@@ -121,7 +133,22 @@ interface Entry {
 
 export class DisposalStack {
   readonly #entries: Entry[] = [];
+  /** Acquisitions whose `open` has started and not yet returned. See `acquire` and `unwind`. */
+  readonly #opening = new Set<Opening>();
+  /** Acquisitions the unwind stopped waiting for. They have no handle, so they cannot be released. */
+  readonly #stranded: string[] = [];
   readonly #releaseTimeoutMs: number;
+  /**
+   * Set synchronously by `unwind`, before any await.
+   *
+   * Distinct from `#unwinding` on purpose. `#unwinding ??= this.#unwindOnce()` only assigns
+   * after the call returns — which is after `#unwindOnce` has run to its first await — so the
+   * promise is not a reliable answer to "is this stack closed?" from inside the unwind itself.
+   * A boolean set before anything can yield is.
+   */
+  #closed = false;
+  /** True once the unwind loop has finished. A resource arriving after this has nobody left to release it. */
+  #unwound = false;
   #unwinding: Promise<UnwindReport> | undefined;
 
   constructor(options: DisposalOptions = {}) {
@@ -131,29 +158,57 @@ export class DisposalStack {
   /**
    * Opens a resource and registers its release, as one step, and answers with the resource.
    *
-   * Refuses once unwinding has started — before calling `open`, so a refusal never strands
-   * something. The awkward case is a slow `open` that finishes after an unwind began: the
-   * resource is real by then, so it is released immediately rather than refused and forgotten,
-   * and the refusal still reaches the caller.
+   * Refuses once unwinding has started — before calling `open`, so a refusal never opens
+   * something nobody will close.
+   *
+   * The awkward case is the one in the middle: an `open` already in flight when the unwind
+   * begins. The resource becomes real after the decision to shut down, and it is a real
+   * resource either way, so it is registered exactly as any other would be and the unwind
+   * releases it in order. That is why the acquisition is announced in `#opening` before `open`
+   * is called rather than after it returns: the unwind waits on that set, so an in-flight
+   * acquisition is something it knows to wait for instead of something it races.
+   *
+   * The caller still gets a refusal. It just gets one it does not have to clean up after.
    */
   async acquire<T>(acquisition: Acquisition<T>): Promise<T> {
-    if (this.#unwinding !== undefined) throw new DisposalClosedError(acquisition.name);
+    if (this.#closed) throw new DisposalClosedError(acquisition.name);
 
-    const resource = await acquisition.open();
-    const disposition = acquisition.disposition ?? "destroy";
-    const entry: Entry = {
+    // Announced synchronously, before the first await, so there is no window in which an
+    // acquisition is under way and the stack cannot see it.
+    let registered!: () => void;
+    const opening: Opening = {
       name: acquisition.name,
-      disposition,
-      run: () => acquisition.release(resource, disposition),
-      state: "held",
+      settled: new Promise<void>((resolve) => {
+        registered = resolve;
+      }),
     };
-    this.#entries.push(entry);
+    this.#opening.add(opening);
 
-    if (this.#unwinding !== undefined) {
-      await this.#release(entry);
-      throw new DisposalClosedError(acquisition.name);
+    let entry: Entry;
+    let resource: T;
+    try {
+      resource = await acquisition.open();
+      const disposition = acquisition.disposition ?? "destroy";
+      entry = {
+        name: acquisition.name,
+        disposition,
+        run: () => acquisition.release(resource, disposition),
+        state: "held",
+      };
+      this.#entries.push(entry);
+    } finally {
+      // Both halves matter on the failure path too: an `open` that threw acquired nothing, and
+      // the unwind must stop waiting for it rather than time out on a resource that never was.
+      this.#opening.delete(opening);
+      registered();
     }
-    return resource;
+
+    if (!this.#closed) return resource;
+
+    // Past the point of no return. If the unwind is still running it will find this entry and
+    // release it in order; if it has already finished, nobody else will, so release it here.
+    if (this.#unwound) await this.#release(entry);
+    throw new DisposalClosedError(acquisition.name);
   }
 
   /**
@@ -165,9 +220,12 @@ export class DisposalStack {
    * turns a leak into a red suite instead of a lock file found in production next Tuesday.
    */
   leaks(): readonly string[] {
-    return this.#entries
-      .filter((entry) => entry.state !== "released")
-      .map((entry) => entry.name);
+    return [
+      ...this.#entries
+        .filter((entry) => entry.state !== "released")
+        .map((entry) => entry.name),
+      ...this.#stranded,
+    ];
   }
 
   /** Names still held, in acquisition order. Distinct from `leaks` in that it is not a verdict. */
@@ -186,6 +244,7 @@ export class DisposalStack {
    * container twice is how you turn an interrupt into a crash.
    */
   unwind(): Promise<UnwindReport> {
+    this.#closed = true;
     this.#unwinding ??= this.#unwindOnce();
     return this.#unwinding;
   }
@@ -194,9 +253,28 @@ export class DisposalStack {
     const released: ReleasedResource[] = [];
     const failures: ReleaseFailure[] = [];
 
+    // Wait for acquisitions already in flight to finish registering, so the order below is the
+    // whole stack and not the part of it that happened to have arrived. Without this, a
+    // resource whose `open` was still running would be released — if at all — after the caller
+    // had already been told cleanup was complete, and would appear in no report.
+    //
+    // Bounded like a release is, and for the same reason: an `open` that never returns must not
+    // hold the exit open. One that outlasts the bound is reported as stranded rather than
+    // waited on, because there is no handle to release and nothing better to say than so.
+    for (const name of await this.#awaitOpening()) {
+      this.#stranded.push(name);
+      failures.push({
+        name,
+        reason: "stranded",
+        cause: new Error(
+          `was still being acquired ${this.#releaseTimeoutMs}ms after the unwind began`,
+        ),
+      });
+    }
+
     // Reverse order of acquisition, and sequential: a container has to go before the worktree
     // it runs in, so releasing them at the same time is not the same thing as releasing them
-    // in order. Snapshotted first because a late-finishing `acquire` may append while this runs.
+    // in order.
     const order = [...this.#entries].reverse();
 
     for (const entry of order) {
@@ -209,7 +287,32 @@ export class DisposalStack {
       else failures.push(failure);
     }
 
+    this.#unwound = true;
     return { ok: failures.length === 0, released, failures };
+  }
+
+  /**
+   * Waits for every in-flight acquisition to register, and answers with the names of those that
+   * did not do so in time.
+   */
+  async #awaitOpening(): Promise<readonly string[]> {
+    const waiting = [...this.#opening];
+    if (waiting.length === 0) return [];
+
+    const registered = Promise.all(waiting.map((opening) => opening.settled)).then(
+      () => true as const,
+    );
+    const gaveUp = new Promise<false>((resolve) => {
+      const timer = setTimeout(() => resolve(false), this.#releaseTimeoutMs);
+      timer.unref?.();
+      // Nothing to clear: the winner is decided below and this timer cannot keep the
+      // process alive. Clearing it would need a handle threaded out of the executor for no gain.
+    });
+
+    if (await Promise.race([registered, gaveUp])) return [];
+    // Only the ones still outstanding. Some of the batch will have landed while we waited, and
+    // those are on #entries now and belong in the unwind proper, not in this list.
+    return [...this.#opening].map((opening) => opening.name);
   }
 
   /** Runs one release under the time bound. Never throws; answers with the failure instead. */
