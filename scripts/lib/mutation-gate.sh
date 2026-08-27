@@ -88,8 +88,22 @@ mg_inherit_exit_trap() {
 mg_isolate() {
   MG_ORIGIN="$PWD"
   MG_WORKDIR="$(mktemp -d)"
+
+  # tar's status is not the check. It exits non-zero for warnings as well as errors — "file changed
+  # as we read it" being the one a live checkout produces — and treating a warning as a failed gate
+  # would make this flaky for no reason. What the copy has to be is *usable*, so that is what is
+  # asserted, below.
   tar --exclude=./node_modules --exclude=./.git --exclude=./dist \
-    -cf - -C "$MG_ORIGIN" . | tar -xf - -C "$MG_WORKDIR"
+    -cf - -C "$MG_ORIGIN" . 2>/dev/null | tar -xf - -C "$MG_WORKDIR" || true
+
+  if [[ ! -f "$MG_WORKDIR/package.json" ]]; then
+    echo "FAIL: could not copy the working tree to $MG_WORKDIR" >&2
+    exit 1
+  fi
+
+  # Defensive: if a tar without `--exclude` support ever copied node_modules in, the symlink below
+  # would fail and the gate would stop for a reason that has nothing to do with the code.
+  rm -rf "$MG_WORKDIR/node_modules"
   ln -s "$MG_ORIGIN/node_modules" "$MG_WORKDIR/node_modules"
   cd "$MG_WORKDIR"
 }
