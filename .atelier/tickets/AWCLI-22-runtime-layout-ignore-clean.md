@@ -58,7 +58,7 @@ written.
 - [ ] Adding a new runtime file kind requires no ignore change — asserted by test.
 - [ ] Re-running initialisation over an existing layout changes nothing.
 - [ ] Clean run against a live run skips the locked run and reports it.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

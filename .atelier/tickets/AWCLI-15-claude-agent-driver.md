@@ -43,7 +43,7 @@ and workspace units are already proven against the same interface.
 - [ ] The driver produces a usable result with the agent's structured output mode disabled.
 - [ ] Spend absent from the stream is reported as unknown, and does not read as zero.
 - [ ] The subprocess is released on normal end, failure and interrupt.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

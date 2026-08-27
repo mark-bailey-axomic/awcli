@@ -55,7 +55,7 @@ an operator assumes containment they did not get.
 - [ ] A command's result, a commit and the run's arguments each log without being restated by
       hand — asserted against the contract's own types, not against a hand-built object.
 - [ ] Values matching known secret shapes are absent from logs.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

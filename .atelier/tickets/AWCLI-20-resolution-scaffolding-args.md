@@ -45,7 +45,7 @@ therefore a separate home directory (ADR-0007).
 - [ ] Scenario: *The workflow library stays clean enough to sync between machines*.
 - [ ] Scenario: *A repository in another language needs nothing installed*.
 - [ ] Scenario: *A workflow that reaches past the context takes on that requirement itself*.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

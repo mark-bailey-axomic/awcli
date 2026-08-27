@@ -87,7 +87,7 @@ container is a boundary (BR-015).
       call given no ceiling still gets awcli's own default rather than none.
 - [ ] `ctx.version.supports("exec")` returns true, and the member's entry in `DELIVERED_BY` is
       gone.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

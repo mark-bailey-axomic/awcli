@@ -45,7 +45,7 @@ gets wrong, so its refusal must name what was expected.
 - [ ] A repository whose compiler configuration would reject the workflow file still loads it.
 - [ ] Present `limits` and `state` exports are read; absent ones fall back to documented defaults.
 - [ ] A syntax error in the workflow file produces a refusal naming file and position.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

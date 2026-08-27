@@ -121,7 +121,7 @@ AWCLI-19 for the execution targets. `DELIVERED_BY` keeps every entry it has.
       existing global-install gate.
 - [x] The declaration's own prose admits which members this build cannot run, held against the
       table that records them by a test rather than by review.
-- [x] All tests pass, lint clean, type check clean.
+- [x] All tests pass, format check clean, type check clean.
 
 **On the ticks:** every box above is confirmed by a gate or a test that runs in this branch —
 `npm run check` and `npm run check:gates`, the latter including the contract gate's readonly and

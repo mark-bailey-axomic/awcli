@@ -44,7 +44,7 @@ reuses the cancellation primitive rather than introducing a second mechanism.
 - [ ] Scenario: *A precondition failure stops the loop immediately*.
 - [ ] Scenario: *Declaring done lets work already in flight finish*.
 - [ ] The summary reports how many iterations failed and why.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

@@ -42,7 +42,7 @@ ADR-0004: if the stream is enrichment, losing it is a warning, not a failure.
 - [ ] Scenario: *Detail that cannot be read degrades once and loudly*.
 - [ ] A talkative agent running longer than the idle limit is not killed.
 - [ ] Teardown reaches grandchild processes; a survivor is reported.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

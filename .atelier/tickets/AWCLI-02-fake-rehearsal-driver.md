@@ -45,7 +45,7 @@ Two rehearsal scenarios in the approved BDD set define the observable behaviour.
 - [ ] Scenario: *A rehearsal still creates a working copy*.
 - [ ] A real workflow file can be authored and run end to end with no agent CLI installed.
 - [ ] Records and terminal output mark a rehearsal distinctly from a real run.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

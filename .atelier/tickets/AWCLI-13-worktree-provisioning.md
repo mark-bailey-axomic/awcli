@@ -44,7 +44,7 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 - [ ] Scenario: *Working on the live checkout requires asking for it*.
 - [ ] Scenario: *Parallel agents never share a working copy*.
 - [ ] Branch names for the same run name and slot are identical across invocations.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

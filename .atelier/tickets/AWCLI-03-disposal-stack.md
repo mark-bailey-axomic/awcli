@@ -44,7 +44,7 @@ before this exists.
 - [x] A failing release does not prevent the remaining releases; all failures are reported.
 - [x] A test asserts that no resource is leaked after each exit path, and fails when one is.
 - [x] A release that never returns is abandoned after a bounded wait, and that is reported.
-- [x] All tests pass, lint clean, type check clean.
+- [x] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

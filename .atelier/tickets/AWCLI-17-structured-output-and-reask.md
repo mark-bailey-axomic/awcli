@@ -44,7 +44,7 @@ the need to couple this unit to session resume.
 - [ ] The re-ask prompt explicitly instructs the agent to change nothing.
 - [ ] A crafted output attempting to be executed rather than parsed is handled as inert data.
 - [ ] Commits from the first attempt survive a failed second attempt.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

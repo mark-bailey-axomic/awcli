@@ -42,7 +42,7 @@ itself — otherwise a renamed field surfaces as a confusing failure many iterat
 - [ ] Scenario: *Stored state no longer matching the shape the workflow declares*.
 - [ ] Scenario: *A crash mid-iteration does not discard what was recorded*.
 - [ ] A partial write is never observable: an interrupted save leaves the previous state readable.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

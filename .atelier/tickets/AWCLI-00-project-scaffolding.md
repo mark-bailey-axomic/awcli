@@ -57,7 +57,7 @@ ADR-0001 rejects.
 - [x] Test, format-check and typecheck each run as a named script and pass on a clean tree.
 - [x] A deliberate type error fails the typecheck script with a non-zero exit.
 - [x] CI runs the gates on macOS and Linux, and has no Windows job.
-- [x] All tests pass, lint clean, type check clean.
+- [x] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

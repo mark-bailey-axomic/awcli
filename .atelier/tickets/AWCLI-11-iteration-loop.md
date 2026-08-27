@@ -45,7 +45,7 @@ code follows that declaration.
 - [ ] Scenario: *A monitor-style workflow declares that exhausting its limits is expected*.
 - [ ] Scenario: *The time limit ends a run the iteration count would not have*.
 - [ ] Each classification exits with its reserved code.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 
