@@ -82,8 +82,8 @@ through a round that had a blocking finding sitting on it. It should not have.
 
 The last criterion said "lint clean" for every one of the 27 tickets, and there is no linter in this
 repository: no eslint, no config, and `npm run check` is `format:check && test && build`. It was
-reworded here to what is actually run, and across the other 26 in the sweep that followed. Adding a real
-linter, belongs to whoever does that as its own change.
+reworded here to what is actually run, and across the other 26 in the sweep that followed. Adding a
+real linter belongs to whoever does that as its own change.
 
 Each criterion above was watched failing before it was ticked. `scripts/verify-lock-gate.sh`
 (wired into `npm run check:gates`, and so into CI) applies a plausible wrong implementation for each
