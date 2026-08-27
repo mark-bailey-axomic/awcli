@@ -39,6 +39,13 @@ fi
 WORK="$PWD/.gate-acquisition"
 mkdir -p "$WORK"
 
+# How long the fixture gets. Generous: it takes a lock against a stale one on a local filesystem, so
+# it is done in milliseconds, and this is only here to bound the case the gate cannot otherwise
+# survive. The defect it was written for makes node *exit*, but the neighbouring one — an acquisition
+# that waits on something that never settles while something else holds the loop open — hangs, and a
+# check that hangs for ever instead of failing is worse than no check. Review's point.
+FIXTURE_TIMEOUT_S="${FIXTURE_TIMEOUT_S:-30}"
+
 # Prints whatever the fixture printed, and never fails the script itself: a mutated build is
 # *supposed* to fail, and the interesting evidence is the output either way.
 run_fixture() {
@@ -52,14 +59,41 @@ run_fixture() {
     cat "$WORK/build-$label.log" >&2
     exit 1
   fi
-  node "$WORK/bundle/acquisition-returns.js" "$repository" 2>&1 || true
+
+  # Polled rather than `timeout`, which macOS does not ship, and rather than a `sleep`-and-kill
+  # watchdog, which was the first attempt: a non-interactive bash blocked in `sleep` does not act on
+  # the TERM that cancels it until the sleep is over, so every run of this gate paid the full
+  # timeout. Polling costs a few hundred milliseconds on the path that matters and cannot outlive
+  # the fixture.
+  local output="$WORK/run-$label.log" timed_out=""
+  node "$WORK/bundle/acquisition-returns.js" "$repository" >"$output" 2>&1 &
+  local child=$! ticks=0
+  local limit=$((FIXTURE_TIMEOUT_S * 10))
+  while kill -0 "$child" 2>/dev/null; do
+    if ((ticks >= limit)); then
+      kill -9 "$child" 2>/dev/null || true
+      timed_out="yes"
+      break
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  wait "$child" 2>/dev/null || true
+
+  cat "$output"
+  # Said out loud, because "no RETURNED line" has two causes with different diagnoses: a process
+  # that exited before the answer arrived, and one that never got there at all.
+  if [[ -n "$timed_out" ]]; then
+    echo "TIMED OUT: the fixture was still running after ${FIXTURE_TIMEOUT_S}s and was killed"
+  fi
 }
 
 as_written="$(run_fixture as-written)"
 if [[ "$as_written" != *"RETURNED: took the lock"* ]]; then
   echo "FAIL: acquireRunLock did not return from a plain node process." >&2
-  echo "      Something in the acquisition is waiting on a resource that does not hold the event" >&2
-  echo "      loop open, so node exits before the answer arrives. Output was:" >&2
+  echo "      Either it is waiting on something that does not hold the event loop open, so node" >&2
+  echo "      exits before the answer arrives, or it never got there at all and was killed on the" >&2
+  echo "      timeout. The output below says which:" >&2
   echo "$as_written" >&2
   exit 1
 fi

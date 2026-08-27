@@ -108,6 +108,34 @@ mg_isolate() {
   cd "$MG_WORKDIR"
 }
 
+# Refuse a subject that would be mutated in the developer's own checkout despite the copy.
+#
+# The copy only helps for subjects named *relatively*: those resolve inside it, because `mg_isolate`
+# changes directory. An absolute path does not — it goes on pointing at the original tree, so a gate
+# spelling its subject `"$REPO_ROOT/src/foo.ts"` would break the real file for the length of its run
+# and the isolation would be decoration. Review found the hole in the fix for the very thing it
+# defeats.
+#
+# Absolute is not itself the problem, which is why this looks at where the path points: the
+# harness's own self-test has subjects in a temp sandbox, and those are absolute and must stay
+# allowed.
+mg_check_subject() {
+  local file="$1"
+  case "$file" in
+    /*) ;;
+    *) return 0 ;;
+  esac
+  case "$file" in
+    "$MG_ORIGIN" | "$MG_ORIGIN"/*)
+      echo "FAIL: subject $file is an absolute path into the checkout at $MG_ORIGIN" >&2
+      echo "      Mutating it would break the developer's own tree for the length of this run," >&2
+      echo "      which the private copy exists to prevent. Name the subject relative to the" >&2
+      echo "      repository root instead." >&2
+      exit 1
+      ;;
+  esac
+}
+
 mutation_gate_init() {
   MG_SUITE="$1"
   shift
@@ -131,6 +159,7 @@ mutation_gate_init() {
   MG_BACKUP_DIR="$(mktemp -d)"
   local file
   for file in "${MG_SUBJECTS[@]}"; do
+    mg_check_subject "$file"
     [[ -f "$file" ]] || {
       echo "FAIL: subject $file does not exist" >&2
       exit 1

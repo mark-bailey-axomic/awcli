@@ -205,6 +205,10 @@ describe("one run per name", () => {
     expect(refused.holder.owner).toEqual(OPERATOR);
     expect(refused.message).toContain("triage");
     expect(refused.message).toContain(String(OPERATOR.pid));
+    // And where the lock is. The remedy for every refusal is about a file, and the path is derived
+    // from a repository, a layout and a run name — an operator has no way to know it. Review asked
+    // "remove which lock?" of a message that did not say.
+    expect(refused.message).toContain(runLockPath(repositoryPath, TRIAGE));
 
     // The first run continues undisturbed: its lock is still its own, and the refused run
     // registered nothing it would have to clean up.
@@ -553,8 +557,10 @@ describe("every message that claims nothing changed", () => {
     // `changeNote` quotes the old wording while explaining why it was wrong.
     const code = source.replace(/\/\*[^]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-    // "Nothing further has been changed" is deliberately not this claim — it appears in the one
-    // error that has already said what it changed — so the pattern does not match it.
+    // Both spellings `changeNote` can produce: the bare claim, and the "Nothing else" form that
+    // follows a reclamation it has just described. An earlier version of this comment quoted
+    // "Nothing further has been changed", a string the remediation had already renamed — review
+    // caught the test citing wording that no longer existed anywhere.
     const claim = /Nothing (?:else )?has been changed/g;
     expect(code.match(claim)).toHaveLength(2);
 
@@ -772,6 +778,11 @@ describe("refusing rather than guessing", () => {
     if (outcome.ok) return;
     expect(outcome.kind).toBe("undecidable");
     expect(outcome.message).toContain("could not be established");
+    // And what the probe actually said. "Could not be established" reads the same whether `ps` is
+    // missing from a container image for good — where the refusal will never clear on its own — or
+    // the machine was briefly too loaded to answer. The probe writes a reason; review found it
+    // being dropped one function later, which left the operator nothing to act on.
+    expect(outcome.message).toContain("test: the probe was not able to answer");
     // Untouched: the live run still holds its lock.
     expect((await readLockFile(repositoryPath, TRIAGE)).owner).toEqual(owner);
     await first.unwind();
@@ -811,16 +822,13 @@ describe("refusing rather than guessing", () => {
   });
 
   /**
-   * A repository can carry a committed symlink at the lock path. Following it would put the lock,
-   * and the removal of the lock, wherever it points — and a dangling one answers EEXIST to `link`
-   * and ENOENT to `readFile` at the same time, which is the pair the acquisition loop used to spin
-   * on for ever. This test times out rather than fails if that bound is removed.
-   */
-  /**
-   * The re-judge inside a reclamation must make the same call the acquisition path makes. It used
-   * to be looser in both directions at once, and this is the dangerous half: a lock from another
-   * host counted as *stale*, so a reclamation that took it aside deleted it — while the acquisition
-   * path refuses to judge another machine's pid at all.
+   * Whatever a reclamation finds under the set-aside name, if it is not the file that was judged, it
+   * goes back — and it goes back *unjudged*, because judging it means asking the operating system
+   * about a process while the run name sits free on disk. This test is about the file coming back
+   * byte for byte; the next attempt is where the replacement gets a verdict.
+   *
+   * It replaced a pair of tests about how the re-judgement decided, which review round 3 removed
+   * the need for by removing the re-judgement.
    */
   it("puts back a lock from another machine that a reclamation took aside", async () => {
     const repositoryPath = await repository();
@@ -860,22 +868,17 @@ describe("refusing rather than guessing", () => {
   });
 
   /**
-   * The other direction of the same defect: a recycled process id counted as *live* in the
-   * re-judge, so a genuinely abandoned lock was put back and the attempt spun instead of
-   * reclaiming it. And the reclamation reports the lock it actually removed, which on this path is
-   * not the one it originally judged.
-   */
-  /**
-   * The other direction of the same defect: a recycled process id counted as *live* in the
-   * re-judge, so a genuinely abandoned lock was put back and the attempt spun instead of
-   * reclaiming it. And the reclamation reports the lock it actually removed, which on this path is
-   * not the one it originally judged.
+   * The other side of the swap: what was taken aside is *also* stale, so the run should end up
+   * holding the name rather than giving up on it.
    *
-   * The probe stops being able to answer about that pid after the first ask, which is what makes
-   * this discriminating: an implementation that puts the lock back and tries again gets
-   * "undecidable" on its second ask and refuses, where the correct one has already reclaimed. Two
-   * implementations differing only by a wasted turn round the loop would otherwise reach the same
-   * end state, and no assertion here could tell them apart.
+   * This used to pin more than that, and pinned the wrong thing. The re-judgement happened inside
+   * the reclamation — with the run name free on disk — and the probe here was rigged to answer
+   * about that pid only once, so an implementation that put the file back and judged it on the next
+   * attempt failed the test. Review's third round explained why that was backwards: judging in that
+   * window means a `ps` spawn with the name free, and any run that starts in it takes the name while
+   * this one still thinks it is reclaiming. The extra turn round the loop is the fix, not a defect,
+   * so the probe now answers consistently and the assertions are about the outcome: the recycled-pid
+   * lock is the one reclaimed, and it is reported as such rather than as the lock first judged.
    */
   it("reclaims a recycled-pid lock that a reclamation took aside, and reports that one", async () => {
     const repositoryPath = await repository();
@@ -899,13 +902,7 @@ describe("refusing rather than guessing", () => {
       probe: fakeProbe(SCHEDULER, [], {
         gate: parked.gate,
         answers: new Map<number, readonly ProbeAnswer[]>([
-          [
-            recycled.pid,
-            [
-              { kind: "running", identity: impostor },
-              { kind: "unknown", reason: "test: the probe stopped answering" },
-            ],
-          ],
+          [recycled.pid, [{ kind: "running", identity: impostor }]],
         ]),
       }),
     });
@@ -927,7 +924,8 @@ describe("refusing rather than guessing", () => {
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) return;
     // The verdict is about the lock actually removed — the recycled-pid one — not about the dead
-    // owner that was judged before the swap.
+    // owner that was judged before the swap. `impostor` holds that id now, so the only route to
+    // this reason is judging the replacement.
     expect(outcome.reclaimed?.reason).toBe("owner-replaced");
     expect(outcome.reclaimed?.previousOwner).toEqual(recycled);
     expect(outcome.reclaimed?.message).toContain("different process");
@@ -935,6 +933,15 @@ describe("refusing rather than guessing", () => {
     await stack.unwind();
   });
 
+  /**
+   * A repository can carry a committed symlink at the lock path, and the hazard is narrower than
+   * this docblock used to claim — `link`, `rename` and `unlink` operate on the link itself, so
+   * neither the write nor the removal is redirected. `readFile` does follow it, so an unrelated file
+   * elsewhere on disk is read as this run's lock; and a *dangling* one answers EEXIST to `link` and
+   * ENOENT to `readFile` at the same time, which is the pair the acquisition loop used to spin on
+   * for ever. This test times out rather than fails if that bound is removed. Review found the old
+   * wording surviving here after the same claim had been corrected in the source.
+   */
   it("refuses a symlink at the lock path instead of spinning on it", async () => {
     const repositoryPath = await repository();
     const path = runLockPath(repositoryPath, TRIAGE);
@@ -1139,6 +1146,34 @@ describe("printing what a lock file says", () => {
   });
 
   /**
+   * The other half of the same class, and not a control character by any definition the strip
+   * originally used: U+202E reverses the *rendering* of everything after it, so a host stored as
+   * "evil<RLO>moc.elpmaxe" is displayed as though it read example.com. A refusal quoting it sends
+   * whoever reads it to look at the wrong machine, which is the same harm as a repainted screen.
+   */
+  it("strips the controls that reverse how the rest of a message reads", async () => {
+    const repositoryPath = await repository();
+    const RLO = "\u202e";
+    await plant(repositoryPath, {
+      run: "triage",
+      owner: { pid: 12_345, startedAt: 1_600_000_000_000 },
+      acquiredAt: Date.now(),
+      host: `evil${RLO}moc.elpmaxe`,
+    });
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(OPERATOR),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).not.toContain(RLO);
+    expect(outcome.message).toContain("evil");
+  });
+
+  /**
    * `new Date(x).toISOString()` throws RangeError out of range, and `acquiredAt` is a number off
    * disk. A refusal that throws while formatting itself reaches the operator as a stack trace
    * instead of as the reason their run will not start.
@@ -1162,5 +1197,147 @@ describe("printing what a lock file says", () => {
     if (outcome.ok) return;
     expect(outcome.kind).toBe("held");
     expect(outcome.message).toContain("an unreadable time");
+  });
+});
+
+/**
+ * A lock a previous reclamation moved aside and could not put back.
+ *
+ * `removeExactly` renames the lock before it can check what it took, and when it cannot put the
+ * file back it throws rather than deleting it — the displaced lock stays on disk as
+ * `lock.stale.<uuid>`. Review's point was about the invocation *after* that one: it found a free
+ * lock path, took the name, and ran alongside whatever was still working under the displaced file.
+ * The failure that stopped one run from colliding let the next one collide instead, and this time
+ * silently, because nothing ever read those files again.
+ */
+describe("a lock left displaced by a reclamation that could not finish", () => {
+  async function displace(
+    repositoryPath: string,
+    owner: ProcessIdentity,
+    host = HERE,
+  ): Promise<string> {
+    const path = runLockPath(repositoryPath, TRIAGE);
+    await mkdir(dirname(path), { recursive: true });
+    const at = `${path}.stale.4f0f0e2a-0000-4000-8000-000000000001`;
+    await writeFile(
+      at,
+      `${JSON.stringify({ run: "triage", owner, acquiredAt: Date.now(), host })}\n`,
+      "utf8",
+    );
+    return at;
+  }
+
+  it("is refused, naming the file, rather than being walked past", async () => {
+    const repositoryPath = await repository();
+    const at = await displace(repositoryPath, OPERATOR);
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      // The scheduler can see the operator's process: the displaced lock's owner is alive.
+      probe: fakeProbe(SCHEDULER, [OPERATOR]),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("held");
+    expect(outcome.message).toContain(at);
+    expect(outcome.holder.owner).toEqual(OPERATOR);
+    // And the name was not taken while that run may still be using it.
+    expect(existsSync(runLockPath(repositoryPath, TRIAGE))).toBe(false);
+  });
+
+  /**
+   * A lock from another machine, displaced. This machine cannot judge its pid at all, so it is the
+   * `undecidable` refusal rather than the `held` one — the same asymmetry the lock path gets, for
+   * the same reason.
+   */
+  it("is refused as undecidable when it came from another machine", async () => {
+    const repositoryPath = await repository();
+    const at = await displace(repositoryPath, OPERATOR, "another-machine");
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [OPERATOR]),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("undecidable");
+    expect(outcome.message).toContain(at);
+  });
+
+  /**
+   * The other half, and the reason this cannot simply refuse on any leftover: a displaced lock whose
+   * owner is gone is inert, and blocking a run name on it for ever would be the permanent-lock
+   * failure BR-035 exists to prevent, arrived at from the side. It is left on disk rather than
+   * deleted — deleting one could take away another process's set-aside file mid-reclamation.
+   */
+  it("is ignored when its owner is gone, and left where it is", async () => {
+    const repositoryPath = await repository();
+    const at = await displace(repositoryPath, {
+      pid: 9901,
+      startedAt: 1_600_000_000_000,
+    });
+
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(OPERATOR),
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect((await readLockFile(repositoryPath, TRIAGE)).owner).toEqual(OPERATOR);
+    expect(existsSync(at)).toBe(true);
+    await stack.unwind();
+  });
+
+  /**
+   * And not a symlink at one of those names either. The scan reads what it finds, and a committed
+   * `lock.stale.<uuid>` pointing anywhere on disk would otherwise produce a refusal about a lock
+   * with nothing to do with this repository — the same shape as the symlink hazards at the lock
+   * path itself.
+   */
+  it("is ignored when the leftover is a symlink rather than a file", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    await mkdir(dirname(path), { recursive: true });
+    const elsewhere = join(repositoryPath, "planted-lock");
+    await writeFile(
+      elsewhere,
+      `${JSON.stringify({ run: "triage", owner: OPERATOR, acquiredAt: Date.now(), host: HERE })}\n`,
+      "utf8",
+    );
+    await symlink(elsewhere, `${path}.stale.symlinked`);
+
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [OPERATOR]),
+    });
+
+    expect(outcome.ok).toBe(true);
+    await stack.unwind();
+  });
+
+  /** Nor does a leftover nobody can parse block a name: `.stale.` is not a lock by itself. */
+  it("is ignored when it cannot be read as a lock", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(`${path}.stale.not-a-lock`, "half a fi", "utf8");
+
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(OPERATOR),
+    });
+
+    expect(outcome.ok).toBe(true);
+    await stack.unwind();
   });
 });

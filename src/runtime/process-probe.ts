@@ -80,15 +80,36 @@ export interface ProcessProbe {
  */
 export type Liveness = "live" | "gone" | "different" | "undecidable";
 
+/**
+ * What was decided about a recorded owner, and — when nothing could be — why not.
+ *
+ * The reason is carried rather than dropped, because it is the whole diagnosis. `undecidable` on
+ * its own produces a refusal nobody can act on: "whether process 4242 is still running could not be
+ * established" reads the same whether `ps` is missing from the container image, a hardened
+ * `hidepid` is hiding the process table, or the machine was merely too loaded to answer within two
+ * seconds — and only the first of those will still be true tomorrow. Review caught the reason being
+ * thrown away here after the probe had gone to the trouble of writing it.
+ */
+export interface LivenessVerdict {
+  readonly liveness: Liveness;
+  /** Why the question could not be answered. Present exactly when `liveness` is `undecidable`. */
+  readonly reason: string | undefined;
+}
+
 /** Whether the process recorded in `owner` is still the process running under that id. */
 export async function livenessOf(
   owner: ProcessIdentity,
   probe: ProcessProbe,
-): Promise<Liveness> {
+): Promise<LivenessVerdict> {
   const answer = await probe.identify(owner.pid);
-  if (answer.kind === "unknown") return "undecidable";
-  if (answer.kind === "not-found") return "gone";
-  return answer.identity.startedAt === owner.startedAt ? "live" : "different";
+  if (answer.kind === "unknown") {
+    return { liveness: "undecidable", reason: answer.reason };
+  }
+  if (answer.kind === "not-found") return { liveness: "gone", reason: undefined };
+  return {
+    liveness: answer.identity.startedAt === owner.startedAt ? "live" : "different",
+    reason: undefined,
+  };
 }
 
 /**
@@ -265,9 +286,14 @@ export const systemProcessProbe: ProcessProbe = {
     // lose `this`, and the failure would surface as a thrown error on the startup path.
     ownIdentity ??= systemProcessProbe.identify(process.pid).then((answer) => {
       if (answer.kind === "running") return answer.identity;
-      // Unreachable in practice: a process asking about itself is running by definition. Failing
-      // loudly rather than inventing a start time, because a wrong `startedAt` here would be
-      // written into the lock and would make this run's own lock look stale to the next one.
+      // Reachable, and the comment here claimed otherwise for three review rounds — "a process
+      // asking about itself is running by definition", which is about `not-found` and says nothing
+      // about the branch that actually fires. `unknown` reaches this: a container image whose `ps`
+      // does not take `-o lstart=` answers it on every ask, and so does a `/proc` a hardened
+      // `hidepid` will not show us. Failing loudly rather than inventing a start time, because a
+      // wrong `startedAt` here would be written into the lock and would make this run's own lock
+      // look stale to the next one — so awcli would refuse its own name for reasons nobody could
+      // trace. The message carries the probe's reason for exactly that.
       throw new Error(
         `awcli cannot determine its own start time (pid ${process.pid}): ${
           answer.kind === "unknown"

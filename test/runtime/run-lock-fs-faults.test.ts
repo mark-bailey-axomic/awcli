@@ -27,6 +27,8 @@ let failRestoringLink: { readonly code: string } | undefined;
 let failEveryLink: { readonly code: string } | undefined;
 /** Set by a test to fail the tidy-up of a staging file whose lock is already linked into place. */
 let failStagingUnlink: { readonly code: string } | undefined;
+/** Set by a test to fail the read of a lock that has just been renamed aside. */
+let failAsideRead: { readonly code: string } | undefined;
 
 function faulted(code: string): Error {
   return Object.assign(new Error(`simulated ${code}`), { code });
@@ -61,6 +63,19 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       }
       return real.link(existing, next);
     },
+    readFile: async (
+      file: Parameters<typeof real.readFile>[0],
+      options?: Parameters<typeof real.readFile>[1],
+    ) => {
+      // The set-aside name is the only path with `.stale.` in it that this unit reads inside an
+      // acquisition, and the leftover scan runs before any aside exists.
+      if (failAsideRead !== undefined && String(file).includes(".stale.")) {
+        const failure = failAsideRead;
+        failAsideRead = undefined;
+        throw faulted(failure.code);
+      }
+      return real.readFile(file, options);
+    },
     unlink: async (target: Parameters<typeof real.unlink>[0]) => {
       if (failStagingUnlink !== undefined && String(target).includes(".staging.")) {
         const failure = failStagingUnlink;
@@ -83,6 +98,7 @@ afterEach(async () => {
   failRestoringLink = undefined;
   failEveryLink = undefined;
   failStagingUnlink = undefined;
+  failAsideRead = undefined;
   await Promise.all(
     repositories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   );
@@ -116,6 +132,43 @@ describe("a staging write that fails part-way through", () => {
 
     // The whole point: nothing accumulates in the run's directory for someone to puzzle over later.
     expect(await readdir(runDirectory)).toEqual([]);
+  });
+});
+
+describe("a repository this user cannot write to", () => {
+  /**
+   * The one failure on this path an operator can fix without knowing anything about awcli, and it
+   * reached them as a bare `EACCES` and a stack trace until review pointed that out. The remedy is
+   * about the directory, so the message has to name it.
+   */
+  it("is explained in terms of the directory, not as an errno", async () => {
+    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-perm-"));
+    repositories.push(repositoryPath);
+    const triage = runName("triage");
+    failNextWrite = { code: "EACCES" };
+
+    await expect(
+      acquireRunLock(new DisposalStack(), {
+        repositoryPath,
+        runName: triage,
+        probe: {
+          self: () => Promise.resolve({ pid: 4242, startedAt: 1_700_000_000_000 }),
+          identify: () => Promise.resolve({ kind: "not-found" as const }),
+        },
+      }),
+    ).rejects.toThrow(/not writable/);
+
+    // Naming the directory is the point: an errno does not say which one to look at.
+    failNextWrite = { code: "EACCES" };
+    const failure = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: triage,
+      probe: {
+        self: () => Promise.resolve({ pid: 4242, startedAt: 1_700_000_000_000 }),
+        identify: () => Promise.resolve({ kind: "not-found" as const }),
+      },
+    }).catch((error: unknown) => error);
+    expect(String(failure)).toContain(dirname(runLockPath(repositoryPath, triage)));
   });
 });
 
@@ -177,38 +230,87 @@ describe("a lock that was set aside and cannot be put back", () => {
    * a process still working under it. That is the BR-010 double-writer this function exists to
    * prevent, reached through the error handling of the fix for it.
    */
-  it("is left on disk rather than deleted, and the failure says where it is", async () => {
-    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-restore-"));
+  it.each([
+    { code: "ENOSPC", expected: /could not put it back/ },
+    // The EEXIST half had neither a test nor a mutation until review round 3 asked for one: only
+    // ENOSPC was staged here, and the gate anchored on the *other* throw's text — so putting the
+    // `unlink` back in front of this one would have destroyed a live lock again with every test and
+    // every mutation still green. It is the more likely of the two failures, as well: it is what a
+    // third process linking its own lock into the gap looks like from here.
+    { code: "EEXIST", expected: /replaced by another process/ },
+  ])(
+    "is left on disk rather than deleted when the restore fails with $code",
+    async ({ code, expected }) => {
+      const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-restore-"));
+      repositories.push(repositoryPath);
+      const triage = runName("triage");
+      const path = runLockPath(repositoryPath, triage);
+      const runDirectory = dirname(path);
+
+      // A stale lock for the acquisition to judge.
+      await mkdir(runDirectory, { recursive: true });
+      await writeFile(path, lockBytes(DEAD), "utf8");
+
+      const parked = parkingProbe();
+      const acquiring = acquireRunLock(new DisposalStack(), {
+        repositoryPath,
+        runName: triage,
+        probe: parked.probe,
+      });
+      await parked.arrival;
+
+      // Replaced, while the acquisition is parked mid-judgement, by a lock whose owner is running.
+      const live = lockBytes(RUNNING);
+      await writeFile(path, live, "utf8");
+      failRestoringLink = { code };
+      parked.release();
+
+      await expect(acquiring).rejects.toThrow(expected);
+
+      // The live lock's bytes are still on disk somewhere, under the set-aside name the message named.
+      const entries = await readdir(runDirectory);
+      const setAside = entries.filter((entry) => entry.includes(".stale."));
+      expect(setAside).toHaveLength(1);
+      expect(await readFile(join(runDirectory, setAside[0] as string), "utf8")).toBe(
+        live,
+      );
+    },
+  );
+});
+
+describe("a set-aside lock that cannot be read back", () => {
+  /**
+   * The read of the set-aside file sat outside any `try`, and `readLock` rethrows everything that is
+   * not ENOENT. So an EIO on a failing disk propagated out of `acquireRunLock` with the lock path
+   * *empty* — the run name free, nothing restored, and an errno that did not even name the file now
+   * holding what may be a live lock. Review found it in the span the previous round had just
+   * narrowed. The file goes back first; the read failure is still what gets reported.
+   */
+  it("puts the lock back before reporting the failure", async () => {
+    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-aside-read-"));
     repositories.push(repositoryPath);
     const triage = runName("triage");
     const path = runLockPath(repositoryPath, triage);
-    const runDirectory = dirname(path);
+    await mkdir(dirname(path), { recursive: true });
+    const stale = lockBytes(DEAD);
+    await writeFile(path, stale, "utf8");
 
-    // A stale lock for the acquisition to judge.
-    await mkdir(runDirectory, { recursive: true });
-    await writeFile(path, lockBytes(DEAD), "utf8");
+    failAsideRead = { code: "EIO" };
 
-    const parked = parkingProbe();
-    const acquiring = acquireRunLock(new DisposalStack(), {
-      repositoryPath,
-      runName: triage,
-      probe: parked.probe,
-    });
-    await parked.arrival;
+    await expect(
+      acquireRunLock(new DisposalStack(), {
+        repositoryPath,
+        runName: triage,
+        probe: {
+          self: () => Promise.resolve(OPERATOR),
+          identify: () => Promise.resolve({ kind: "not-found" as const }),
+        },
+      }),
+    ).rejects.toThrow(/EIO/);
 
-    // Replaced, while the acquisition is parked mid-judgement, by a lock whose owner is running.
-    const live = lockBytes(RUNNING);
-    await writeFile(path, live, "utf8");
-    failRestoringLink = { code: "ENOSPC" };
-    parked.release();
-
-    await expect(acquiring).rejects.toThrow(/could not put it back/);
-
-    // The live lock's bytes are still on disk somewhere, under the set-aside name the message named.
-    const entries = await readdir(runDirectory);
-    const setAside = entries.filter((entry) => entry.includes(".stale."));
-    expect(setAside).toHaveLength(1);
-    expect(await readFile(join(runDirectory, setAside[0] as string), "utf8")).toBe(live);
+    // Back where it was, byte for byte, and nothing left beside it.
+    expect(await readFile(path, "utf8")).toBe(stale);
+    expect((await readdir(dirname(path))).sort()).toEqual(["lock"]);
   });
 });
 
@@ -216,7 +318,7 @@ describe("a filesystem that will not hard-link", () => {
   it.each([
     { code: "ENOTSUP", expected: /does not support hard links/ },
     { code: "EOPNOTSUPP", expected: /does not support hard links/ },
-    { code: "EMLINK", expected: /too many links/ },
+    { code: "EMLINK", expected: /refused to add a link/ },
   ])("explains $code rather than passing the errno on", async ({ code, expected }) => {
     const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-link-"));
     repositories.push(repositoryPath);

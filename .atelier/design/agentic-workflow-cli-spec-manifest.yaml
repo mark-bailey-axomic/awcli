@@ -241,7 +241,10 @@ tickets:
     points: 2
     work_breakdown: WB-5
     depends_on: [AWCLI-03]
-    status: done
+    # in_review: PR #12 is open with review rounds outstanding. tickets/README.md's conventions
+    # reserve done for merged-with-every-box-ticked, and this was marked done on an unmerged branch
+    # for two rounds before review caught it against that rule.
+    status: in_review
   - id: AWCLI-08
     path: tickets/AWCLI-08-run-record.md
     title: "[AWCLI] Record every run so it can be explained the next morning"

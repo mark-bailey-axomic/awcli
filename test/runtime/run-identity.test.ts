@@ -144,7 +144,16 @@ describe("naming a run", () => {
   it("refuses a derived name that would collide, rather than accepting the slug", () => {
     const result = defaultRunName("./workflows/worktrees.ts");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.problem).toBe("reserved");
+    if (result.ok) return;
+    expect(result.problem).toBe("reserved");
+    // And says whose mistake it is. The validator's messages are written for a name the operator
+    // typed and end by telling them to choose another one, which is not advice anyone can take
+    // about a name they never chose: `./workflows/worktrees.ts` is a legal workflow reference and
+    // there is no --name on the command line to change. Review found the derived path handing the
+    // typed-name wording straight through.
+    expect(result.message).toContain("derived");
+    expect(result.message).toContain("./workflows/worktrees.ts");
+    expect(result.message).toContain("--name");
   });
 
   it("refuses when nothing usable can be derived", () => {

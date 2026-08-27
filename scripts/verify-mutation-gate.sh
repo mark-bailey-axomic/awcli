@@ -71,6 +71,23 @@ check "$SANDBOX/a/same-name.ts" "contents of a"
 check "$SANDBOX/b/same-name.ts" "contents of b"
 check "$SANDBOX/plain dir/spaced.ts" "contents of spaced"
 
+# ── A subject that points back into the checkout is refused ──────────────────────────────────
+#
+# The copy only isolates subjects named relatively; an absolute path into the real tree goes on
+# pointing at it, so a gate spelling its subject "$REPO_ROOT/src/foo.ts" would break the developer's
+# file and the isolation above would be decoration. Absolute is not itself the problem — this
+# self-test's own subjects are absolute paths into a temp sandbox — so the check is about where the
+# path leads. In subshells: refusing exits the script, which is the behaviour under test.
+if (mg_check_subject "$REPO_ROOT/$WITNESS" >/dev/null 2>&1); then
+  report "the harness accepted an absolute subject path into the checkout"
+fi
+if ! (mg_check_subject "$SANDBOX/a/same-name.ts" >/dev/null 2>&1); then
+  report "the harness refused an absolute subject path outside the checkout"
+fi
+if ! (mg_check_subject "src/runtime/run-lock.ts" >/dev/null 2>&1); then
+  report "the harness refused an ordinary relative subject path"
+fi
+
 # ── A mutation that does not apply exactly once is refused ───────────────────────────────────
 #
 # In a subshell, because mg_mutate exits the script when it refuses — which is the behaviour under
@@ -109,4 +126,4 @@ if ((failed)); then
   exit 1
 fi
 
-echo "PASS: the harness isolates the checkout, restores each subject from its own backup, and refuses a mutation that does not apply exactly once"
+echo "PASS: the harness isolates the checkout, keeps subjects out of it, restores each from its own backup, and refuses a mutation that does not apply exactly once"

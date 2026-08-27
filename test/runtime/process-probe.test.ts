@@ -49,7 +49,7 @@ describe("asking the operating system who is running", () => {
       kind: "running",
       identity: self,
     });
-    expect(await livenessOf(self, systemProcessProbe)).toBe("live");
+    expect((await livenessOf(self, systemProcessProbe)).liveness).toBe("live");
   });
 
   it("reports a start time consistent with how long this process has been up", async () => {
@@ -121,14 +121,18 @@ describe("asking the operating system who is running", () => {
       const answer = await systemProcessProbe.identify(pid);
       expect(answer.kind).toBe("running");
       if (answer.kind !== "running") return;
-      expect(await livenessOf(answer.identity, systemProcessProbe)).toBe("live");
+      expect((await livenessOf(answer.identity, systemProcessProbe)).liveness).toBe(
+        "live",
+      );
 
       const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
       child.kill("SIGKILL");
       await exited;
 
       // A killed run's lock must read as reclaimable, which is exactly this answer.
-      expect(await livenessOf(answer.identity, systemProcessProbe)).toBe("gone");
+      expect((await livenessOf(answer.identity, systemProcessProbe)).liveness).toBe(
+        "gone",
+      );
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
@@ -152,13 +156,22 @@ describe("asking the operating system who is running", () => {
       identify: () => Promise.resolve(unknown),
     };
     const owner: ProcessIdentity = { pid: 4242, startedAt: 1_700_000_000_000 };
-    expect(await livenessOf(owner, probe)).toBe("undecidable");
+    expect(await livenessOf(owner, probe)).toEqual({
+      liveness: "undecidable",
+      // Carried, not dropped. A refusal that cannot say *why* the question went unanswered is one
+      // nobody can act on: `ps` missing from a container image never clears, and a `ps` that timed
+      // out on a busy machine clears on its own, and the two produce the same refusal without this.
+      reason: "the probe could not run",
+    });
 
     const absent = {
       self: () => Promise.resolve({ pid: 1, startedAt: 1 }),
       identify: () => Promise.resolve({ kind: "not-found" } as const),
     };
-    expect(await livenessOf(owner, absent)).toBe("gone");
+    expect(await livenessOf(owner, absent)).toEqual({
+      liveness: "gone",
+      reason: undefined,
+    });
   });
 });
 

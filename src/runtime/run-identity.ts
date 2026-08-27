@@ -183,7 +183,20 @@ export function defaultRunName(workflowReference: string): RunNameResult {
   }
   // Through the validator rather than trusting the slug: reserved names survive slugification
   // untouched, so `worktrees.ts` would otherwise become a legal-looking default that collides.
-  return validateRunName(slug);
+  const validated = validateRunName(slug);
+  if (validated.ok) return validated;
+  // But not with the validator's own message. Those are written for a name the operator typed, and
+  // they end by telling them to choose another one — advice that makes no sense for a name nobody
+  // chose. `./workflows/worktrees.ts` is a legal workflow reference, and being told that
+  // "worktrees" is reserved and to pick something else is a puzzle rather than an instruction:
+  // there is no `--name` on the command line to change. Review's point. The reason is kept, because
+  // it is accurate and specific; what changes is whose mistake it says it is, and what to do.
+  return {
+    ok: false,
+    name: workflowReference,
+    problem: validated.problem,
+    message: `awcli derived the run name "${slug}" from "${workflowReference}", and it cannot be used. ${validated.message} Pass --name to give this run a name of your own.`,
+  };
 }
 
 export interface RunNameRequest {
