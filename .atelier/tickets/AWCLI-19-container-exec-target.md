@@ -99,7 +99,7 @@ This is the second half of the container work; the image itself comes from AWCLI
 - [ ] A container refused after the working copy was obtained leaves no working copy behind.
 - [ ] `ctx.version.supports("sandbox")` returns true, and the member's entry in `DELIVERED_BY` is
       gone.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

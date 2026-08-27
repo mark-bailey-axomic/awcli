@@ -94,7 +94,7 @@ construction. The two must not be allowed to drift.
       resolver.
 - [ ] `ctx.version.supports("fs")` returns true, and the member's entry in `DELIVERED_BY` is
       gone.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

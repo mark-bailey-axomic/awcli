@@ -45,7 +45,7 @@ record, not a later pass.
       as unknown.
 - [ ] A crash between two appends leaves earlier entries intact and parseable.
 - [ ] Values matching known secret shapes are absent from the written record.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

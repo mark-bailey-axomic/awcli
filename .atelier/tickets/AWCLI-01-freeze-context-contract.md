@@ -48,7 +48,7 @@ surface and its per-member rules are tabulated in the TDD's Contracts section.
 - [x] A deliberate divergence between runtime and declaration fails the build, naming the member.
 - [x] Scenario: *A workflow written earlier still runs on a later awcli*.
 - [x] Unimplemented members throw a named "not yet implemented" error rather than returning undefined.
-- [x] All tests pass, lint clean, type check clean.
+- [x] All tests pass, format check clean, type check clean.
 
 **On the five:** each was confirmed by PR #8's fourth review round, against the branch as it stood
 at `7e5a9b5`, not by the author asserting it. **On the two that are no longer here:** that same round

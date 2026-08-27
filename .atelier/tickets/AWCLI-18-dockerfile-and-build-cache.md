@@ -47,7 +47,7 @@ different base image, a second machine, an edit above the install line, or a pru
 - [ ] Regeneration over an operator-edited Dockerfile refuses or preserves, never silently
       overwrites.
 - [ ] The diagnostic command reports the image and the agent version baked into it.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

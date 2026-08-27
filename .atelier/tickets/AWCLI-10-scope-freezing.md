@@ -72,7 +72,7 @@ nothing; it is named now.
       nested `sandbox()` scopes stay read-only — the read-only view cannot be escaped by nesting.
 - [ ] Reads succeed throughout, including while calls are outstanding.
 - [ ] A concurrent run of a different name does not close this run's window.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

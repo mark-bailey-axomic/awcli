@@ -43,7 +43,7 @@ with the stale-lock reclamation in AWCLI-07. Two approved scenarios pin the dist
 - [ ] Scenario: *Interrupting is still the immediate stop*.
 - [ ] Drain and immediate are shown to be modes of one primitive, not two code paths.
 - [ ] A second interrupt during unwinding forces exit and says so.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

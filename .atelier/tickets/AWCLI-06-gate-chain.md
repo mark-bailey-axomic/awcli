@@ -64,7 +64,7 @@ all five fields (AWCLI-22), so an initialised repository passes this gate as ini
 - [ ] A configuration missing more than one field is refused naming every one of them, not just
       the first.
 - [ ] A test asserts no side effect occurs before any refusal.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

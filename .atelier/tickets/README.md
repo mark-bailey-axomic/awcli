@@ -170,6 +170,14 @@ nothing installed. Everything after that is capability rather than viability.
   number because WB-11 did name `ctx.sandbox` — there the ticket, not the work breakdown, was the
   thing that had narrowed.
 - Titles carry the bare `[AWCLI]` repo tag, so they are ready to push to a tracker unchanged.
+- Every ticket closes with the same last criterion — `All tests pass, format check clean, type
+  check clean.` — and those three are exactly what `npm run check` runs: `prettier --check .`,
+  `vitest run`, and the `tsc --noEmit` that `build` runs ahead of `tsup`. It read `lint clean`
+  on all 27 until PR #12's fourth review round, and no ticket had ever been held to it: there is
+  no ESLint in the repository and no `lint` script, so a formatting check had been standing in
+  for a linter on every ticket that shipped. The wording now names the gate that exists. Adding
+  a real linter is a change to the toolchain and belongs in a ticket of its own, not in the line
+  that describes what is already run.
 - Tickets state *what* and *why*; the builder decides *how*. Specific shapes, paths and port
   signatures live in the TDD's Contracts section, referenced rather than duplicated.
 - Architecture rationale is in [`../../docs/adr/`](../../docs/adr/) — seven ADRs, cited by number

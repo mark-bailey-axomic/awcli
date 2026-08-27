@@ -44,7 +44,7 @@ different writers and may proceed together.
 - [ ] Scenario: *A lock left by a killed run is reclaimed automatically*.
 - [ ] Scenario: *A slow run keeps its lock*.
 - [ ] A reused process ID belonging to a different process does not read as the original owner.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 

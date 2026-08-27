@@ -45,7 +45,7 @@ discarding one without the other leaves an inconsistent run. Branches outlive th
 - [ ] Scenario: *Starting fresh discards state and working copies together*.
 - [ ] Scenario: *Branches survive the run that made them*.
 - [ ] A resumed run after a kill reattaches successfully.
-- [ ] All tests pass, lint clean, type check clean.
+- [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 
