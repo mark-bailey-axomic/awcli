@@ -8,8 +8,9 @@
 # Each mutation is a plausible wrong implementation, not a syntax error. "Trust the pid" is what
 # you get from writing the obvious lock file; "reclaim anything older than an hour" is what a
 # reviewer suggests when a stale lock blocks them; "unlink the path" is the release everyone writes
-# first; and the four under "found in review" are the code that was actually here and shipped for
-# review before being caught.
+# first; and everything under a "found in review" heading is code that was actually here and shipped
+# for review before being caught. Those headings deliberately name the round rather than a count —
+# the sections have grown on every round, and a number in a comment is one more thing to get wrong.
 #
 # A mutation whose anchor no longer matches fails the script rather than being skipped. A refactor
 # that moves this code should therefore break here loudly: a silently skipped mutation is exactly
@@ -148,7 +149,7 @@ expect_red "the acquisition loop is bounded on every path" src/runtime/run-lock.
   's/  if \(stats\.isSymbolicLink\(\)\) \{/  if (false) {/' \
   's/      for \(let attempt = 1; attempt <= MAX_ATTEMPTS; attempt\+\+\) \{/      for (let attempt = 1; ; attempt++) {/'
 
-# ── Found in the Copilot review round: three more that shipped ──────────────────────────────
+# ── Found in the third, fourth and fifth review rounds: more that shipped ───────────────────
 #
 # Symlink refusal that looks only at the run directory. `mkdir` with `recursive` follows an existing
 # symlink at any level, so a committed symlink at `.awcli` or `.awcli/run` put the lock outside the
@@ -189,7 +190,7 @@ expect_red "the ancestor walk stays inside the repository" src/runtime/run-lock.
 expect_red "no message hardcodes a claim that nothing changed" src/runtime/run-lock.ts \
   's/processes\. \$\{changeNote\(reclaimed\)\} Try again\.`/processes. Nothing has been changed; try again.`/'
 
-# ── Found in the second full review round: the eight defects in the remediation itself ───────
+# ── Found in the second full review round: defects in the remediation itself ─────────────────
 # Two of these were the blockers, and both were introduced by the fix for an earlier one. The
 # pattern is worth naming: the dangerous code on this ticket has consistently been the error
 # handling of a correction, not the original mistake.
