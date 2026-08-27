@@ -154,6 +154,42 @@ describe("naming a run", () => {
     expect(result.message).toContain("derived");
     expect(result.message).toContain("./workflows/worktrees.ts");
     expect(result.message).toContain("--name");
+    // The reason survives; the remedy written for a typed name does not. Forwarding the validator's
+    // whole message left "Choose another name." in place behind the new sentence, so the refusal
+    // gave two remedies and the first was the puzzle the rest of it exists to remove.
+    expect(result.reason).toContain("reserved");
+    expect(result.message).not.toContain("Choose another name.");
+  });
+
+  /**
+   * A refused name is echoed back, and the branch that refuses one for its characters is the branch
+   * where a control character is guaranteed — that is what put it there. So the refusal quoted
+   * whatever the operator passed straight to a terminal: an escape sequence repaints it, and a
+   * right-to-left override reverses how the rest of the sentence reads, which is worse here than in
+   * a lock file's host because the operator is being told what to change.
+   */
+  it("does not echo a rejected name's control characters back to the terminal", () => {
+    const hostile = "triage\u001b[2Jgone";
+    const result = validateRunName(hostile);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).not.toContain("\u001b");
+    expect(result.name).not.toContain("\u001b");
+    // Still recognisable enough to act on: what was refused is quoted, minus what a terminal acts on.
+    expect(result.message).toContain("triage");
+  });
+
+  /**
+   * The derived path echoes the *workflow reference*, not the slug — slugification turns anything
+   * outside [a-z0-9._-] into a dash, so nothing hostile survives into a name. The reference itself
+   * is quoted verbatim, and this is the case that reaches the message with nothing usable derived.
+   */
+  it("does not echo them back through a derived name either", () => {
+    const result = defaultRunName("./workflows/\u202e---.ts");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).not.toContain("\u202e");
+    expect(result.name).not.toContain("\u202e");
   });
 
   it("refuses when nothing usable can be derived", () => {

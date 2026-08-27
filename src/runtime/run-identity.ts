@@ -1,4 +1,5 @@
 import { basename, join } from "node:path";
+import { printable } from "./printable.js";
 
 /**
  * A run's name, and the paths that follow from it.
@@ -76,7 +77,16 @@ export interface RunNameRefusal {
   readonly ok: false;
   readonly name: string;
   readonly problem: RunNameProblem;
-  /** Operator-facing, naming the thing to fix (the gate chain prints this verbatim). */
+  /**
+   * Why the name cannot be used, with no advice in it.
+   *
+   * Separate from the remedy because one caller needs the reason without the remedy: a name derived
+   * from a workflow reference is refused for reasons that are accurate, and told to "choose another
+   * name" for a name nobody chose. Splitting them is what let that be fixed rather than papered
+   * over — `defaultRunName` takes the reason and supplies its own remedy.
+   */
+  readonly reason: string;
+  /** Operator-facing, the reason and the remedy together (the gate chain prints this verbatim). */
   readonly message: string;
 }
 
@@ -86,13 +96,19 @@ export type RunNameResult =
 /** Whether a string may be used as a run name, and why not when it may not. */
 export function validateRunName(name: string): RunNameResult {
   if (name.length === 0) {
-    return refuse(name, "empty", "A run name cannot be empty.");
+    return refuse(
+      name,
+      "empty",
+      "A run name cannot be empty.",
+      "Pass --name a name, or leave --name out and awcli derives one from the workflow reference.",
+    );
   }
   if (name.length > MAX_RUN_NAME_LENGTH) {
     return refuse(
       name,
       "too-long",
       `A run name may be at most ${MAX_RUN_NAME_LENGTH} characters; this one is ${name.length}. It becomes a directory name and a branch name.`,
+      "Use a shorter one.",
     );
   }
   // Before the character test, so `..` is reported as what it is rather than as a stray dot.
@@ -103,13 +119,15 @@ export function validateRunName(name: string): RunNameResult {
       name,
       "traversal",
       `A run name may not contain "..": it becomes a path under ${RUNTIME_DIRECTORY}/${RUN_DIRECTORY}/ and must stay inside it.`,
+      "Use a name without it.",
     );
   }
   if (!RUN_NAME_PATTERN.test(name)) {
     return refuse(
       name,
       "illegal-characters",
-      `"${name}" is not usable as a run name. Use letters, digits, dots, dashes and underscores, starting and ending with a letter or digit — the name becomes a directory name and a git branch name.`,
+      `"${printable(name)}" is not usable as a run name: it becomes a directory name and a git branch name, so it may hold only letters, digits, dots, dashes and underscores, and must start and end with a letter or digit.`,
+      "Use a name within that.",
     );
   }
   // Lowercase only. A run name is a directory on a filesystem that may be case-insensitive
@@ -120,7 +138,8 @@ export function validateRunName(name: string): RunNameResult {
     return refuse(
       name,
       "not-lowercase",
-      `"${name}" must be lowercase: the name is both a directory (on a filesystem that may ignore case) and a git branch (on one that does not), and the two must agree. Try "${name.toLowerCase()}".`,
+      `"${printable(name)}" must be lowercase: the name is both a directory (on a filesystem that may ignore case) and a git branch (on one that does not), and the two must agree.`,
+      `Try "${printable(name.toLowerCase())}".`,
     );
   }
   // git refuses a ref component ending in `.lock`, and it refuses it at branch-creation time —
@@ -130,21 +149,44 @@ export function validateRunName(name: string): RunNameResult {
     return refuse(
       name,
       "git-reserved-suffix",
-      `A run name may not end in ".lock": git refuses a branch whose name ends that way, and the name becomes the branch awcli/${name}/<slot>.`,
+      `A run name may not end in ".lock": git refuses a branch whose name ends that way, and the name becomes the branch awcli/${printable(name)}/<slot>.`,
+      "Use a name that ends in something else.",
     );
   }
   if (RESERVED_RUN_NAMES.includes(name)) {
     return refuse(
       name,
       "reserved",
-      `"${name}" is reserved: awcli uses that path for the run's working copies. Choose another name.`,
+      `"${printable(name)}" is reserved: awcli uses that path for the run's working copies.`,
+      "Choose another name.",
     );
   }
   return { ok: true, name: name as RunName };
 }
 
-function refuse(name: string, problem: RunNameProblem, message: string): RunNameRefusal {
-  return { ok: false, name, problem, message };
+/**
+ * A refusal, built in one place so the reason and the remedy stay separable.
+ *
+ * The name is sanitised on the way in. Everything here is echoed back to a terminal, and the branch
+ * that refuses a name for its characters is precisely the branch where the name is guaranteed to
+ * hold a character that is not a letter, a digit, a dot, a dash or an underscore — an escape
+ * sequence and a right-to-left override both qualify. So the refusal quoted attacker-chosen bytes,
+ * with the same consequence as in `run-lock.ts` and none of the same protection until the sanitizer
+ * became a shared module.
+ */
+function refuse(
+  name: string,
+  problem: RunNameProblem,
+  reason: string,
+  remedy: string,
+): RunNameRefusal {
+  return {
+    ok: false,
+    name: printable(name),
+    problem,
+    reason,
+    message: `${reason} ${remedy}`,
+  };
 }
 
 /**
@@ -166,8 +208,11 @@ export function defaultRunName(workflowReference: string): RunNameResult {
   const slug = stem
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
-    // Collapse, then strip the ends, so `--nightly--.ts` cannot produce a name the validator
-    // would then reject for its edges — a default that can be refused is not a default.
+    // Collapse, then strip the ends, so `--nightly--.ts` cannot produce a name the validator would
+    // then reject for its edges. The principle is that narrow one and not the aphorism this comment
+    // used to carry — "a default that can be refused is not a default" — which the code fifteen
+    // lines below contradicts on purpose: a slug that comes out `worktrees` *is* refused, and has to
+    // be. What must never happen is a default refused for something slugification itself produced.
     .replace(/-{2,}/g, "-")
     .replace(/^[^a-z0-9]+/, "")
     .replace(/[^a-z0-9]+$/, "")
@@ -178,25 +223,27 @@ export function defaultRunName(workflowReference: string): RunNameResult {
     return refuse(
       workflowReference,
       "empty",
-      `No run name could be derived from "${workflowReference}". Pass --name to say what this run is called.`,
+      `No run name could be derived from "${printable(workflowReference)}".`,
+      "Pass --name to say what this run is called.",
     );
   }
   // Through the validator rather than trusting the slug: reserved names survive slugification
   // untouched, so `worktrees.ts` would otherwise become a legal-looking default that collides.
   const validated = validateRunName(slug);
   if (validated.ok) return validated;
-  // But not with the validator's own message. Those are written for a name the operator typed, and
-  // they end by telling them to choose another one — advice that makes no sense for a name nobody
-  // chose. `./workflows/worktrees.ts` is a legal workflow reference, and being told that
-  // "worktrees" is reserved and to pick something else is a puzzle rather than an instruction:
-  // there is no `--name` on the command line to change. Review's point. The reason is kept, because
-  // it is accurate and specific; what changes is whose mistake it says it is, and what to do.
-  return {
-    ok: false,
-    name: workflowReference,
-    problem: validated.problem,
-    message: `awcli derived the run name "${slug}" from "${workflowReference}", and it cannot be used. ${validated.message} Pass --name to give this run a name of your own.`,
-  };
+  // The validator's *reason*, and not its remedy. Those remedies are written for a name the operator
+  // typed, and they end by telling them to choose another one — advice that makes no sense for a name
+  // nobody chose. `./workflows/worktrees.ts` is a legal workflow reference, and being told that
+  // "worktrees" is reserved and to pick something else is a puzzle rather than an instruction: there
+  // is no `--name` on the command line to change. Forwarding `message` carried the remedy along with
+  // the reason and left the puzzle in place behind the new sentence, which is why `reason` exists as
+  // its own field.
+  return refuse(
+    workflowReference,
+    validated.problem,
+    `awcli derived the run name "${printable(slug)}" from "${printable(workflowReference)}", and it cannot be used. ${validated.reason}`,
+    "Pass --name to give this run a name of your own.",
+  );
 }
 
 export interface RunNameRequest {

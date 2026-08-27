@@ -13,6 +13,12 @@
 # put the `unref` back, run it again, and require the line to be *missing*. A check nobody has
 # watched fail is not known to be a check — and this one had to be watched fail from outside the
 # suite entirely.
+#
+# Structurally this is a mutation gate — it sources the same harness, applies a mutation, and
+# requires the mutated build to fail — and it is deliberately not named `verify-*-gate.sh` with the
+# others. Those all run vitest against a mutated subject; this one runs a bundled node process,
+# because the defect it exists for is invisible to vitest by construction. The name says which of
+# those two things a reader is about to find.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -43,11 +49,16 @@ mkdir -p "$WORK"
 # it is done in milliseconds, and this is only here to bound the case the gate cannot otherwise
 # survive. The defect it was written for makes node *exit*, but the neighbouring one — an acquisition
 # that waits on something that never settles while something else holds the loop open — hangs, and a
-# check that hangs for ever instead of failing is worse than no check. Review's point.
+# check that hangs for ever instead of failing is worse than no check.
 FIXTURE_TIMEOUT_S="${FIXTURE_TIMEOUT_S:-30}"
 
-# Prints whatever the fixture printed, and never fails the script itself: a mutated build is
-# *supposed* to fail, and the interesting evidence is the output either way.
+# Runs the fixture and prints what it printed. A failing *run* is not fatal here — the mutated build
+# is supposed to produce no answer, and the output is the evidence either way — but a failing
+# *bundle* is, because a build that did not happen tells us nothing about the code. The two used to
+# be described as one thing ("never fails the script itself") eight lines above an `exit 1`.
+#
+# The child's exit status is written down beside the output, because "no RETURNED line" has more
+# causes than the one being tested for.
 run_fixture() {
   local label="$1"
   local repository="$WORK/repo-$label"
@@ -65,7 +76,7 @@ run_fixture() {
   # the TERM that cancels it until the sleep is over, so every run of this gate paid the full
   # timeout. Polling costs a few hundred milliseconds on the path that matters and cannot outlive
   # the fixture.
-  local output="$WORK/run-$label.log" timed_out=""
+  local output="$WORK/run-$label.log" timed_out="" status=0
   node "$WORK/bundle/acquisition-returns.js" "$repository" >"$output" 2>&1 &
   local child=$! ticks=0
   local limit=$((FIXTURE_TIMEOUT_S * 10))
@@ -78,7 +89,8 @@ run_fixture() {
     sleep 0.1
     ticks=$((ticks + 1))
   done
-  wait "$child" 2>/dev/null || true
+  wait "$child" 2>/dev/null || status=$?
+  printf '%s' "$status" >"$WORK/status-$label"
 
   cat "$output"
   # Said out loud, because "no RETURNED line" has two causes with different diagnoses: a process
@@ -103,11 +115,24 @@ mg_mutate "the backoff between attempts keeps the event loop alive" "$SUBJECT" \
   's/  return sleep\(ms\);/  return new Promise((resolve) => { const timer = setTimeout(resolve, ms); timer.unref(); });/'
 
 mutated="$(run_fixture unref)"
+mutated_status="$(cat "$WORK/status-unref")"
 mg_restore
 if [[ "$mutated" == *"RETURNED: took the lock"* ]]; then
   echo "FAIL: the check passes with the backoff timer unreferenced, so it is not a gate." >&2
   exit 1
 fi
-echo "  ok: unreferencing the backoff timer stops the acquisition from returning"
+# The absence of a line is not evidence on its own: an import error, a missing bundle, a fixture that
+# threw and a node that crashed all produce no RETURNED line, and every one of them would have this
+# control printing ok while pinning nothing. The defect being reproduced has one signature — node
+# deciding the event loop is empty and exiting on an unsettled top-level await, which is exit 13 —
+# so that is what is required.
+if [[ "$mutated_status" != "13" ]]; then
+  echo "FAIL: the mutated run produced no RETURNED line, but not by exiting on an unsettled" >&2
+  echo "      await (exit $mutated_status, expected 13). So this control is not observing the" >&2
+  echo "      defect it was written for. What the mutated run said:" >&2
+  echo "$mutated" >&2
+  exit 1
+fi
+echo "  ok: unreferencing the backoff timer makes node exit before the acquisition returns"
 
 echo "PASS: taking a run lock returns from a plain node process, and this check can see when it does not"

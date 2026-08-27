@@ -401,6 +401,56 @@ describe("reclaiming a lock its owner no longer holds", () => {
     expect(outcome.reclaimed?.message).toContain("triage");
   });
 
+  /**
+   * The ordinary case reclamation exists for — one stale lock after a reboot — and where the create
+   * happens in it. Falling out of the iteration put the create after the backoff, so the process
+   * that had just done the work of freeing the name spent 25ms not holding it, and a second run
+   * starting in that window took it. Not corruption: the loser is refused correctly. But the window
+   * was this process's own doing, which is the class of defect this whole unit is about.
+   *
+   * Counted through `self()`, which is called once per attempt, because "took it in the same
+   * attempt" is otherwise only observable as a timing.
+   */
+  it("takes the freed name in the attempt that freed it, without a backoff", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    const dead: ProcessIdentity = { pid: 9600, startedAt: 1_600_000_000_000 };
+    await mkdir(dirname(path), { recursive: true });
+    const staleAt = 1_700_000_123_000;
+    await writeFile(
+      path,
+      `${JSON.stringify({ run: "triage", owner: dead, acquiredAt: staleAt, host: HERE })}\n`,
+      "utf8",
+    );
+
+    let attempts = 0;
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: {
+        self: async () => {
+          attempts += 1;
+          return OPERATOR;
+        },
+        identify: async (pid): Promise<ProbeAnswer> =>
+          pid === OPERATOR.pid
+            ? { kind: "running", identity: OPERATOR }
+            : { kind: "not-found" },
+      },
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(attempts).toBe(1);
+    expect(outcome.reclaimed?.reason).toBe("owner-gone");
+    // And the sentence BR-035 exists for says which file went and when it had been taken. "A stale
+    // lock" is not something an operator can check against the run they thought was still going.
+    expect(outcome.reclaimed?.message).toContain(path);
+    expect(outcome.reclaimed?.message).toContain(new Date(staleAt).toISOString());
+    await stack.unwind();
+  });
+
   it("does not report a reclamation when the name was simply free", async () => {
     const repositoryPath = await repository();
     const stack = new DisposalStack();
@@ -501,6 +551,38 @@ describe("releasing on every exit path", () => {
     expect((await readLockFile(repositoryPath, TRIAGE)).owner).toEqual(SCHEDULER);
   });
 
+  /**
+   * Identity is the file's bytes here as everywhere else in this module. The release used to compare
+   * three fields off the parse — pid, start time and acquisition instant — which leaves `host` out:
+   * a synced checkout can put another machine's lock at this path with all three matching, and this
+   * process would then delete a lock belonging to a run on a different machine.
+   */
+  it("leaves a lock alone when only the bytes differ, not the fields it used to compare", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(OPERATOR),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    // The same owner and the same acquisition instant, from somewhere else.
+    const elsewhere = `${JSON.stringify({
+      run: "triage",
+      owner: outcome.lock.contents.owner,
+      acquiredAt: outcome.lock.contents.acquiredAt,
+      host: "another-machine",
+    })}\n`;
+    await writeFile(path, elsewhere, "utf8");
+
+    await stack.unwind();
+
+    expect(await readFile(path, "utf8")).toBe(elsewhere);
+  });
+
   it("does not fail the unwind when the lock file has already gone", async () => {
     const repositoryPath = await repository();
     const stack = new DisposalStack();
@@ -558,27 +640,43 @@ describe("every message that claims nothing changed", () => {
     // `changeNote` quotes the old wording while explaining why it was wrong.
     const code = source.replace(/\/\*[^]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-    // Both spellings `changeNote` can produce: the bare claim, and the "Nothing else" form that
-    // follows a reclamation it has just described. An earlier version of this comment quoted
-    // "Nothing further has been changed", a string the remediation had already renamed — review
-    // caught the test citing wording that no longer existed anywhere.
-    const claim = /Nothing (?:else )?has been changed/g;
-    expect(code.match(claim)).toHaveLength(2);
-
+    // The claim itself, wherever it is spelled. Three wordings have been through here and each was
+    // narrower than the last, so the assertion is about *where* it lives rather than about what it
+    // says: once, inside `changeNote`, shared by both of its branches, and nowhere else at all.
+    const claim = /no run was started/g;
     const changeNote = /function changeNote\([^]*?\n}/.exec(code)?.[0] ?? "";
     expect(changeNote).not.toBe("");
-    expect(changeNote.match(claim)).toHaveLength(2);
+    expect(changeNote.match(claim)).toHaveLength(1);
+    expect(code.match(claim)).toHaveLength(1);
 
-    // And every message that can be issued after a reclamation takes the note rather than writing
-    // its own copy. Five of them now: three refusals — the held one, the undecidable one, and the
-    // one over a lock left beside the path — the terminal failure, and the wrapper that reports a
-    // reclamation when the acquisition goes on to throw. Every addition to this list was a message
-    // review found claiming, or silently omitting, what had happened to a file; the count is here so
-    // that a sixth cannot be added with its own hardcoded copy.
-    expect(code.match(/changeNote\(reclaimed\)/g)).toHaveLength(5);
-    expect(code).toMatch(
-      /after \$\{MAX_ATTEMPTS\} attempts[^`]*\$\{changeNote\(reclaimed\)\}/,
+    // And the property the count was standing in for: every function in this module that builds an
+    // operator-facing message about a refusal or a failure routes through `changeNote`. Enumerated,
+    // and the enumeration itself checked against the module — so a sixth message function fails here
+    // until it is either listed and routed, or listed as one of the exceptions below.
+    const messageFunctions = [...code.matchAll(/function (\w*Message)\(/g)].map(
+      (match) => match[1],
     );
+    expect(new Set(messageFunctions)).toEqual(
+      new Set([
+        "heldMessage",
+        "undecidableMessage",
+        "displacedMessage",
+        // Not routed, and must not be: this is the sentence `changeNote` is built *from*. Routing it
+        // through would nest the claim inside itself.
+        "reclaimedMessage",
+      ]),
+    );
+    for (const name of messageFunctions) {
+      if (name === "reclaimedMessage") continue;
+      const body = new RegExp(`function ${name}\\([^]*?\\n}`).exec(code)?.[0] ?? "";
+      expect(body, `${name} does not route through changeNote`).toContain("changeNote(");
+    }
+
+    // The two messages that are thrown rather than built by a *Message function, and so are not
+    // covered by the loop above: the exhaustion after every attempt, and the wrapper that reports a
+    // reclamation when the acquisition goes on to throw.
+    expect(code).toMatch(/Could not take the lock[^`]*\$\{changeNote\(reclamations\)\}/);
+    expect(code).toMatch(/String\(error\)\} \$\{changeNote\(reclamations\)\}/);
   });
 });
 
@@ -648,56 +746,13 @@ describe("two runs racing for the same lock", () => {
   });
 
   /**
-   * The same interleaving, with the loser's own reclamation to account for. It destroyed a stale
-   * lock before losing the race, and BR-035 has no exception for a reclamation that was followed
-   * by a refusal.
+   * The same interleaving with the loser's own reclamation to account for — a run that destroys a
+   * stale lock and is then refused — lives in `run-lock-fs-faults.test.ts` now, under "a reclamation
+   * that goes on to be refused". It parked a probe between the removal and the create, and there is
+   * no longer a probe crossing there: the reclaiming attempt takes the name in the same attempt,
+   * which is what stops it sleeping through the backoff with the name free. The filesystem is the
+   * only seam left into that window, and that file is where filesystem seams live.
    */
-  it("reports a reclamation it made even when it goes on to be refused", async () => {
-    const repositoryPath = await repository();
-    const dead: ProcessIdentity = { pid: 9002, startedAt: 1_600_000_000_000 };
-    await acquireRunLock(new DisposalStack(), {
-      repositoryPath,
-      runName: TRIAGE,
-      probe: fakeProbe(dead),
-    });
-
-    // Parked on its *second* self() call: past the reclamation, before linking its own lock.
-    const afterReclaim = latch(2);
-    const loser = acquireRunLock(new DisposalStack(), {
-      repositoryPath,
-      runName: TRIAGE,
-      probe: fakeProbe(SCHEDULER, [OPERATOR], { gateSelf: afterReclaim.gate }),
-    });
-    await afterReclaim.arrival;
-    // The stale lock is gone: the parked run destroyed it and has not yet replaced it.
-    expect(existsSync(runLockPath(repositoryPath, TRIAGE))).toBe(false);
-
-    // Another run takes the free name in that gap.
-    const winnerStack = new DisposalStack();
-    const winner = await acquireRunLock(winnerStack, {
-      repositoryPath,
-      runName: TRIAGE,
-      probe: fakeProbe(OPERATOR),
-    });
-    expect(winner.ok).toBe(true);
-    expect(winner.ok && winner.reclaimed).toBeUndefined();
-
-    afterReclaim.release();
-    const outcome = await loser;
-
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) return;
-    expect(outcome.kind).toBe("held");
-    // It destroyed a stale lock and then lost the name. BR-035 has no exception for that, so the
-    // reclamation is still reported — and the refusal must not also claim nothing changed.
-    expect(outcome.reclaimed?.reason).toBe("owner-gone");
-    expect(outcome.reclaimed?.previousOwner).toEqual(dead);
-    expect(outcome.message).toContain("Reclaimed a stale lock");
-    expect(outcome.message).not.toContain("Nothing has been changed.");
-    expect(outcome.message).toContain("Nothing else has been changed.");
-
-    await winnerStack.unwind();
-  });
 
   it("gives the name to exactly one of many simultaneous runs", async () => {
     const repositoryPath = await repository();
@@ -831,7 +886,7 @@ describe("refusing rather than guessing", () => {
    * about a process while the run name sits free on disk. This test is about the file coming back
    * byte for byte; the next attempt is where the replacement gets a verdict.
    *
-   * It replaced a pair of tests about how the re-judgement decided, which review round 3 removed
+   * It replaced a pair of tests about how the re-judgement decided, which the remediation removed
    * the need for by removing the re-judgement.
    */
   it("puts back a lock from another machine that a reclamation took aside", async () => {
@@ -869,10 +924,10 @@ describe("refusing rather than guessing", () => {
     expect(outcome.kind).toBe("undecidable");
     // Put back byte for byte, not deleted.
     expect(await readFile(path, "utf8")).toBe(foreign);
-    // And no reclamation is claimed for it. Review round 4's point: putting the file back while
-    // still reporting `removed` leaves every assertion above green, and the operator is told a
-    // stale lock was destroyed when the file is sitting there untouched. BR-035 cuts both ways —
-    // a reclamation must be reported, and a reclamation that did not happen must not be.
+    // And no reclamation is claimed for it. Putting the file back while still reporting `removed`
+    // leaves every assertion above green, and the operator is then told a stale lock was destroyed
+    // when the file is sitting there untouched. BR-035 cuts both ways — a reclamation must be
+    // reported, and a reclamation that did not happen must not be.
     expect(outcome.reclaimed).toBeUndefined();
   });
 
@@ -883,9 +938,9 @@ describe("refusing rather than guessing", () => {
    * This used to pin more than that, and pinned the wrong thing. The re-judgement happened inside
    * the reclamation — with the run name free on disk — and the probe here was rigged to answer
    * about that pid only once, so an implementation that put the file back and judged it on the next
-   * attempt failed the test. Review's third round explained why that was backwards: judging in that
-   * window means a `ps` spawn with the name free, and any run that starts in it takes the name while
-   * this one still thinks it is reclaiming. The extra turn round the loop is the fix, not a defect,
+   * attempt failed the test. That was backwards: judging in that window means a `ps` spawn with the
+   * name free, and any run that starts in it takes the name while this one still thinks it is
+   * reclaiming. The extra turn round the loop is the fix, not a defect,
    * so the probe now answers consistently and the assertions are about the outcome: the recycled-pid
    * lock is the one reclaimed, and it is reported as such rather than as the lock first judged.
    */
@@ -948,8 +1003,13 @@ describe("refusing rather than guessing", () => {
    * neither the write nor the removal is redirected. `readFile` does follow it, so an unrelated file
    * elsewhere on disk is read as this run's lock; and a *dangling* one answers EEXIST to `link` and
    * ENOENT to `readFile` at the same time, which is the pair the acquisition loop used to spin on
-   * for ever. This test times out rather than fails if that bound is removed. Review found the old
-   * wording surviving here after the same claim had been corrected in the source.
+   * for ever.
+   *
+   * Removing the attempt bound alone leaves this test passing, and the sentence here claimed
+   * otherwise for a while: the symlink is refused before anything reads or links, so the loop never
+   * reaches the spin. Only removing both halves produces the hang, which is why
+   * `scripts/verify-lock-gate.sh` mutates both in one `expect_red_by_timeout` — and why that gate,
+   * rather than this test, is where the bound is pinned.
    */
   it("refuses a symlink at the lock path instead of spinning on it", async () => {
     const repositoryPath = await repository();
@@ -1214,7 +1274,7 @@ describe("printing what a lock file says", () => {
  *
  * `removeExactly` renames the lock before it can check what it took, and when it cannot put the
  * file back it throws rather than deleting it — the displaced lock stays on disk as
- * `lock.stale.<uuid>`. Review's point was about the invocation *after* that one: it found a free
+ * `lock.stale.<uuid>`. The hazard is the invocation *after* that one: it found a free
  * lock path, took the name, and ran alongside whatever was still working under the displaced file.
  * The failure that stopped one run from colliding let the next one collide instead, and this time
  * silently, because nothing ever read those files again.
@@ -1338,8 +1398,8 @@ describe("a lock left displaced by a reclamation that could not finish", () => {
    * in microseconds — and the first version of this scan refused on it, which sent the operator to
    * wait for a run that had already finished and to remove a file that had already gone. Worse, if
    * they were quick enough to catch it, removing it made the other process's restore fail and the
-   * displaced lock was gone outright. Review's point, and the fix is the retry the scan's own
-   * docblock had always described: only a leftover still there on the last attempt is refused.
+   * displaced lock was gone outright. The fix is the retry the scan's own docblock had always
+   * described: only a leftover still there on the last attempt is refused.
    */
   it("is waited out rather than refused when a reclamation elsewhere is still going", async () => {
     const repositoryPath = await repository();
@@ -1376,8 +1436,8 @@ describe("a lock left displaced by a reclamation that could not finish", () => {
    * lock back and only then unlinks the set-aside name, so an `unlink` that fails leaves a second
    * link to the *live* lock. Nothing was displaced. Refusing over it would tell the operator a
    * reclamation could not put a lock back — false — and would refuse every run of this name until
-   * the owner died, which is the permanent lock BR-035 exists to prevent. Review's point. The lock
-   * at the path is what governs, and the ordinary ladder is what judges it.
+   * the owner died, which is the permanent lock BR-035 exists to prevent. The lock at the path is
+   * what governs, and the ordinary ladder is what judges it.
    */
   it("is not a displaced lock when it is a second link to the live one", async () => {
     const repositoryPath = await repository();
@@ -1408,6 +1468,38 @@ describe("a lock left displaced by a reclamation that could not finish", () => {
     expect(outcome.message).toContain("already in progress");
     expect(outcome.message).not.toContain(at);
     await holder.unwind();
+  });
+
+  /**
+   * The filename comes out of a directory listing, where anything but NUL and `/` is legal, and it
+   * goes into the one refusal that asks the operator to act on a file. A repository can carry a
+   * committed `lock.stale.<escape sequence>`, and this was the single new operator-facing message
+   * that skipped the sanitizer every other one goes through.
+   */
+  it("is named without whatever a terminal would act on in its filename", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+    await mkdir(dirname(path), { recursive: true });
+    const hostile = `${path}.stale.\u001b[2J\u202egone`;
+    await writeFile(
+      hostile,
+      `${JSON.stringify({ run: "triage", owner: OPERATOR, acquiredAt: Date.now(), host: HERE })}\n`,
+      "utf8",
+    );
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [OPERATOR]),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.message).not.toContain("\u001b");
+    expect(outcome.message).not.toContain("\u202e");
+    // Still the right directory, and enough of the name to find it with `ls`.
+    expect(outcome.message).toContain(dirname(path));
+    expect(outcome.message).toContain("gone");
   });
 
   /** Nor does a leftover nobody can parse block a name: `.stale.` is not a lock by itself. */

@@ -104,4 +104,33 @@ describe("what ps said, and what it means", () => {
     response = { kind: "prints", stdout: "mer. 26 aout 19:52:19 2026" };
     expect((await psIdentify(1234)).kind).toBe("unknown");
   });
+
+  /**
+   * The reason is another program's stderr, and it reaches a terminal two ways: through a refusal,
+   * and through the throw in `self()` when awcli cannot identify itself. One consumer sanitised it
+   * and the other did not, which is an argument for doing it here — at the point the foreign string
+   * enters awcli — rather than at each place it leaves.
+   */
+  it("does not carry what a terminal would act on out of ps's own output", async () => {
+    response = {
+      kind: "fails",
+      code: 1,
+      stderr: "ps: \u001b[2Junrecognized \u202eoption: o\n",
+    };
+    const answer = await psIdentify(1234);
+    expect(answer.kind).toBe("unknown");
+    if (answer.kind !== "unknown") return;
+    expect(answer.reason).not.toContain("\u001b");
+    expect(answer.reason).not.toContain("\u202e");
+    expect(answer.reason).toContain("unrecognized");
+  });
+
+  /** And it does not carry a megabyte of it either: a refusal has its own explanation to deliver. */
+  it("caps how much of a complaint a reason carries", async () => {
+    response = { kind: "fails", code: 1, stderr: `ps: ${"x".repeat(5_000)}\n` };
+    const answer = await psIdentify(1234);
+    expect(answer.kind).toBe("unknown");
+    if (answer.kind !== "unknown") return;
+    expect(answer.reason.length).toBeLessThan(200);
+  });
 });

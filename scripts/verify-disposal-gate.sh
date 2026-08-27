@@ -34,7 +34,10 @@ expect_red "a failing release does not stop the rest" src/runtime/disposal.ts \
 expect_red "a leak is reported" src/runtime/disposal.ts \
   's/(leaks\(\): readonly string\[\] \{\n)/$1    return [];\n/'
 
-expect_red "a hung release is abandoned after a bounded wait" src/runtime/disposal.ts \
+# The one mutation here whose red is a hang and nothing else: with the race gone the release never
+# returns, and a test that never finishes is the whole signal. Said by name so that every other
+# mutation can refuse a timeout as evidence.
+expect_red_by_timeout "a hung release is abandoned after a bounded wait" src/runtime/disposal.ts \
   's/Promise\.race\(\[attempt, abandonment\]\)/attempt/'
 
 # Added after review on PR #10 caught this one for real: the first version of unwind snapshotted

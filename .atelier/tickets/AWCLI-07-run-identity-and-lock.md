@@ -44,12 +44,24 @@ different writers and may proceed together.
 - [x] Scenario: *A lock left by a killed run is reclaimed automatically*.
 - [x] Scenario: *A slow run keeps its lock*.
 - [x] A reused process ID belonging to a different process does not read as the original owner.
-- [x] All tests pass, lint clean, type check clean.
+- [ ] A reclamation is carried on the outcome of every acquisition that made one, on the success
+      shape and the refusal shape alike, and every stale lock destroyed is accounted for in the
+      message.
+- [x] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 
 - The run record and attribution — AWCLI-08 pairs with this but ships separately.
 - State contents and validation — AWCLI-09.
+- **Printing** the reclamation. This ticket produces the sentence and makes the field required on
+  both outcome shapes, so it cannot be dropped in transit, and the acceptance criterion above is
+  about that channel rather than about anything reaching a terminal. No command takes a run lock yet
+  — `acquireRunLock` has no caller outside its own module and `cli.ts` still says no workflow
+  commands exist — so the first ticket to wire a run command owns the printing. Named here because a
+  business-rule half that no ticket owns is a half that ships as never-written.
+- Collecting inert `lock.stale.<uuid>` leftovers. They are read and judged, and deliberately not
+  deleted: one may be another process's set-aside file mid-reclamation. Removing what is provably
+  safe to remove is AWCLI-22's clean.
 
 ## Dependencies
 
@@ -57,6 +69,20 @@ different writers and may proceed together.
 **Blocks:** AWCLI-08, AWCLI-09, AWCLI-13, AWCLI-21, AWCLI-22
 
 ## Notes
+
+Two notes on the criteria themselves, because both are conventions rather than code.
+
+The reclamation criterion was added by a review round, so it is not ticked here: `tickets/README.md`
+reserves the tick for a criterion a reviewer has confirmed, and the author who adds one does not get
+to close it. It is implemented — `reclaimed` is required on both outcome shapes and `changeNote`
+lists every reclamation — and both halves have mutations in `verify-lock-gate.sh`. The same rule says
+a criterion a round *reopens* should be unticked while it is open, and the reclamation path's
+criterion stayed ticked through a round that had a blocking finding sitting on it. It should not have.
+
+The last criterion said "lint clean" for every one of the 27 tickets, and there is no linter in this
+repository: no eslint, no config, and `npm run check` is `format:check && test && build`. It is
+reworded here to what is actually run. Rewording it across the other tickets, or adding a real
+linter, belongs to whoever does that as its own change.
 
 Each criterion above was watched failing before it was ticked. `scripts/verify-lock-gate.sh`
 (wired into `npm run check:gates`, and so into CI) applies a plausible wrong implementation for each
@@ -135,36 +161,69 @@ reads it.
   overstates is a defect and was treated as one: "nothing has been changed" printed after deleting a
   file, a reclamation reported against the wrong file, an exhaustion asserting a cause nobody had
   established, a lock file's escape sequences and bidi controls reaching the terminal, a refusal
-  that threw while formatting itself, and a refusal that never said which file to remove. Comments
-  claiming guarantees the code did not give were corrected the same way — by writing down the
-  narrower thing that is true.
+  that threw while formatting itself, and a refusal that never said which file to remove.
+
+  The same standard applies to comments claiming guarantees the code does not give, and applying it
+  is a running job rather than a finished one — this section said it in the past tense for a round,
+  while several stood and two more had just been written. The most instructive of them is the
+  docblock on `removeExactly`: the paragraph describing the mechanism a remediation *deleted* was
+  left in place directly above the paragraph explaining why it had to go. A comment is only ever
+  correct as of the code beneath it.
 
 The tooling took as much fixing as the code, for the same reason: a gate that is not itself
 trustworthy is worse than no gate. The harness now works in a private copy of the working tree —
 mutating tracked files in the developer's own checkout corrupted a reviewer's reading of this branch
-three times, and restoring afterwards does not help, because the hazard is the window — and requires
+more than once, and restoring afterwards does not help, because the hazard is the window — and requires
 *each* substitution to match exactly once, where adding the counts up let a mutation half-apply
 while the criterion its other half tested silently stopped being tested. Its self-test covers every
 way the old checks could be fooled. Two mutations turned out not to be gates at all; one of them
 asserted nothing on Linux, where `identify` answers out-of-range ids from `/proc` rather than from
 `ps`, so that rule moved into `isPossiblePid` where it can be checked without an operating system.
-And the check at the centre of all of it was itself too weak: `expect_red` treated any non-zero exit
-as proof that a criterion is checked, while vitest exits non-zero for a mutation it cannot parse —
-printing `Tests  no tests`, with not one assertion evaluated. A substitution that produced invalid
-TypeScript therefore reported `ok` for a criterion nothing had looked at. It now requires the summary
-to name a failing test, and its self-test pins both answers.
+And the check at the centre of all of it was itself too weak, in four separate ways, all of the same
+shape — **a gate that reports on something it did not actually do**:
 
-Two findings were argued rather than fixed, and both stand. An unreadable lock is reclaimed without
-a host check: nothing left in a truncated file distinguishes a sync client truncating a *live* run's
-lock from an interrupted write, refusing would turn any garbage at that path into a manual
-intervention — the opposite of BR-035 — and reclaiming it is an acceptance criterion. And
-`check:gates` pays one cold vitest start per mutation, about two minutes in its own CI job; that
-cost is inherent to mutation testing and nothing here found a way around it beyond removing npm's
-own start-up from each one.
+- `expect_red` treated any non-zero exit as proof that a criterion is checked, while vitest exits
+  non-zero for a mutation it cannot parse, printing `Tests  no tests` with not one assertion
+  evaluated. It now requires the summary to name a failing test.
+- A red produced by a *timeout* was accepted the same way, and a timeout is as likely to be a slow
+  machine as a broken criterion. One mutation here does want a hang — removing the acquisition
+  loop's bound — and it now says so by name, so every other mutation can refuse one.
+- Perl interpolates a replacement as a double-quoted string, so `${path}` in one is a symbolic
+  dereference that silently becomes empty. Two mutations spent a round claiming to insert a template
+  literal and inserting a broken one; both still turned the suite red, for the wrong reason. An
+  unescaped `$` in a replacement is now refused.
+- `perl -0i` on a subject that does not exist warns and exits 0, mutating nothing — so the suite
+  passes *unbroken* and the gate reports the criterion as unchecked. Found by making the mistake that
+  reaches it: an apostrophe inside a double-quoted criterion string splits the arguments, and the
+  next word arrives as the subject. A missing subject is now refused.
 
-One thing the ticket did not ask for was added on the last round, because the alternative was worse:
-a lock a failed reclamation leaves displaced is now *read* before a later run takes the name. It was
-written to disk under a `.stale.<uuid>` name, its path named in the failure, and then never looked at
-again — so the invocation after the failure found a free lock path and took the name alongside a run
-that may still have been working under the displaced file. A failure that prevents one collision
-must not permit the next one.
+Every one of those was found while fixing something else, and every one had been reporting `ok`. The
+harness's self-test covers all four, and each was watched failing with the check disabled.
+
+Three findings were argued rather than fixed, and all three stand.
+
+An unreadable lock is reclaimed without a host check: nothing left in a truncated file distinguishes
+a sync client truncating a *live* run's lock from an interrupted write, refusing would turn any
+garbage at that path into a manual intervention — the opposite of BR-035 — and reclaiming it is an
+acceptance criterion.
+
+`check:gates` pays one cold vitest start per mutation, and the whole of it is minutes in its own CI
+job. The suggested fix — scope each mutation to the one spec that covers it, and run the isolated
+gate scripts concurrently — would work, and it is a change to every mutation whose narrowing has to
+be re-verified one at a time, which is a job with its own risk of quietly narrowing a mutation onto
+a suite that no longer catches it. Left as it is, deliberately, in a job that is not on the fast
+path.
+
+`PS_TIMEOUT_MS` bounds one `ps` and nothing bounds an acquisition's total probe time, so a machine
+whose process table is wedged can cost several timeouts in series before a refusal. An aggregate
+deadline is the right answer and it is a behaviour change — the refusal it produces is a *new* way to
+refuse a legitimate run — which wants its own criterion rather than arriving inside a remediation.
+
+One thing the ticket did not ask for was added, because the alternative was worse: a lock a failed
+reclamation leaves displaced is now *read* before a later run takes the name. It used to be written
+to disk under a `.stale.<uuid>` name, its path named in the failure, and then never looked at again —
+so the invocation after the failure found a free lock path and took the name alongside a run that may
+still have been working under the displaced file. A failure that prevents one collision must not
+permit the next one. Telling that file apart from the two other things wearing the same name — a
+reclamation still in progress elsewhere, and a restore whose cleanup failed, which leaves a second
+link to the *live* lock — is most of what that check is.

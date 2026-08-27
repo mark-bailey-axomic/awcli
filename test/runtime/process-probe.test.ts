@@ -187,8 +187,18 @@ describe("what could be a process id at all", () => {
   it.each([
     { label: "the first id", pid: 1, possible: true },
     { label: "an ordinary id", pid: 4242, possible: true },
-    { label: "Linux's hard ceiling", pid: 4_194_304, possible: true },
-    { label: "one past that ceiling", pid: 4_194_305, possible: false },
+    // PID_MAX_LIMIT is 2^22 and bounds pid_max, which is itself exclusive — so the largest id an
+    // OS will issue is one below it, and the comparison is strict. The check used to accept 2^22
+    // itself, which is harmless in effect (one more impossible id asked about) but made the comment
+    // justifying the constant untrue, and that comment is the whole reason the limit is not read
+    // from /proc at run time.
+    { label: "the largest id Linux will issue", pid: 4_194_303, possible: true },
+    {
+      label: "PID_MAX_LIMIT itself, which is never issued",
+      pid: 4_194_304,
+      possible: false,
+    },
+    { label: "one past that", pid: 4_194_305, possible: false },
     { label: "an id that would make ps complain", pid: 2_147_483_648, possible: false },
     { label: "zero", pid: 0, possible: false },
     { label: "a negative id", pid: -1, possible: false },

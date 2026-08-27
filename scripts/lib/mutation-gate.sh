@@ -92,8 +92,9 @@ mg_isolate() {
 
   # tar's status is not the check. It exits non-zero for warnings as well as errors — "file changed
   # as we read it" being the one a live checkout produces — and treating a warning as a failed gate
-  # would make this flaky for no reason. What the copy has to be is *usable*, so that is what is
-  # asserted, below.
+  # would make this flaky for no reason. What is asserted instead is narrower than "usable", which is
+  # what this said and could not deliver: a recognisable tree root here, and then every subject file
+  # in `mutation_gate_init`. A tar that truncated a file it did copy would pass both.
   tar --exclude=./node_modules --exclude=./.git --exclude=./dist \
     -cf - -C "$MG_ORIGIN" . 2>/dev/null | tar -xf - -C "$MG_WORKDIR" || true
 
@@ -114,20 +115,28 @@ mg_isolate() {
 # The copy only helps for subjects named *relatively*: those resolve inside it, because `mg_isolate`
 # changes directory. An absolute path does not — it goes on pointing at the original tree, so a gate
 # spelling its subject `"$REPO_ROOT/src/foo.ts"` would break the real file for the length of its run
-# and the isolation would be decoration. Review found the hole in the fix for the very thing it
-# defeats.
+# and the isolation would be decoration.
 #
 # Absolute is not itself the problem, which is why this looks at where the path points: the
 # harness's own self-test has subjects in a temp sandbox, and those are absolute and must stay
-# allowed.
+# allowed. Both sides are resolved before they are compared, because a prefix match answers a
+# question about spelling and the question here is which tree the path reaches — a symlink into the
+# checkout is not spelled like the checkout.
 mg_check_subject() {
   local file="$1"
   case "$file" in
     /*) ;;
     *) return 0 ;;
   esac
-  case "$file" in
-    "$MG_ORIGIN" | "$MG_ORIGIN"/*)
+  # Resolved with the deepest existing ancestor, because the subject itself may be a path a gate is
+  # about to create, and `realpath` on a missing file answers nothing on macOS.
+  local resolved="$file" parent
+  parent="$(cd "$(dirname "$file")" 2>/dev/null && pwd -P)" || parent=""
+  [[ -n "$parent" ]] && resolved="$parent/$(basename "$file")"
+  local origin="$MG_ORIGIN"
+  [[ -d "$origin" ]] && origin="$(cd "$origin" && pwd -P)"
+  case "$resolved" in
+    "$origin" | "$origin"/*)
       echo "FAIL: subject $file is an absolute path into the checkout at $MG_ORIGIN" >&2
       echo "      Mutating it would break the developer's own tree for the length of this run," >&2
       echo "      which the private copy exists to prevent. Name the subject relative to the" >&2
@@ -227,6 +236,17 @@ mg_run_suite() {
     echo "FAIL: vitest is not installed; run npm ci" >&2
     exit 1
   fi
+  # Refused rather than allowed to mean "everything". `MG_SUITE` is word-split below, so an empty one
+  # degrades to `vitest run` over every spec in the repository — slower, and green for reasons that
+  # have nothing to do with the mutation. Two gates initialise the harness with no suite because they
+  # run something other than vitest; documenting that arrangement is weaker than refusing to run a
+  # suite that was never named.
+  if [[ -z "${MG_SUITE// /}" ]]; then
+    echo "FAIL: this gate was initialised with no test suite, so there is nothing to run." >&2
+    echo "      Pass the specs to mutation_gate_init, or use mg_mutate directly and run whatever" >&2
+    echo "      this gate runs instead of vitest." >&2
+    exit 1
+  fi
   # shellcheck disable=SC2086 # MG_SUITE is deliberately word-split: it is a list of spec paths.
   "$vitest" run $MG_SUITE --testTimeout="$MG_TEST_TIMEOUT_MS" >"$MG_SUITE_LOG" 2>&1
 }
@@ -266,10 +286,33 @@ mg_suite_tail() {
 #
 # The substitutions travel to perl through the environment so that no amount of quoting in them can
 # be reinterpreted by the shell.
+#
+# A replacement half containing an unescaped `$` is refused, and that is not a style rule. Perl treats
+# a replacement as a double-quoted string, so `${path}` in it is a symbolic dereference of `path` —
+# which under no strict refs is silently the empty string, not the four characters the author meant.
+# Two mutations here spent a round claiming to insert a template literal and inserting a broken one
+# instead; both still turned the suite red, for the wrong reason, which is the failure mode this
+# entire harness exists to catch. Write `\$` and the mutation says what it does.
+#
+# A capture-group backreference — `$1`, `${2}` — is the one interpolation that is meant, and stays
+# allowed. One mutation here depends on it: it keeps the line it matched and inserts a return above.
 mg_mutate() {
   local criterion="$1" subject="$2"
   shift 2
   local -a subs=("$@")
+
+  # The subject has to exist. `perl -0i` on a path that does not merely warns and exits 0, and with no
+  # input the substitution loop never runs — so the mutation applies to nothing, the suite passes
+  # unchanged, and `expect_red` reports the criterion as unchecked when the truth is that nothing was
+  # broken. A quoting mistake in a criterion string is enough to get here: an apostrophe inside the
+  # double-quoted argument split it, and the word after the split arrived as the subject.
+  if [[ ! -f "$subject" ]]; then
+    echo "FAIL: mutation for '$criterion' names a subject that does not exist: $subject" >&2
+    echo "      Nothing would have been mutated, and the gate would have reported on a suite that" >&2
+    echo "      was never broken. Check the subject path, and check the quoting of the arguments" >&2
+    echo "      before it — an apostrophe in a double-quoted criterion splits them." >&2
+    exit 1
+  fi
 
   local index
   for index in "${!subs[@]}"; do
@@ -282,6 +325,19 @@ mg_mutate() {
       BEGIN { @wrong = () }
       for my $i (0 .. $ENV{MG_SUB_COUNT} - 1) {
         my $code = $ENV{"MG_SUB_$i"};
+        # The replacement half, when this is an ordinary slash-delimited s///. Anything else is left
+        # to the eval below to accept or reject.
+        if ($code =~ m{\As/((?:[^/\\]|\\.)*)/((?:[^/\\]|\\.)*)/[a-z]*\z}) {
+          my $replacement = $2;
+          # Backreferences are the legitimate interpolation; anything else is a variable that will
+          # silently be empty.
+          my $probe = $replacement;
+          $probe =~ s/\$\{?[1-9][0-9]*\}?//g;
+          if ($probe =~ /(?<!\\)\$/) {
+            push @wrong, "$i (replacement has an unescaped \$, which perl interpolates)";
+            next;
+          }
+        }
         my $n = eval $code;
         die "mutation $i failed to compile: $@" if $@;
         push @wrong, "$i (matched $n times)" if $n != 1;
@@ -301,22 +357,66 @@ mg_mutate() {
 
   if ((status != 0)); then
     echo "FAIL: mutation for '$criterion' did not apply cleanly to $subject." >&2
-    echo "      Every substitution must match exactly once; an anchor has drifted." >&2
+    echo "      Every substitution must match exactly once and must not contain an unescaped \$ in" >&2
+    echo "      its replacement — perl interpolates that, so the mutation would insert something" >&2
+    echo "      other than what it says. Either an anchor has drifted or a \$ needs escaping." >&2
     echo "      Update the mutation to match the current code; do not delete it." >&2
     exit 1
   fi
 }
 
+# Did the suite go red *only* by timing out?
+#
+# A timeout is the one red that as easily means "the machine was busy" or "this mutation made the
+# suite slower" as it does "the criterion failed" — MG_TEST_TIMEOUT_MS is a cold-transform safety
+# margin, not an assertion. But it is not enough to refuse any red containing a timeout: several
+# honest mutations make one test hang *and* several others fail their assertions, and refusing those
+# would be a false alarm in the other direction. So the question is whether a timeout is all there
+# was. If some test failed for a reason other than the clock, the criterion is checked.
+#
+# A few mutations have nothing but a hang to show — removing the acquisition loop's bound, removing
+# the bounded wait a release gets — and those say so at the call site with `expect_red_by_timeout`.
+mg_suite_only_timed_out() {
+  local plain failures timeouts
+  plain="$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$1")"
+  failures="$(printf '%s' "$plain" | sed -nE 's/^[[:space:]]*Tests[[:space:]]+.*[^0-9]([0-9]+) failed.*/\1/p' | head -1)"
+  timeouts="$(printf '%s' "$plain" | grep -cE 'Test timed out in [0-9]+ms' || true)"
+  # No failing count in the summary means the suite did not get as far as running tests, which is a
+  # different complaint and `mg_suite_reported_failures` makes it. Otherwise the arithmetic answers
+  # both questions at once: with no timeouts at all, no positive failure count is <= 0.
+  [[ -n "$failures" ]] || return 1
+  ((failures <= timeouts))
+}
+
 # expect_red <criterion> <subject-file> <perl-substitution>...
 expect_red() {
-  local criterion="$1" subject="$2"
-  shift 2
+  mg_expect_red_inner "no" "$@"
+}
+
+# expect_red_by_timeout <criterion> <subject-file> <perl-substitution>...
+#
+# For a mutation whose red *is* a hang. See mg_suite_timed_out.
+expect_red_by_timeout() {
+  mg_expect_red_inner "yes" "$@"
+}
+
+mg_expect_red_inner() {
+  local timeout_expected="$1" criterion="$2" subject="$3"
+  shift 3
 
   mg_restore
   mg_mutate "$criterion" "$subject" "$@"
 
   if mg_run_suite; then
     echo "FAIL: the suite passes with '$criterion' broken — that criterion is not being checked" >&2
+    exit 1
+  fi
+  if [[ "$timeout_expected" == "no" ]] && mg_suite_only_timed_out "$MG_SUITE_LOG"; then
+    echo "FAIL: the suite went red with '$criterion' broken, but every failure was a timeout." >&2
+    echo "      A timeout is as likely to be a slow machine, or a mutation that made the suite" >&2
+    echo "      merely slower, as it is to be the criterion failing. Raise MG_TEST_TIMEOUT_MS, or" >&2
+    echo "      use expect_red_by_timeout if the hang is the point." >&2
+    mg_suite_tail >&2
     exit 1
   fi
   # Red is not enough: it has to be red because a *test* failed. See mg_suite_reported_failures.

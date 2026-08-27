@@ -16,7 +16,7 @@
  * Takes the repository directory as its one argument; the script that calls it owns the cleanup,
  * because a process that never returns cannot tidy up after itself.
  */
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { withDisposal } from "../../src/runtime/disposal.js";
@@ -36,22 +36,43 @@ const runName = name.name;
 const path = runLockPath(repositoryPath, runName);
 await mkdir(dirname(path), { recursive: true });
 
-// A stale lock, so the acquisition reclaims it and goes round the loop — which is what waits on the
-// backoff. A free name would be taken on the first pass and never reach it.
-await writeFile(
-  path,
+// Two things on disk, because reaching the backoff takes both.
+//
+// A stale lock at the path, so there is a reclamation to make. That alone no longer waits on
+// anything: the attempt that frees the name now takes it in the same attempt, deliberately, so that
+// the ordinary post-reboot case does not sleep with the run name free. The backoff is only awaited by
+// a round that ends *without* a verdict.
+//
+// So also a lock beside it, of the kind a reclamation elsewhere leaves for the length of a rename, a
+// read and a link. The acquisition waits that out rather than refusing on it — one round spent, and
+// that round is the one that awaits the timer this gate is about. The probe below makes it vanish
+// after the first look, which is what the other process finishing looks like from here.
+const owner = { pid: 9500, startedAt: 1_600_000_000_000 };
+const elsewhere = { pid: 9600, startedAt: 1_650_000_000_000 };
+const lockFile = (identity: typeof owner): string =>
   `${JSON.stringify({
     run: runName,
-    owner: { pid: 9500, startedAt: 1_600_000_000_000 },
+    owner: identity,
     acquiredAt: Date.now(),
     host: hostname(),
-  })}\n`,
-  "utf8",
-);
+  })}\n`;
 
+await writeFile(path, lockFile(owner), "utf8");
+const leftover = `${path}.stale.9f1d5a52-0000-4000-8000-000000000001`;
+await writeFile(leftover, lockFile(elsewhere), "utf8");
+
+let asks = 0;
 const probe: ProcessProbe = {
   self: () => Promise.resolve({ pid: process.pid, startedAt: 1_700_000_000_000 }),
-  identify: () => Promise.resolve({ kind: "not-found" as const }),
+  identify: async () => {
+    asks += 1;
+    if (asks === 1) {
+      // Answered as running, and gone by the time anything looks again.
+      await rm(leftover);
+      return { kind: "running" as const, identity: elsewhere };
+    }
+    return { kind: "not-found" as const };
+  },
 };
 
 const outcome = await withDisposal((stack) =>

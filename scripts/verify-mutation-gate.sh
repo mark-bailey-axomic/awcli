@@ -17,8 +17,9 @@ cd "$REPO_ROOT"
 
 SANDBOX="$(mktemp -d)"
 # Set before sourcing the harness on purpose: the harness has to *inherit* this rather than replace
-# it, which is the third thing being tested here. It used to replace it, and leaked this directory on
-# every run of every gate.
+# it. It used to replace it, and leaked this directory on every run of every gate. Asserted below
+# rather than only described — this comment claimed to name "the third thing being tested here" while
+# nothing tested it at all, and then pointed at a different section once one was inserted above it.
 trap 'rm -rf "$SANDBOX"' EXIT
 
 mkdir -p "$SANDBOX/a" "$SANDBOX/b" "$SANDBOX/plain dir"
@@ -42,6 +43,16 @@ report() {
   echo "FAIL: $1" >&2
   failed=1
 }
+
+# ── A trap the calling script set first is inherited, not replaced ───────────────────────────
+#
+# The hook that removes $SANDBOX is the one set above. If the harness replaces the trap instead of
+# inheriting it, every gate run leaks a temp directory — silently, with every gate still printing
+# PASS. Checked here rather than by inspecting the trap, because what matters is that the command
+# survived into the harness's own list.
+if [[ " ${MG_EXIT_HOOKS[*]-} " != *"rm -rf \"\$SANDBOX\""* ]]; then
+  report "the harness did not inherit the EXIT trap this script set before it was sourced"
+fi
 
 # ── The mutations land in a private copy, not in the checkout ────────────────────────────────
 if [[ "$PWD" == "$REPO_ROOT" ]]; then
@@ -87,6 +98,23 @@ fi
 if ! (mg_check_subject "src/runtime/run-lock.ts" >/dev/null 2>&1); then
   report "the harness refused an ordinary relative subject path"
 fi
+# And one that reaches the checkout without being spelled like it. A prefix match answers a question
+# about spelling; the question is which tree the path leads to.
+mkdir -p "$SANDBOX/through"
+ln -s "$REPO_ROOT" "$SANDBOX/through/repo"
+if (mg_check_subject "$SANDBOX/through/repo/$WITNESS" >/dev/null 2>&1); then
+  report "the harness accepted a subject reaching the checkout through a symlink"
+fi
+
+# ── A gate that named no suite cannot run one ────────────────────────────────────────────────
+#
+# MG_SUITE is word-split, so an empty one degrades to every spec in the repository — slower, and
+# green or red for reasons unconnected to the mutation. This script and the acquisition gate both
+# initialise with no suite on purpose, and both run something other than vitest; the arrangement was
+# described in a comment, which is weaker than refusing.
+if (mg_run_suite >/dev/null 2>&1); then
+  report "the harness ran a suite for a gate that named none, which means every spec in the repo"
+fi
 
 # ── A suite that never ran is not a suite that went red ──────────────────────────────────────
 #
@@ -115,6 +143,25 @@ if ! mg_suite_reported_failures "$SANDBOX/coloured.log"; then
   report "a coloured vitest summary was not recognised as red"
 fi
 
+# ── A red that is nothing but a timeout is not evidence either ────────────────────────────────
+#
+# The clock is not an assertion. But a mutation that makes one test hang while others fail their
+# assertions is honest, so the question is whether a timeout was *all* there was — the first version
+# of this check refused any red containing one, and stopped two legitimate mutations dead.
+printf ' Test Files  1 failed (1)\n      Tests  1 failed | 52 passed (53)\nError: Test timed out in 5000ms.\n' \
+  >"$SANDBOX/timeout-only.log"
+printf ' Test Files  1 failed (1)\n      Tests  3 failed | 50 passed (53)\nError: Test timed out in 5000ms.\n' \
+  >"$SANDBOX/timeout-and-failures.log"
+if ! mg_suite_only_timed_out "$SANDBOX/timeout-only.log"; then
+  report "a red whose only failure was a timeout was accepted as evidence"
+fi
+if mg_suite_only_timed_out "$SANDBOX/timeout-and-failures.log"; then
+  report "a red with real failures alongside a timeout was rejected"
+fi
+if mg_suite_only_timed_out "$SANDBOX/red.log"; then
+  report "a red with no timeout at all was treated as a timeout"
+fi
+
 # ── A mutation that does not apply exactly once is refused ───────────────────────────────────
 #
 # In a subshell, because mg_mutate exits the script when it refuses — which is the behaviour under
@@ -129,11 +176,44 @@ expect_refused() {
     report "the harness accepted a mutation that $what"
   fi
 }
+# A subject that does not exist is the one where perl says nothing and exits 0, so the mutation
+# applies to no file and the suite passes *unbroken* — reported as a criterion that is not checked,
+# which sends whoever reads it to fix the wrong thing. Reachable from a quoting mistake alone.
+if (mg_mutate "self-test: a missing subject" "$SANDBOX/no-such-file.ts" 's/alpha/ALPHA/' >/dev/null 2>&1); then
+  report "the harness accepted a mutation whose subject does not exist"
+fi
+
 expect_refused "matches nothing" 's/gamma/GAMMA/'
 expect_refused "has a sibling matching nothing" 's/beta/BETA/' 's/gamma/GAMMA/'
 expect_refused "matches twice under /g" 's/alpha/ALPHA/g'
+# Perl interpolates a replacement as a double-quoted string, so `${x}` in one is a symbolic deref and
+# silently becomes the empty string. A mutation written that way inserts something other than what it
+# says, and still turns a suite red — the exact shape of failure this harness exists to catch.
+# Its own reset first: a refused mutation has already written the file by the time perl's END block
+# exits, so the subject each of these sees is whatever the one before it left.
+printf 'alpha\nalpha\nbeta\n' >"$SANDBOX/a/same-name.ts"
+expect_refused "would insert an interpolated replacement" 's/beta/`${beta}`/'
 expect_refused "covers a sibling's zero matches with a /g pair" \
   's/alpha/ALPHA/g' 's/gamma/GAMMA/'
+
+# A capture-group backreference is the interpolation that is meant, and one mutation in
+# verify-disposal-gate.sh depends on it, so it must not be caught by the rule above.
+printf 'alpha\nalpha\nbeta\n' >"$SANDBOX/a/same-name.ts"
+if ! (mg_mutate "self-test: keeps a backreference" "$SANDBOX/a/same-name.ts" 's/(beta)/$1$1/'); then
+  report "the harness refused a mutation whose replacement uses a capture-group backreference"
+fi
+if [[ "$(cat "$SANDBOX/a/same-name.ts")" != *"betabeta"* ]]; then
+  report "the backreference did not expand"
+fi
+
+# And an escaped one is accepted, so the check above is not simply refusing every dollar sign.
+printf 'alpha\nalpha\nbeta\n' >"$SANDBOX/a/same-name.ts"
+if ! (mg_mutate "self-test: escapes its dollar" "$SANDBOX/a/same-name.ts" 's/beta/`\${beta}`/'); then
+  report "the harness refused a mutation whose replacement escapes its dollar sign"
+fi
+if [[ "$(cat "$SANDBOX/a/same-name.ts")" != *'`${beta}`'* ]]; then
+  report "the escaped replacement did not land as written"
+fi
 
 # And one that does apply exactly once is accepted, so the check above is not simply always true.
 printf 'alpha\nalpha\nbeta\n' >"$SANDBOX/a/same-name.ts"
@@ -153,4 +233,4 @@ if ((failed)); then
   exit 1
 fi
 
-echo "PASS: the harness isolates the checkout, keeps subjects out of it, restores each from its own backup, refuses a mutation that does not apply exactly once, and tells a suite that went red from one that never ran"
+echo "PASS: the harness isolates the checkout, inherits the caller's EXIT trap, keeps subjects out of the checkout however they are spelled, restores each from its own backup, refuses a mutation whose subject is missing or that does not apply exactly once or that would silently insert an interpolated replacement, refuses to run a suite nobody named, tells a red that is nothing but a timeout from one with real failures, and tells a suite that went red from one that never ran"

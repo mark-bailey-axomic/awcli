@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { printable } from "./printable.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -92,7 +93,16 @@ export type Liveness = "live" | "gone" | "different" | "undecidable";
  */
 export interface LivenessVerdict {
   readonly liveness: Liveness;
-  /** Why the question could not be answered. Present exactly when `liveness` is `undecidable`. */
+  /**
+   * Why the question could not be answered, when there is anything to say.
+   *
+   * Present when the probe was asked and answered `unknown`; absent when the verdict was reached
+   * without asking, which is what happens to a lock written on another machine — there is no reason
+   * to give beyond the host, and the caller has that already. The doc here first said "present
+   * exactly when `liveness` is `undecidable`", which two construction sites in `run-lock.ts` break
+   * by building that verdict by hand for exactly that case. Stating the invariant the flat interface
+   * can actually keep, rather than one a consumer would trust and be wrong about.
+   */
   readonly reason: string | undefined;
 }
 
@@ -122,12 +132,24 @@ export async function livenessOf(
 const PS_TIMEOUT_MS = 2_000;
 
 /**
- * The largest number any supported OS hands out as a process id.
+ * How much of `ps`'s complaint a reason carries.
  *
- * Linux's hard ceiling (`PID_MAX_LIMIT`, 2^22); macOS stays far below it. Deliberately a constant
- * rather than a read of `/proc/sys/kernel/pid_max`, which an administrator can lower — a lock
- * recording a pid above the *current* limit is still junk, and reading the limit would make the
- * answer depend on a setting that can change between the write and the read.
+ * Longer than the default for a hostname, because the useful part of "unrecognized option -- o" is
+ * the whole sentence, and shorter than a program can print: this ends up inside a refusal that has
+ * its own explanation to deliver.
+ */
+const COMPLAINT_LIMIT = 120;
+
+/**
+ * One past the largest number any supported OS hands out as a process id.
+ *
+ * Linux's `PID_MAX_LIMIT`, 2^22, which bounds `pid_max`, which is itself an *exclusive* bound on
+ * what gets allocated — so the largest issuable id is 4194303 and the comparison below is strict.
+ * macOS stays far below either. Deliberately a constant rather than a read of
+ * `/proc/sys/kernel/pid_max`, which an administrator can lower: a lock recording a pid above the
+ * *current* limit is still junk, and reading the limit would make the answer depend on a setting
+ * that can change between the write and the read. The exclusivity matters only because this comment
+ * is the whole justification for not reading it.
  */
 const PID_CEILING = 2 ** 22;
 
@@ -141,7 +163,7 @@ const PID_CEILING = 2 ** 22;
  * in the locale test. The rule lives here so it can be checked without an operating system.
  */
 export function isPossiblePid(pid: number): boolean {
-  return Number.isInteger(pid) && pid > 0 && pid <= PID_CEILING;
+  return Number.isInteger(pid) && pid > 0 && pid < PID_CEILING;
 }
 
 /**
@@ -239,14 +261,18 @@ export async function psIdentify(pid: number): Promise<ProbeAnswer> {
     }
     // Everything else is a question that could not be asked: `ps` absent from the image
     // (ENOENT), the timeout above (killed), EAGAIN from fork on a loaded box.
+    // `complaint` is another program's stderr, and the reason reaches a terminal two ways: through
+    // a refusal, and through the startup throw in `self()`. Sanitised here rather than at each
+    // consumer, so a `ps` that prints an escape sequence cannot repaint a screen through whichever
+    // consumer is added next.
     return {
       kind: "unknown",
       reason:
         failure.killed === true
           ? `ps did not answer within ${PS_TIMEOUT_MS}ms`
           : complaint.length > 0
-            ? `ps refused the question (${complaint.split("\n")[0]})`
-            : `ps could not be run (${String(failure.code ?? error)})`,
+            ? `ps refused the question (${printable(complaint.split("\n")[0] ?? "", COMPLAINT_LIMIT)})`
+            : `ps could not be run (${printable(String(failure.code ?? error))})`,
     };
   }
 
@@ -286,9 +312,9 @@ export const systemProcessProbe: ProcessProbe = {
     // lose `this`, and the failure would surface as a thrown error on the startup path.
     ownIdentity ??= systemProcessProbe.identify(process.pid).then((answer) => {
       if (answer.kind === "running") return answer.identity;
-      // Reachable, and the comment here claimed otherwise for three review rounds — "a process
-      // asking about itself is running by definition", which is about `not-found` and says nothing
-      // about the branch that actually fires. `unknown` reaches this: a container image whose `ps`
+      // Reachable, and the comment here long claimed otherwise — "a process asking about itself is
+      // running by definition", which is true of `not-found` and says nothing at all about the
+      // branch that actually fires. `unknown` reaches this: a container image whose `ps`
       // does not take `-o lstart=` answers it on every ask, and so does a `/proc` a hardened
       // `hidepid` will not show us. Failing loudly rather than inventing a start time, because a
       // wrong `startedAt` here would be written into the lock and would make this run's own lock
@@ -299,7 +325,8 @@ export const systemProcessProbe: ProcessProbe = {
           answer.kind === "unknown"
             ? answer.reason
             : "the process table has no entry for it"
-        }. It needs that to hold a run lock a later run can tell apart from a recycled process id.`,
+        }. It needs that to hold a run lock a later run can tell apart from a recycled process id. ` +
+          `Install ps (the procps package on most images), or run awcli on a host that will report process start times.`,
       );
     });
     // Not cached on failure: a transient `ps` timeout should not poison every later attempt in
