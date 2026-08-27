@@ -63,8 +63,10 @@ Each criterion above was watched failing before it was ticked. `scripts/verify-l
 one — trust the pid alone, reclaim anything older than an hour, refuse every existing lock, one lock
 file per repository, unlink whatever is at the path, slugify what the operator typed — and fails if
 the suite still passes with any of them applied. A mutation whose anchor has drifted fails the script
-rather than being skipped, which has fired for real three times here: twice because a refactor moved
-an anchor, and once because a mutation turned out to assert nothing on Linux.
+rather than being skipped, which has fired for real on this ticket several times, always because a
+remediation moved code a mutation was anchored on. How many times is deliberately not written down
+here or in the script: review found the two places disagreeing about it, which is the same lesson as
+the mutation counts that came out a round earlier.
 
 Two properties came out of building it that the ticket did not name, and both are load-bearing:
 
@@ -75,6 +77,11 @@ Two properties came out of building it that the ticket did not name, and both ar
 - Reclamation removes only the file it judged stale, verified by the file's own bytes after taking
   custody of it — not by its inode, which is recycled just as a process id is. Nothing is judged
   while the name is free: the file goes back first and is judged on the next attempt.
+- A lock sitting *beside* the lock path is read before the name is treated as free. Three different
+  things wear that name — a reclamation that could not put a lock back, one still in progress
+  elsewhere, and a restore whose cleanup failed, which leaves a second link to the live lock — and
+  only the first is a reason to refuse. Telling them apart is what stops a failed reclamation from
+  permitting the collision it prevented, without blocking a run name on litter.
 
 `worktrees` is refused as a run name: the layout puts working copies at
 `run/worktrees/<run>/<slot>`, a sibling of `run/<run>/`, so that name would put a run's state
@@ -89,6 +96,16 @@ blocking finding. Three consecutive rounds landed on `removeExactly`, each time 
 opens when something has already gone wrong: a `finally` that deleted the live lock it had
 displaced, a read with nothing to catch it, and a re-judgement that spawned `ps` while the run name
 sat free on disk.
+
+The round after that found nothing wrong inside the function — and twenty findings around it. A
+restructure moves the ground under everything that referred to the old shape, and none of it moves by
+itself: the docblock the remediation had just rewritten still described the mechanism it deleted, one
+mutation covered two behaviours at once so the weaker wrong implementation was pinned by nothing, a
+new branch arrived with neither test nor mutation, the refusal added to close one finding prescribed a
+removal that could destroy a live lock, and the exhaustion message went on describing a route that no
+longer led there. So the second half of the lesson: **a correction is not finished when the function
+is right.** The comments, the messages, the mutations and the neighbouring branches are all part of
+it, and every one of them can go on asserting the version that was replaced.
 
 The findings themselves sort into four classes, and the classes are more useful than a log of them
 would be — the log is in the PR, and a chronology in a ticket drifts out of date twice before anyone
@@ -131,6 +148,11 @@ while the criterion its other half tested silently stopped being tested. Its sel
 way the old checks could be fooled. Two mutations turned out not to be gates at all; one of them
 asserted nothing on Linux, where `identify` answers out-of-range ids from `/proc` rather than from
 `ps`, so that rule moved into `isPossiblePid` where it can be checked without an operating system.
+And the check at the centre of all of it was itself too weak: `expect_red` treated any non-zero exit
+as proof that a criterion is checked, while vitest exits non-zero for a mutation it cannot parse —
+printing `Tests  no tests`, with not one assertion evaluated. A substitution that produced invalid
+TypeScript therefore reported `ok` for a criterion nothing had looked at. It now requires the summary
+to name a failing test, and its self-test pins both answers.
 
 Two findings were argued rather than fixed, and both stand. An unreadable lock is reclaimed without
 a host check: nothing left in a truncated file distinguishes a sync client truncating a *live* run's

@@ -14,8 +14,10 @@
 #
 # A mutation whose anchor no longer matches fails the script rather than being skipped. A refactor
 # that moves this code should therefore break here loudly: a silently skipped mutation is exactly
-# the hole this exists to close. It has already fired once for real, on this ticket, when a
-# refactor renamed a call it anchored on.
+# the hole this exists to close. It has fired for real on this ticket, more than once, always
+# because a remediation moved code a mutation was anchored on. How many times is deliberately not
+# recorded — the paragraph above says why a number in a comment is one more thing to get wrong, and
+# review found this line and the ticket disagreeing about it.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -54,7 +56,7 @@ expect_red "reclamation is reported, never silent" src/runtime/run-lock.ts \
 # Staleness decided by the lock's age instead of by its owner — the implementation the ticket's
 # constraint rules out by name, and the one a reviewer proposes when a stale lock blocks them.
 expect_red "A slow run keeps its lock" src/runtime/run-lock.ts \
-  's/              : await livenessOf\(existing\.contents\.owner, probe\);/              : Date.now() - existing.contents.acquiredAt > 60 * 60 * 1000 ? { liveness: "gone", reason: undefined } : { liveness: "live", reason: undefined };/'
+  's/            : await judgeOwner\(existing\.contents, thisHost, probe\);/            : Date.now() - existing.contents.acquiredAt > 60 * 60 * 1000 ? { liveness: "gone", reason: undefined } : { liveness: "live", reason: undefined };/'
 
 # ── A reused process id does not read as the original owner ──────────────────────────────────
 # Trust the pid alone. This is the lock file everyone writes first, and on a busy machine it starts
@@ -138,9 +140,11 @@ expect_red "a probe that cannot answer does not read as a dead process" src/runt
   's/  if \(answer\.kind === "unknown"\) \{\n    return \{ liveness: "undecidable", reason: answer\.reason \};\n  \}/  if (answer.kind === "unknown") return { liveness: "gone", reason: undefined };/'
 
 # Another machine's pid judged against this machine's process table. Reclaimed a synced-checkout
-# lock and told the operator its owner "was killed", which was false.
+# lock and told the operator its owner "was killed", which was false. Anchored inside `judgeOwner`
+# since the two copies of this ladder became one, so it now covers the leftover scan as well as the
+# lock path — the second copy had already drifted from the first once.
 expect_red "a lock from another machine is not judged by local pids" src/runtime/run-lock.ts \
-  's/            : existing\.contents\.host !== contents\.host/            : false/'
+  's/  if \(holder\.host !== thisHost\) \{/  if (false) {/'
 
 # The `continue` that jumped the attempt bound. A dangling symlink at the lock path answers EEXIST
 # to `link` and ENOENT to `readFile` at once, so awcli spun at startup burning a core. Both halves
@@ -161,10 +165,26 @@ expect_red "a symlink above the run directory is refused too" src/runtime/run-lo
 # mutations that pinned how it judged. It ran with the run name free on disk — `livenessOf`, and on
 # macOS a `ps` spawn bounded only by its own two-second timeout — and any run starting in that
 # window took the name while this one still believed it was reclaiming. What replaces those three is
-# the property that the file goes back *unjudged*: the mutation below deletes the restore, which is
-# what judging-then-removing looks like from the outside.
+# the property that the file goes back *unjudged*, in two mutations rather than one: review round 4
+# pointed out that the single replacement changed two things at once, so the weaker of the two wrong
+# implementations was pinned by nothing.
+#
+# The strong one: the replacement is deleted rather than put back, which is what
+# judging-then-removing looks like from the outside.
 expect_red "a lock taken aside that is not the one judged goes back untouched" src/runtime/run-lock.ts \
   's/  \/\/ Not the file that was judged, so it goes back — unjudged\. See the note above\.\n  await restore\(path, aside\);\n  return \{ kind: "disturbed" \};/  await unlink(aside).catch(ignoreCleanupFailure);\n  return { kind: "removed" };/'
+
+# And the weak one, which is the likelier mistake: the file goes back correctly and the attempt
+# reports a reclamation anyway. Nothing on disk is wrong; the operator is told a stale lock was
+# destroyed when the lock is sitting there untouched, and BR-035 cuts both ways.
+expect_red "a lock that was put back is not reported as reclaimed" src/runtime/run-lock.ts \
+  's/  await restore\(path, aside\);\n  return \{ kind: "disturbed" \};/  await restore(path, aside);\n  return { kind: "removed" };/'
+
+# The set-aside file gone before it could be read is a removal — the judged lock is off the lock
+# path, which is what the reclamation had to achieve. Reporting a loss instead drops the reclamation
+# BR-035 requires be reported. This branch arrived in round 3 with neither a test nor a mutation.
+expect_red "a set-aside lock that has already gone still counts as removed" src/runtime/run-lock.ts \
+  's/    return \{ kind: "removed" \};\n  \}\n\n  if \(taken\.raw === judgedRaw\)/    return { kind: "lost" };\n  }\n\n  if (taken.raw === judgedRaw)/'
 
 # A staging write that fails part-way through — ENOSPC, EIO — creates the file and then fails, so
 # skipping the cleanup leaves a staging file nobody will ever link or read accumulating in the run's
@@ -181,7 +201,12 @@ expect_red "the ancestor walk stays inside the repository" src/runtime/run-lock.
 # The terminal failure claimed "Nothing has been changed" while a reclamation may already have
 # deleted a file. The same defect as the two refusal messages a round earlier, missed here.
 expect_red "no message hardcodes a claim that nothing changed" src/runtime/run-lock.ts \
-  's/the moment it acted\. \$\{changeNote\(reclaimed\)\} Try again;/the moment it acted. Nothing has been changed; try again,/'
+  's/\$\{observed\}\. \$\{changeNote\(reclaimed\)\}/${observed}. Nothing has been changed./'
+
+# A throw that follows a reclamation drops the note entirely, so the stale lock is destroyed and the
+# operator sees a bare errno. The one exit `changeNote` had never been applied to.
+expect_red "a failure after a reclamation still reports it" src/runtime/run-lock.ts \
+  's/    if \(reclaimed !== undefined\) \{\n      throw new Error\(/    if (false) {\n      throw new Error(/'
 
 # ── Found in the second full review round: defects in the remediation itself ─────────────────
 # Two of these were the blockers, and both were introduced by the fix for an earlier one. The
@@ -202,7 +227,20 @@ expect_red "tidying up cannot turn a lock that was taken into a failure" src/run
 # The reclamation on the final attempt is thrown away: the stale lock is deleted, the path is left
 # free, and the operator is told the name is being fought over when nothing holds it.
 expect_red "a reclamation on the last attempt is used, not discarded" src/runtime/run-lock.ts \
-  's/      if \(reclaimed !== undefined\) \{\n        await refuseSymlink/      if (false) {\n        await refuseSymlink/'
+  's/      if \(await writeIfAbsent\(path, rescue\)\) \{/      if (false) {/'
+
+# And the narrower version of that same fix, which is what shipped for two rounds: the rescue create
+# gated on a reclamation. The other route to a free path on the last attempt — a holder that released
+# while this run was looking — still fell out of the loop and threw with the name free and nothing
+# holding it. The fix had covered only the case that had a test.
+expect_red "a name that came free without a reclamation is taken too" src/runtime/run-lock.ts \
+  's/      if \(await writeIfAbsent\(path, rescue\)\) \{/      if (reclaimed !== undefined \&\& (await writeIfAbsent(path, rescue))) {/'
+
+# The exhaustion message names the route that was actually taken. "The file kept changing" described
+# both routes and fitted neither, and reported a live holder repeatedly winning the race as a
+# churning file — sending the operator to look for something outside awcli.
+expect_red "the exhaustion says which way the attempts were spent" src/runtime/run-lock.ts \
+  's/        inconclusive === "released"/        false/'
 
 # A filesystem that answers ENOTSUP or EMLINK reaches the operator as a bare errno.
 expect_red "a filesystem that will not hard-link is explained" src/runtime/run-lock.ts \
@@ -258,13 +296,31 @@ expect_red "a lock displaced by a third process is left on disk too" src/runtime
 # *next* invocation found a free lock path and took the name alongside whatever was still working
 # under the displaced file. The failure that stopped one collision permitted the next one.
 expect_red "a displaced lock is read before the run name is treated as free" src/runtime/run-lock.ts \
-  's/      const displaced = await displacedHolder\(path, probe\);/      const displaced = undefined; void displacedHolder;/'
+  's/        const displaced = await displacedHolder\(path, thisHost, probe\);/        const displaced = undefined; void displacedHolder;/'
 
 # And the other direction of that check, which matters just as much: a displaced lock whose owner is
 # gone is inert, and refusing on one would make a run name permanently unusable — the failure BR-035
 # exists to prevent, arrived at from the side.
 expect_red "a displaced lock whose owner is gone does not block the name" src/runtime/run-lock.ts \
   's/    if \(verdict\.liveness === "live" \|\| verdict\.liveness === "undecidable"\) \{/    if (true) {/'
+
+# ── Found in the fourth full review round: the surroundings of the third round's fix ─────────
+# The pattern again, one layer out: the reclamation path was restructured and the code around it did
+# not move with it. All three of these are in the leftover scan the previous round added.
+#
+# A leftover is refused on first sight rather than waited out. A reclamation in flight elsewhere has
+# a set-aside file on disk for a rename, a read and a link — so this told the operator to wait for a
+# run that had already finished and to remove a file that had already gone, and removing it in that
+# window made the other process'"'"'s restore fail and destroyed the lock outright.
+expect_red "a reclamation in progress elsewhere is waited out, not refused" src/runtime/run-lock.ts \
+  's/          if \(attempt < MAX_ATTEMPTS\) continue;/          if (false) continue;/'
+
+# A second link to the *live* lock read as a lock that was left displaced. `restore` unlinks the
+# set-aside name only after the link succeeds, so a failing cleanup leaves one — and refusing over it
+# says a reclamation could not put a lock back, which is false, and blocks every run of the name
+# until the owner dies.
+expect_red "a leftover that is a second link to the live lock is not a displaced one" src/runtime/run-lock.ts \
+  's/    if \(current\.kind !== "absent" && read\.raw === current\.raw\) continue;/    if (false) continue;/'
 
 # An unwritable repository reached the operator as a bare EACCES and a stack trace. It is the one
 # failure on this path they can fix without knowing anything about awcli, and the remedy is about a

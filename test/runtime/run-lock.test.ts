@@ -1,4 +1,5 @@
 import {
+  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -569,9 +570,12 @@ describe("every message that claims nothing changed", () => {
     expect(changeNote.match(claim)).toHaveLength(2);
 
     // And every message that can be issued after a reclamation takes the note rather than writing
-    // its own copy. Three of them: the two refusals, and the terminal failure — which review found
-    // hardcoding the claim while a reclamation had already deleted a file.
-    expect(code.match(/changeNote\(reclaimed\)/g)).toHaveLength(3);
+    // its own copy. Five of them now: three refusals — the held one, the undecidable one, and the
+    // one over a lock left beside the path — the terminal failure, and the wrapper that reports a
+    // reclamation when the acquisition goes on to throw. Every addition to this list was a message
+    // review found claiming, or silently omitting, what had happened to a file; the count is here so
+    // that a sixth cannot be added with its own hardcoded copy.
+    expect(code.match(/changeNote\(reclaimed\)/g)).toHaveLength(5);
     expect(code).toMatch(
       /after \$\{MAX_ATTEMPTS\} attempts[^`]*\$\{changeNote\(reclaimed\)\}/,
     );
@@ -865,6 +869,11 @@ describe("refusing rather than guessing", () => {
     expect(outcome.kind).toBe("undecidable");
     // Put back byte for byte, not deleted.
     expect(await readFile(path, "utf8")).toBe(foreign);
+    // And no reclamation is claimed for it. Review round 4's point: putting the file back while
+    // still reporting `removed` leaves every assertion above green, and the operator is told a
+    // stale lock was destroyed when the file is sitting there untouched. BR-035 cuts both ways —
+    // a reclamation must be reported, and a reclamation that did not happen must not be.
+    expect(outcome.reclaimed).toBeUndefined();
   });
 
   /**
@@ -1321,6 +1330,84 @@ describe("a lock left displaced by a reclamation that could not finish", () => {
 
     expect(outcome.ok).toBe(true);
     await stack.unwind();
+  });
+
+  /**
+   * A reclamation in progress somewhere else has a set-aside file on disk too, and it looks exactly
+   * like one a failed restore left behind. Its window is a rename, a read and a link, so it clears
+   * in microseconds — and the first version of this scan refused on it, which sent the operator to
+   * wait for a run that had already finished and to remove a file that had already gone. Worse, if
+   * they were quick enough to catch it, removing it made the other process's restore fail and the
+   * displaced lock was gone outright. Review's point, and the fix is the retry the scan's own
+   * docblock had always described: only a leftover still there on the last attempt is refused.
+   */
+  it("is waited out rather than refused when a reclamation elsewhere is still going", async () => {
+    const repositoryPath = await repository();
+    const at = await displace(repositoryPath, OPERATOR);
+
+    // The leftover goes while the first attempt is asking about its owner — the probe is the only
+    // crossing the scan makes, so it is where the other process's restore is staged.
+    let asks = 0;
+    const probe: ProcessProbe = {
+      self: async () => SCHEDULER,
+      identify: async (pid): Promise<ProbeAnswer> => {
+        asks += 1;
+        if (asks === 1) await rm(at);
+        if (pid === OPERATOR.pid) return { kind: "running", identity: OPERATOR };
+        if (pid === SCHEDULER.pid) return { kind: "running", identity: SCHEDULER };
+        return { kind: "not-found" };
+      },
+    };
+
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe,
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect((await readLockFile(repositoryPath, TRIAGE)).owner).toEqual(SCHEDULER);
+    await stack.unwind();
+  });
+
+  /**
+   * The third thing a file at that name can be, and it is not a displaced lock: `restore` links the
+   * lock back and only then unlinks the set-aside name, so an `unlink` that fails leaves a second
+   * link to the *live* lock. Nothing was displaced. Refusing over it would tell the operator a
+   * reclamation could not put a lock back — false — and would refuse every run of this name until
+   * the owner died, which is the permanent lock BR-035 exists to prevent. Review's point. The lock
+   * at the path is what governs, and the ordinary ladder is what judges it.
+   */
+  it("is not a displaced lock when it is a second link to the live one", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+
+    const holder = new DisposalStack();
+    const held = await acquireRunLock(holder, {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(OPERATOR),
+    });
+    expect(held.ok).toBe(true);
+    const at = `${path}.stale.4f0f0e2a-0000-4000-8000-000000000002`;
+    await link(path, at);
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [OPERATOR]),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    // Refused because the lock is held, which is true — not over a lock nothing displaced. The
+    // leftover's name starts with the lock path, so the discriminator is what the message does
+    // *not* say.
+    expect(outcome.kind).toBe("held");
+    expect(outcome.message).toContain("already in progress");
+    expect(outcome.message).not.toContain(at);
+    await holder.unwind();
   });
 
   /** Nor does a leftover nobody can parse block a name: `.stale.` is not a lock by itself. */

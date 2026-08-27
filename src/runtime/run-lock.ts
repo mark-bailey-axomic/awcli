@@ -165,6 +165,9 @@ export interface RunLockRequest {
  * Three rather than two because a reclamation that finds the file replaced under it puts the file
  * back and spends the attempt without a verdict: the replacement is judged on the round after,
  * where the lock is on disk while it is being judged rather than set aside. See `removeExactly`.
+ * A leftover from someone else's reclamation, which `displacedHolder` waits out rather than
+ * refusing on, spends an attempt the same way. Two independent races in one startup would exhaust
+ * the budget and throw, which is the correct end for a name nobody can get a clean look at.
  */
 const MAX_ATTEMPTS = 3;
 
@@ -221,27 +224,45 @@ export async function acquireRunLock(
       }
       await refuseSymlinkedAncestors(request.repositoryPath, request.runName);
 
-      // Before the name is treated as free: a lock a previous reclamation could not put back is
-      // still a run in progress, and until this was here nothing ever read one again.
-      const displaced = await displacedHolder(path, probe);
-      if (displaced !== undefined) {
-        refuse(
-          displaced.verdict.liveness === "live" ? "held" : "undecidable",
-          displaced.contents,
-          displacedMessage(request.runName, displaced, hostname()),
-        );
-      }
+      const thisHost = hostname();
+      // Why an attempt ended without a verdict, when one did. Read only by the message at the end:
+      // "the file kept changing" is true of every route to it and points at the wrong culprit for
+      // the common one, which is another awcli run winning the same race repeatedly.
+      let inconclusive: Inconclusive | undefined;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (attempt > 1) await pause(RETRY_BACKOFF_MS);
 
-        // Before anything writes or moves. `link`, `rename` and `unlink` operate on the link
-        // itself, so this is not about the write or the removal landing elsewhere — that is the
-        // *directory* case, and an earlier version of this comment ran the two together. It is
-        // about `readFile`, which follows a symlink and would read an unrelated file as this run's
-        // lock; and about a dangling one, which answers EEXIST to `link` and ENOENT to `readFile`
-        // at the same time — the pair that used to spin here for ever. See `refuseSymlink`.
+        // Before anything writes or moves, and before anything *reads* — the leftover scan below
+        // reads this path too. `link`, `rename` and `unlink` operate on the link itself, so this is
+        // not about the write or the removal landing elsewhere — that is the *directory* case, and
+        // an earlier version of this comment ran the two together. It is about `readFile`, which
+        // follows a symlink and would read an unrelated file as this run's lock; and about a
+        // dangling one, which answers EEXIST to `link` and ENOENT to `readFile` at the same time —
+        // the pair that used to spin here for ever. See `refuseSymlink`.
         await refuseSymlink(path, "lock");
+
+        // Before the name is treated as free: a lock beside this one is either a run a previous
+        // reclamation could not put back, or a reclamation another process is in the middle of, and
+        // until this was here nothing ever read one again.
+        //
+        // Inside the loop, and a retry until the attempts run out, rather than a refusal on first
+        // sight. The second case is the ordinary one and it clears in microseconds — that window is
+        // a rename, a read and a link with nothing else in it — so refusing immediately sent the
+        // operator to wait for a run that had already finished and to remove a file that had
+        // already gone. Review's point. Only a leftover that is *still* there after every attempt
+        // is treated as a run in progress.
+        const displaced = await displacedHolder(path, thisHost, probe);
+        if (displaced !== undefined) {
+          // Not recorded in `inconclusive`: this route cannot reach the message that reads it,
+          // because the last attempt refuses rather than continuing.
+          if (attempt < MAX_ATTEMPTS) continue;
+          refuse(
+            displaced.verdict.liveness === "live" ? "held" : "undecidable",
+            displaced.contents,
+            displacedMessage(request.runName, displaced, thisHost, reclaimed),
+          );
+        }
 
         const contents = await freshContents(request, probe);
 
@@ -252,7 +273,10 @@ export async function acquireRunLock(
         const existing = await readLock(path);
         // Gone between the failed create and the read: whoever held it has released it. Round
         // again — under the attempt bound, which is the point.
-        if (existing.kind === "absent") continue;
+        if (existing.kind === "absent") {
+          inconclusive = "released";
+          continue;
+        }
 
         // A lock nobody can parse is reclaimable, because `writeIfAbsent` links a complete file
         // into place: no awcli run can have left this behind. Note the limit of that reasoning,
@@ -270,11 +294,7 @@ export async function acquireRunLock(
         const verdict: LivenessVerdict =
           existing.kind !== "lock"
             ? { liveness: "gone", reason: undefined }
-            : existing.contents.host !== contents.host
-              ? // Another machine's pid is not a question this machine's process table can
-                // answer. Refusing is the only honest move.
-                { liveness: "undecidable", reason: undefined }
-              : await livenessOf(existing.contents.owner, probe);
+            : await judgeOwner(existing.contents, thisHost, probe);
 
         if (existing.kind === "lock" && verdict.liveness === "live") {
           refuse(
@@ -313,35 +333,46 @@ export async function acquireRunLock(
         } else if (removal.kind === "disturbed") {
           // The file at the path changed between the judgement and the removal, the removal was
           // undone, and this attempt has no verdict. Round again rather than guess.
+          inconclusive = "replaced";
           continue;
         }
       }
 
-      // A reclamation on the final round leaves the path free, and the loop as first written fell
-      // straight out of it: the stale lock was deleted, no lock was taken, and the operator was
-      // told the name was being fought over by other processes when in fact nothing held it. One
-      // more create — bounded, no further judgement — is all that state needs.
-      if (reclaimed !== undefined) {
-        await refuseSymlink(path, "lock");
-        const contents = await freshContents(request, probe);
-        if (await writeIfAbsent(path, contents)) {
-          return { run: request.runName, path, contents };
-        }
+      // The last round can leave the path free two ways, and the loop as first written fell straight
+      // out of both: a reclamation that freed it, and a holder that released it while this run was
+      // looking. The stale lock was deleted or the name was idle, no lock was taken, and the
+      // operator was told the name was being fought over when nothing held it. One more create —
+      // bounded, and with no judgement in it — is all either state needs.
+      //
+      // Not gated on a reclamation any more. It was, and that left the second route still throwing
+      // with the name free: review's point, and the narrower fix was covering only the case that
+      // had a test. `rescue` rather than reusing the name `contents` so that the gate can anchor on
+      // this create and not on the one in the loop.
+      await refuseSymlink(path, "lock");
+      const rescue = await freshContents(request, probe);
+      if (await writeIfAbsent(path, rescue)) {
+        return { run: request.runName, path, contents: rescue };
       }
 
-      // What it says is what was observed, and no more. It used to assert a cause — "it is being
-      // taken and released repeatedly by other processes" — which is one explanation among several:
-      // a filesystem answering inconsistently, or something outside awcli rewriting that path, get
-      // here by the same route. Review's point, and the same class as the "nothing has been
-      // changed" claim two rounds ago: a message that guesses sends whoever reads it to the wrong
-      // place.
+      // What it says is what was observed, and no more. It used to assert a single cause — "it is
+      // being taken and released repeatedly by other processes" — and then, having been narrowed to
+      // "the file kept changing", still described a *live holder repeatedly winning the race* as a
+      // churning file and sent the operator looking for something outside awcli. Review's point
+      // twice over. `inconclusive` carries what the last inconclusive attempt actually saw, so the
+      // sentence names one of the two routes rather than a guess covering both.
       //
       // Thrown rather than returned as a refusal, which review also asked about. A refusal names the
       // run it collided with, and this path has no such run to name: every candidate was gone by the
       // time it was looked at. Widening the refusal to carry no holder would let every consumer of
       // one stop handling the field that makes a refusal actionable.
+      const observed =
+        inconclusive === "released"
+          ? `the lock at ${path} was gone again by the time awcli read it, on every attempt`
+          : inconclusive === "replaced"
+            ? `another process replaced the lock at ${path} each time awcli set it aside to reclaim it`
+            : `another process took the name in the moment after awcli freed it`;
       throw new Error(
-        `Could not take the lock for the "${request.runName}" run after ${MAX_ATTEMPTS} attempts: the file at ${path} kept changing between the moment awcli looked at it and the moment it acted. ${changeNote(reclaimed)} Try again; if it repeats, find out what else is writing that file.`,
+        `Could not take the lock for the "${request.runName}" run after ${MAX_ATTEMPTS} attempts: ${observed}. ${changeNote(reclaimed)} Another awcli run contending for this name is the likeliest cause, and trying again is usually enough; if this name should be idle, find out what else is writing ${path}.`,
       );
     },
     release: async (held) => {
@@ -357,6 +388,18 @@ export async function acquireRunLock(
     // anything else keeps a real error — a read-only repository, a full disk — from being
     // reported as "another run holds this".
     if (error instanceof RunLockHeldError) return error.refusal;
+    // A throw that *follows* a reclamation still has to report it. BR-035's "never silent" has no
+    // exception for a run that went on to fail: the stale lock is already destroyed, and this was
+    // the one exit `changeNote` had never been applied to, so an ENOSPC on the next write reached
+    // the operator with no indication that a file had gone. Review's point, and the same class as
+    // the refusal channel two rounds earlier. The original error is the cause, so nothing about it
+    // is lost.
+    if (reclaimed !== undefined) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} ${changeNote(reclaimed)}`,
+        { cause: error },
+      );
+    }
     throw error;
   }
 }
@@ -565,6 +608,33 @@ type Removal =
   /** Something else was at the path; it was put back, and this attempt has no verdict. */
   | { readonly kind: "disturbed" };
 
+/**
+ * Where a lock's owner is, as far as this machine can tell.
+ *
+ * One function, because two places ask — the lock path and a leftover beside it — and the ladder
+ * they need is the same: another machine's pid is not a question this process table can answer, and
+ * everything else goes to the probe. A second copy of this ladder was deleted a round ago for having
+ * drifted from the first, and review caught the displaced-lock fix adding a third by hand the round
+ * after. The same fix, one round apart, in both directions.
+ */
+async function judgeOwner(
+  holder: RunLockContents,
+  thisHost: string,
+  probe: ProcessProbe,
+): Promise<LivenessVerdict> {
+  if (holder.host !== thisHost) {
+    return { liveness: "undecidable", reason: undefined };
+  }
+  return livenessOf(holder.owner, probe);
+}
+
+/** Why an attempt ended with no verdict. Only ever read by the message after the last one. */
+type Inconclusive =
+  /** The lock was gone again by the time it was read. */
+  | "released"
+  /** Another process replaced it while it was set aside for removal. */
+  | "replaced";
+
 /** The verdict a stale lock gets, from how it read and what its owner turned out to be. */
 function staleReasonFrom(read: LockRead, liveness: Liveness): StaleReason {
   if (read.kind !== "lock") return "unreadable";
@@ -585,9 +655,12 @@ function staleReasonFrom(read: LockRead, liveness: Liveness): StaleReason {
  * mutual exclusion. It is not. It is atomic *removal*; the exclusion has to come from checking
  * what was removed.
  *
- * So: take custody by renaming, then check that what was taken is what was judged. A mismatch
- * means the file was replaced in the window, and the replacement is re-judged rather than assumed —
- * if it is live, it goes back and this attempt reports no verdict.
+ * So: take custody by renaming, then check that what was taken is what was judged. A mismatch means
+ * the file was replaced in the window, and the replacement goes straight back — unjudged, as the
+ * paragraph below explains. Until review round 4 this sentence still said the replacement was
+ * "re-judged rather than assumed", twenty-four lines above the text describing why it is not: the
+ * one docblock the remediation for that defect had rewritten was left half-describing the code it
+ * removed. Which is the failure class of this whole ticket, in a comment.
  *
  * **Identity is the file's contents, not its inode.** The first attempt at this fix compared inode
  * numbers, and CI caught it on ext4: reclaiming the stale lock frees its inode, the very next
@@ -609,12 +682,19 @@ function staleReasonFrom(read: LockRead, liveness: Liveness): StaleReason {
  * unwind it, because the displaced owner's own release correctly declines to unlink a lock it no
  * longer recognises.
  *
- * So the replacement goes back unjudged and the attempt reports no verdict; the next round judges
- * it with the lock on disk, and `MAX_ATTEMPTS` has room for that round. The gap that remains is the
+ * So the replacement goes back unjudged and the attempt reports no verdict; the next round judges it
+ * with the lock on disk, and `MAX_ATTEMPTS` has room for that round. The gap that remains is the
  * rename and the link — irreducible without an atomic compare-and-unlink, which POSIX does not
  * offer — and if a third process still wins it, this throws rather than proceeding and leaves the
  * displaced lock on disk under its set-aside name, where `displacedHolder` reads it before any
  * later run can take the name.
+ *
+ * `probe` is deliberately not a parameter. That is not a guarantee that no OS question can be asked
+ * here — `livenessOf` is a module import and would compile inside this function today, as review
+ * pointed out when an earlier version of the comment below claimed otherwise. What it buys is that
+ * reintroducing the question takes a signature change, a change at the call site and a change to
+ * this gate's mutations: a deliberate act rather than a line added to a function that already had
+ * the means to hand.
  */
 async function removeExactly(path: string, judged: LockRead): Promise<Removal> {
   const aside = `${path}.stale.${randomUUID()}`;
@@ -628,9 +708,8 @@ async function removeExactly(path: string, judged: LockRead): Promise<Removal> {
   }
 
   // The run name is free on disk from here until one of the exits below, and everything between is
-  // either the identity comparison or putting the file back. `probe` is deliberately not a
-  // parameter of this function: asking the operating system anything here is what the previous
-  // version did, and leaving the means out of scope is a stronger guarantee than a comment.
+  // either the identity comparison or putting the file back. See the note on `probe` above for what
+  // the signature does and does not guarantee about that.
   const judgedRaw = judged.kind === "absent" ? undefined : judged.raw;
   let taken: LockRead;
   try {
@@ -648,8 +727,10 @@ async function removeExactly(path: string, judged: LockRead): Promise<Removal> {
   }
 
   if (taken.kind === "absent") {
-    // The set-aside file went between the rename and the read. The judged lock is off the path
-    // either way and there is nothing left to put back.
+    // The set-aside file went between the rename and the read: another process is tidying, or the
+    // filesystem lost it. The judged lock is off the lock path either way, which is what a
+    // reclamation had to achieve, and there is nothing left to put back — reporting `lost` here
+    // would deny a removal that did happen and drop the reclamation BR-035 requires be reported.
     return { kind: "removed" };
   }
 
@@ -698,7 +779,7 @@ interface DisplacedLock {
 }
 
 /**
- * Finds a displaced lock beside the lock path whose owner is not provably gone.
+ * Finds a lock beside the lock path whose owner is not provably gone.
  *
  * `restore` leaves a file behind when it cannot put a lock back, and that used to be the end of it:
  * the failure told the operator where the file was, and nothing ever read it again. Review's point
@@ -706,19 +787,29 @@ interface DisplacedLock {
  * runs alongside whatever is still working under the displaced lock. The failure that stopped one
  * run from colliding let the one after it collide instead, silently, which is worse.
  *
- * So the leftovers are read, with the same ladder the lock path gets: a live owner on this machine
- * is a run in progress, another machine's lock cannot be judged from here, and a lock whose owner
- * is gone — or which never parsed — is inert. Inert ones are left alone rather than deleted:
- * deleting one could take away another process's set-aside file mid-reclamation, and litter in a
- * run directory is much the lesser problem.
+ * So the leftovers are read, through the same ladder the lock path gets (`judgeOwner`): a live owner
+ * on this machine is a run in progress, another machine's lock cannot be judged from here, and a
+ * lock whose owner is gone — or which never parsed — is inert. Inert ones are left alone rather than
+ * deleted: deleting one could take away another process's set-aside file mid-reclamation, and litter
+ * in a run directory is much the lesser problem.
  *
- * A reclamation in flight elsewhere has a set-aside file on disk too, so this can refuse over one.
- * That window is now a rename, a read and a link with nothing else in it, the lock in it is usually
- * the dead one being reclaimed rather than a live one, and the cost of losing the race is a retry.
- * The cost of ignoring a real displaced lock is two runs on one state file.
+ * Two things wear the same name as a displaced lock, and neither is one. Both were found by review
+ * after the first version of this refused on anything it saw:
+ *
+ * - **A reclamation in flight elsewhere.** Its set-aside file is on disk for the length of a rename,
+ *   a read and a link. The caller therefore waits it out and only refuses if a leftover survives
+ *   every attempt — see the loop. Refusing on first sight told the operator to wait for a run that
+ *   had already finished and to remove a file that had already gone, and if they were quick enough
+ *   to catch it, removing it made that process's restore fail and destroyed the lock outright.
+ * - **A restore that worked, whose cleanup did not.** `restore` links the file back and only then
+ *   unlinks the set-aside name, so a failing `unlink` leaves a second link to the *live* lock beside
+ *   it. Nothing was displaced there at all: saying so would be false, and refusing on it would block
+ *   every run of this name until the owner died. The lock at the path governs, and it gets judged by
+ *   the loop in the ordinary way; this scan is only about files the path does not account for.
  */
 async function displacedHolder(
   path: string,
+  thisHost: string,
   probe: ProcessProbe,
 ): Promise<DisplacedLock | undefined> {
   const directory = dirname(path);
@@ -740,14 +831,17 @@ async function displacedHolder(
     .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
     .map((entry) => entry.name)
     .sort();
+  if (leftovers.length === 0) return undefined;
+
+  // Read once, for the second case in the docblock: a leftover holding the same bytes as the lock
+  // that is on the path is a second link to it, not a lock that was left displaced.
+  const current = await readLock(path);
   for (const entry of leftovers) {
     const at = join(directory, entry);
     const read = await readLock(at);
     if (read.kind !== "lock") continue;
-    const verdict: LivenessVerdict =
-      read.contents.host !== hostname()
-        ? { liveness: "undecidable", reason: undefined }
-        : await livenessOf(read.contents.owner, probe);
+    if (current.kind !== "absent" && read.raw === current.raw) continue;
+    const verdict = await judgeOwner(read.contents, thisHost, probe);
     if (verdict.liveness === "live" || verdict.liveness === "undecidable") {
       return { at, contents: read.contents, verdict };
     }
@@ -878,17 +972,30 @@ function undecidableBecause(
   return `whether process ${holder.owner.pid} is still running could not be established on this machine${said}`;
 }
 
+/**
+ * What to say about a leftover lock, and — the part review had to correct — what to ask for.
+ *
+ * The first version asserted that "an earlier reclamation moved a lock and could not put it back",
+ * which is one of the three things a file at that name can be, and then prescribed removing it in
+ * every case. Both halves were wrong for a live owner: awcli cannot tell a failed restore from a
+ * reclamation still in progress from here, and telling the operator to delete a file another process
+ * is about to link back is telling them to destroy a live run's lock. So the message says where the
+ * file is and what is known about its owner, and asks for a removal only where a removal is the
+ * remedy — the case awcli cannot resolve by itself, because the owner is on another machine or the
+ * probe cannot answer.
+ */
 function displacedMessage(
   run: string,
   displaced: DisplacedLock,
   thisHost: string,
+  reclaimed: Reclamation | undefined,
 ): string {
   const { at, contents, verdict } = displaced;
-  const state =
+  const remedy =
     verdict.liveness === "live"
-      ? `process ${contents.owner.pid} on ${printable(contents.host)} is still running under it`
-      : undecidableBecause(contents, thisHost, verdict.reason);
-  return `awcli will not take the lock for the "${run}" run: an earlier reclamation moved a lock to ${at} and could not put it back, and ${state}. ${changeNote(undefined)} Wait for that run to finish and remove ${at}, or start this run under a different --name.`;
+      ? `process ${contents.owner.pid} on ${printable(contents.host)} is still running under it. Wait for that run to finish; awcli stops refusing on that file by itself once its owner is gone, so it is not yours to remove while the run is going. Or start this run under a different --name.`
+      : `${undecidableBecause(contents, thisHost, verdict.reason)}. If that run is finished, remove ${at}; if it is not, wait for it, or start this run under a different --name.`;
+  return `awcli will not take the lock for the "${run}" run: there is a lock beside it at ${at}, left there either by a reclamation that could not put it back or by one that is still in progress elsewhere — it was still there after ${MAX_ATTEMPTS} attempts — and ${remedy} ${changeNote(reclaimed)}`;
 }
 
 function reclaimedMessage(

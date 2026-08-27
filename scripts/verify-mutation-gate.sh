@@ -88,6 +88,33 @@ if ! (mg_check_subject "src/runtime/run-lock.ts" >/dev/null 2>&1); then
   report "the harness refused an ordinary relative subject path"
 fi
 
+# ── A suite that never ran is not a suite that went red ──────────────────────────────────────
+#
+# `expect_red` took any non-zero exit as proof that a criterion is checked. vitest exits non-zero
+# for a mutation it cannot parse, printing `Tests  no tests` with not one assertion evaluated — so a
+# substitution that produced invalid TypeScript reported `ok` for a criterion nothing had looked at.
+# Crafted summaries rather than a real run: the predicate is what is under test here, and this
+# self-test deliberately never starts vitest.
+printf ' Test Files  1 failed (1)\n      Tests  1 failed | 52 passed (53)\n' >"$SANDBOX/red.log"
+printf ' Test Files  1 failed (1)\n      Tests  no tests\n' >"$SANDBOX/never-ran.log"
+# And a coloured one, with the escape falling between the count and the word so that it cannot match
+# by accident. vitest leaves this summary uncoloured when its output is a file, which is how the
+# gates run it — so this fixture is not describing what happens today. It is what keeps the
+# predicate's ANSI strip from being deleted as unused by someone who checked only the current
+# behaviour, and `FORCE_COLOR` in a shell is enough to need it.
+printf ' \e[31mTest Files  1 failed (1)\e[39m\n      Tests  \e[31m1\e[39m failed | 52 passed (53)\n' \
+  >"$SANDBOX/coloured.log"
+
+if ! mg_suite_reported_failures "$SANDBOX/red.log"; then
+  report "a suite that reported a failing test was not recognised as red"
+fi
+if mg_suite_reported_failures "$SANDBOX/never-ran.log"; then
+  report "a suite that never ran a test was accepted as red, so a broken mutation would print ok"
+fi
+if ! mg_suite_reported_failures "$SANDBOX/coloured.log"; then
+  report "a coloured vitest summary was not recognised as red"
+fi
+
 # ── A mutation that does not apply exactly once is refused ───────────────────────────────────
 #
 # In a subshell, because mg_mutate exits the script when it refuses — which is the behaviour under
@@ -126,4 +153,4 @@ if ((failed)); then
   exit 1
 fi
 
-echo "PASS: the harness isolates the checkout, keeps subjects out of it, restores each from its own backup, and refuses a mutation that does not apply exactly once"
+echo "PASS: the harness isolates the checkout, keeps subjects out of it, restores each from its own backup, refuses a mutation that does not apply exactly once, and tells a suite that went red from one that never ran"

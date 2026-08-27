@@ -19,12 +19,26 @@ import type {
  * the rest of that suite must run against a real filesystem or it proves nothing.
  */
 
-/** Set by a test to make the next staging write create its file and then fail. */
-let failNextWrite: { readonly code: string } | undefined;
+/**
+ * Set by a test to make a staging write create its file and then fail.
+ *
+ * `after` skips that many writes first, for the failures that have to land on a *later* attempt
+ * than the first — a reclamation has to happen before there is anything for the failure to report.
+ */
+let failNextWrite: { readonly code: string; readonly after?: number } | undefined;
 /** Set by a test to fail the `link` that puts a displaced lock back. */
 let failRestoringLink: { readonly code: string } | undefined;
 /** Set by a test to fail every `link`, as a filesystem without hard links does. */
 let failEveryLink: { readonly code: string } | undefined;
+/**
+ * Set by a test to fail the first `remaining` attempts to link a lock into place, with EEXIST.
+ *
+ * What a name being taken and released under this run looks like: the create is refused because
+ * something is there, and it has gone again by the time the lock is read. Not `failEveryLink`,
+ * which also fails the restore and the rescue create — the point here is that a *bounded* run of
+ * them ends with the lock taken rather than with a report of contention.
+ */
+let failLinkTimes: { readonly code: string; remaining: number } | undefined;
 /** Set by a test to fail the tidy-up of a staging file whose lock is already linked into place. */
 let failStagingUnlink: { readonly code: string } | undefined;
 /** Set by a test to fail the read of a lock that has just been renamed aside. */
@@ -45,6 +59,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     ) => {
       const failure = failNextWrite;
       if (failure === undefined) return real.writeFile(file, data, options);
+      if (failure.after !== undefined && failure.after > 0) {
+        failNextWrite = { code: failure.code, after: failure.after - 1 };
+        return real.writeFile(file, data, options);
+      }
       failNextWrite = undefined;
       // Create the file, as the real `wx` open would, then fail as a mid-write error does.
       await real.writeFile(file, "", { flag: "wx", mode: 0o600 });
@@ -55,6 +73,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       next: Parameters<typeof real.link>[1],
     ) => {
       if (failEveryLink !== undefined) throw faulted(failEveryLink.code);
+      // Only the links that put a *lock* in place; the restore's source is a set-aside file.
+      if (
+        failLinkTimes !== undefined &&
+        failLinkTimes.remaining > 0 &&
+        !String(existing).includes(".stale.")
+      ) {
+        failLinkTimes.remaining -= 1;
+        throw faulted(failLinkTimes.code);
+      }
       // The restore is the only `link` whose source is a set-aside lock.
       if (failRestoringLink !== undefined && String(existing).includes(".stale.")) {
         const failure = failRestoringLink;
@@ -67,8 +94,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
       file: Parameters<typeof real.readFile>[0],
       options?: Parameters<typeof real.readFile>[1],
     ) => {
-      // The set-aside name is the only path with `.stale.` in it that this unit reads inside an
-      // acquisition, and the leftover scan runs before any aside exists.
+      // The aside is the first path with `.stale.` in it that an acquisition reads: the leftover
+      // scan reads them too, but its first pass runs before any aside exists. One-shot, so a test
+      // faults exactly that read and the scan sees the file normally afterwards.
       if (failAsideRead !== undefined && String(file).includes(".stale.")) {
         const failure = failAsideRead;
         failAsideRead = undefined;
@@ -99,6 +127,7 @@ afterEach(async () => {
   failEveryLink = undefined;
   failStagingUnlink = undefined;
   failAsideRead = undefined;
+  failLinkTimes = undefined;
   await Promise.all(
     repositories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   );
@@ -311,6 +340,142 @@ describe("a set-aside lock that cannot be read back", () => {
     // Back where it was, byte for byte, and nothing left beside it.
     expect(await readFile(path, "utf8")).toBe(stale);
     expect((await readdir(dirname(path))).sort()).toEqual(["lock"]);
+  });
+});
+
+/**
+ * Mirrors `MAX_ATTEMPTS` in the source, which is not exported: nothing outside that module has any
+ * business branching on it, and these two tests need the boundary rather than the value — a run of
+ * refusals that ends and one that does not.
+ */
+const MAX_ATTEMPTS = 3;
+
+describe("a run name that keeps coming free between the create and the read", () => {
+  /**
+   * The other way the last attempt can leave the name takeable, and the one that had no test: a
+   * holder that releases while this run is looking. The rescue create after the loop was gated on
+   * `reclaimed`, so this route still fell out of the loop and threw with the name free and nothing
+   * holding it — the exact defect the gate was written for, on the half of it that had no coverage.
+   * Review's point. Ungated now, and it is one create with no judgement in it either way.
+   */
+  it("is taken by the create after the last attempt, not reported as contention", async () => {
+    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-freed-"));
+    repositories.push(repositoryPath);
+    const triage = runName("triage");
+    // Every attempt's create is refused as though something were there, and every read then finds
+    // nothing — so no attempt reaches a verdict and no reclamation happens.
+    failLinkTimes = { code: "EEXIST", remaining: MAX_ATTEMPTS };
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: triage,
+      probe: {
+        self: () => Promise.resolve(OPERATOR),
+        identify: () => Promise.resolve({ kind: "not-found" as const }),
+      },
+    });
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.ok && outcome.reclaimed).toBeUndefined();
+    expect(await readFile(runLockPath(repositoryPath, triage), "utf8")).toContain(
+      `"pid": ${OPERATOR.pid}`,
+    );
+  });
+
+  /**
+   * And when it never comes free, the message says which of the two routes was taken. It used to say
+   * the file "kept changing between the moment awcli looked at it and the moment it acted", which
+   * describes both routes and fits neither: a live holder repeatedly winning the race was reported
+   * as a churning file, sending the operator to look for something outside awcli. Review's point.
+   */
+  it("says the lock kept going rather than blaming something outside awcli", async () => {
+    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-exhausted-"));
+    repositories.push(repositoryPath);
+    const triage = runName("triage");
+    failLinkTimes = { code: "EEXIST", remaining: MAX_ATTEMPTS + 1 };
+
+    const failure = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: triage,
+      probe: {
+        self: () => Promise.resolve(OPERATOR),
+        identify: () => Promise.resolve({ kind: "not-found" as const }),
+      },
+    }).catch((error: unknown) => error);
+
+    expect(String(failure)).toContain("was gone again by the time awcli read it");
+    expect(String(failure)).toContain(runLockPath(repositoryPath, triage));
+    expect(String(failure)).toContain(`after ${MAX_ATTEMPTS} attempts`);
+  });
+});
+
+describe("a set-aside lock that has gone by the time it is read", () => {
+  /**
+   * Another process tidying up, or a filesystem that lost it. The judged lock is off the lock path
+   * either way, which is what the reclamation had to achieve — so this counts as a removal, and
+   * reporting it as a loss would drop the reclamation BR-035 requires be reported.
+   */
+  it("still counts as the reclamation it was, so the run reports it", async () => {
+    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-aside-gone-"));
+    repositories.push(repositoryPath);
+    const triage = runName("triage");
+    const path = runLockPath(repositoryPath, triage);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, lockBytes(DEAD), "utf8");
+
+    failAsideRead = { code: "ENOENT" };
+
+    const stack = new DisposalStack();
+    const outcome = await acquireRunLock(stack, {
+      repositoryPath,
+      runName: triage,
+      probe: {
+        self: () => Promise.resolve(OPERATOR),
+        identify: () => Promise.resolve({ kind: "not-found" as const }),
+      },
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.reclaimed?.reason).toBe("owner-gone");
+    expect(outcome.reclaimed?.previousOwner).toEqual(DEAD);
+    expect(await readFile(path, "utf8")).toContain(`"pid": ${OPERATOR.pid}`);
+    await stack.unwind();
+  });
+});
+
+describe("a failure that follows a reclamation", () => {
+  /**
+   * The stale lock is already destroyed by the time this throws, and the throw was the one exit that
+   * never carried the note saying so: the operator got a bare ENOSPC with no indication that a file
+   * had gone. BR-035's "never silent" has no exception for a run that went on to fail — review's
+   * point, and the same class as the refusal channel two rounds earlier.
+   */
+  it("reports the reclamation as well as the failure", async () => {
+    const repositoryPath = await mkdtemp(join(tmpdir(), "awcli-reclaim-fail-"));
+    repositories.push(repositoryPath);
+    const triage = runName("triage");
+    const path = runLockPath(repositoryPath, triage);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, lockBytes(DEAD), "utf8");
+
+    // The first attempt reclaims the stale lock; the write on the attempt after it fails.
+    failNextWrite = { code: "ENOSPC", after: 1 };
+
+    const failure = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: triage,
+      probe: {
+        self: () => Promise.resolve(OPERATOR),
+        identify: () => Promise.resolve({ kind: "not-found" as const }),
+      },
+    }).catch((error: unknown) => error);
+
+    expect(String(failure)).toContain("ENOSPC");
+    expect(String(failure)).toContain("Reclaimed a stale lock");
+    expect(String(failure)).toContain("Nothing else has been changed.");
+    // And the original failure is still reachable rather than replaced by the note.
+    expect((failure as { cause?: { code?: string } }).cause?.code).toBe("ENOSPC");
   });
 });
 

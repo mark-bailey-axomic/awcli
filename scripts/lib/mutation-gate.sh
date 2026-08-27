@@ -29,6 +29,7 @@ MG_STASH=""
 MG_ORIGIN=""
 MG_WORKDIR=""
 MG_EXIT_HOOKS=()
+MG_SUITE_LOG=""
 MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-5000}"
 
 # Where a subject's pristine copy lives, as a path mirroring the subject's own.
@@ -157,6 +158,9 @@ mutation_gate_init() {
   mg_isolate
 
   MG_BACKUP_DIR="$(mktemp -d)"
+  # Kept rather than discarded, so a suite that went red for the wrong reason can be looked at. In
+  # the backup directory, which is already removed on every exit path including a signal.
+  MG_SUITE_LOG="$MG_BACKUP_DIR/suite.log"
   local file
   for file in "${MG_SUBJECTS[@]}"; do
     mg_check_subject "$file"
@@ -224,7 +228,28 @@ mg_run_suite() {
     exit 1
   fi
   # shellcheck disable=SC2086 # MG_SUITE is deliberately word-split: it is a list of spec paths.
-  "$vitest" run $MG_SUITE --testTimeout="$MG_TEST_TIMEOUT_MS" >/dev/null 2>&1
+  "$vitest" run $MG_SUITE --testTimeout="$MG_TEST_TIMEOUT_MS" >"$MG_SUITE_LOG" 2>&1
+}
+
+# Did the suite actually run and report failing tests, or did it fail to run at all?
+#
+# The distinction the gates were missing. `expect_red` took any non-zero exit as proof that a
+# criterion is checked, and vitest exits non-zero for a mutation it cannot even parse — printing
+# `Tests  no tests` and a parse error, with not one assertion evaluated. So a mutation whose
+# substitution produced invalid TypeScript reported `ok` for a criterion nothing had looked at, which
+# is precisely the failure these scripts exist to catch, in the script doing the catching. Review
+# found it; reproduced by breaking a mutation on purpose before fixing.
+#
+# ANSI stripped first: vitest colours its summary even when its output is a file.
+mg_suite_reported_failures() {
+  perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$1" |
+    grep -qE '^[[:space:]]*Tests[[:space:]]+.*[0-9]+ failed'
+}
+
+# The last suite run's output, for a gate that has to explain itself.
+mg_suite_tail() {
+  [[ -f "$MG_SUITE_LOG" ]] || return 0
+  perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$MG_SUITE_LOG" | tail -n "${1:-25}"
 }
 
 # mg_mutate <criterion> <subject-file> <perl-substitution>...
@@ -294,6 +319,15 @@ expect_red() {
     echo "FAIL: the suite passes with '$criterion' broken — that criterion is not being checked" >&2
     exit 1
   fi
+  # Red is not enough: it has to be red because a *test* failed. See mg_suite_reported_failures.
+  if ! mg_suite_reported_failures "$MG_SUITE_LOG"; then
+    echo "FAIL: the suite did not pass with '$criterion' broken, but no test failed either." >&2
+    echo "      The mutation probably produced code that cannot be parsed or imported, so nothing" >&2
+    echo "      was asserted and this mutation proves nothing. Fix the substitution so that it" >&2
+    echo "      produces a plausible wrong implementation rather than a broken file." >&2
+    mg_suite_tail >&2
+    exit 1
+  fi
   echo "  ok: breaking '$criterion' turns the suite red"
 }
 
@@ -301,6 +335,7 @@ mutation_gate_finish() {
   mg_restore
   if ! mg_run_suite; then
     echo "FAIL: the suite does not pass on the restored tree — it was already broken" >&2
+    mg_suite_tail >&2
     exit 1
   fi
   echo "PASS: $1"
