@@ -37,6 +37,20 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * an audit that lists three discrepancies while a fourth stands is worse than one that lists
  * none.
  *
+ * git is the fifth, and it is the one this table got wrong rather than merely disagreed about. It
+ * named AWCLI-13, and AWCLI-13 has shipped — it provisions the working copy and hands back a handle
+ * carrying dir, branch, head and dirty. What it does not do is construct a context around one, which
+ * is AWCLI-11's loop, so the member stayed unbuilt while the id here pointed at finished work: an
+ * author feature-detecting `git`, getting false and reading the ticket id out of the refusal would
+ * have been sent to a ticket whose every box is ticked. Pointing it at AWCLI-11 is the honest half.
+ * The other half is worth writing down because nobody raised it: `git.log`, `git.diff` and
+ * `git.commit` are owned by no ticket at all. AWCLI-13 delivers the four members a workspace handle
+ * has and AWCLI-11 will expose them; the remaining three are commits and diffs, which no unit in the
+ * work breakdown claims. So this entry is accurate about who unblocks the member and still short of
+ * a plan for all of it — which is the same shape of gap as the four above, and is recorded here
+ * rather than closed quietly, because an audit that lists four discrepancies while a fifth stands is
+ * worse than one that lists none.
+ *
  * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
  * one that surprises people. A member added to the declaration and to CONTEXT_SURFACE fails to
  * compile here until someone says who builds it: Exclude<ContextMember, "version"> gains the
@@ -75,7 +89,7 @@ const DELIVERED_BY = {
   state: "AWCLI-09",
   args: "AWCLI-20",
   project: "AWCLI-06",
-  git: "AWCLI-13",
+  git: "AWCLI-11",
   exec: "AWCLI-25",
   fs: "AWCLI-23",
   log: "AWCLI-21",

@@ -288,7 +288,7 @@ tickets:
     points: 3
     work_breakdown: WB-8
     depends_on: [AWCLI-03, AWCLI-07]
-    status: todo
+    status: done
   - id: AWCLI-14
     path: tickets/AWCLI-14-worktree-reuse-and-resume.md
     title: "[AWCLI] Reuse, resume and fresh start"

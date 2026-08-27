@@ -109,18 +109,30 @@ expect_red "the derived run name is deterministic" src/runtime/run-identity.ts \
   's/  if \(slug\.length === 0\) \{/  slug = (slug + "-" + process.hrtime.bigint()).slice(0, 60);\n  if (slug.length === 0) {/'
 
 # ── A run name may not collide with the layout's own paths, or with git's ref rules ─────────
+# The four mutations below — reserved, `.lock`, case, and the unfiltered echo — are anchored inside
+# `firstProblem` and its message table, since the run name's ladder and a slot's became one ladder
+# with two message tables: AWCLI-13 needs the same rules for a slot, and a second hand-written copy
+# would have been a weaker copy. Two consequences, and the second is the one worth writing down.
+#
+# Each still proves the run name's criterion, because this gate's suite is the run name's own:
+# run-identity.test.ts asserts the problem discriminant for each of these rungs against a run name,
+# so breaking the rung turns it red on that evidence alone. What none of them proves is anything
+# about a *slot* — the mirror of the note at the same section of verify-workspace-gate.sh, which
+# cannot prove the run-name half. Neither gate is short a check; the two suites are, between them,
+# where both halves are asserted. What would be wrong is reading either set of mutations as covering
+# both kinds of name because the code they break is now shared.
 expect_red "a reserved run name is refused" src/runtime/run-identity.ts \
-  's/  if \(RESERVED_RUN_NAMES\.includes\(name\)\) \{/  if (false) {/'
+  's/  if \(reserved\.includes\(name\)\) return "reserved";/  if (false) return "reserved";/'
 
 # `.lock` passes the edge-character rule because `k` is a letter, so it needs its own check — git
 # refuses the branch at creation time, after the run has taken its lock and started work.
 expect_red "a name git will refuse as a branch is refused here" src/runtime/run-identity.ts \
-  's/  if \(name\.endsWith\("\.lock"\)\) \{/  if (false) {/'
+  's/  if \(name\.endsWith\("\.lock"\)\) return "git-reserved-suffix";/  if (false) return "git-reserved-suffix";/'
 
 # A directory on a case-insensitive filesystem and a branch on a case-sensitive one must agree, or
 # `Triage` and `triage` are one lock file and two branches.
 expect_red "a run name that only differs by case is refused" src/runtime/run-identity.ts \
-  's/  if \(name !== name\.toLowerCase\(\)\) \{/  if (false) {/'
+  's/  if \(name !== name\.toLowerCase\(\)\) return "not-lowercase";/  if (false) return "not-lowercase";/'
 
 # ── Defects in the lock's own reasoning ─────────────────────────────────────────────────────
 #
@@ -376,7 +388,7 @@ expect_red "a leftover is named without what a terminal would act on" src/runtim
 # The name a run was refused for, echoed back with its control characters — in the branch that
 # refuses a name *for* holding one.
 expect_red "a refused run name is not echoed back unfiltered" src/runtime/run-identity.ts \
-  's/      `"\$\{printable\(name\)\}" is not usable as a run name/      `"\${name}" is not usable as a run name/'
+  's/        `"\$\{printable\(name\)\}" is not usable as a run name/        `"\${name}" is not usable as a run name/'
 
 # The derived-name refusal forwarding the remedy from the validator as well as its reason, so the
 # operator is told to choose another name for a name they never chose.
