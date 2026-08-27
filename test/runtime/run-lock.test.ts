@@ -1036,3 +1036,131 @@ describe("refusing rather than guessing", () => {
     ).rejects.toThrow(/symbolic link/);
   });
 });
+
+/**
+ * How many stale locks the competitor in the test below plants: one for each attempt the
+ * acquisition is allowed, so every round it takes ends in a reclamation and none in a lock.
+ */
+const MAX_PLANTINGS = 3;
+
+describe("a reclamation on the last attempt", () => {
+  /**
+   * The loop as first written fell straight out of its final round: if that round reclaimed a
+   * stale lock, the file was deleted, the path was left free, no lock was taken, and the operator
+   * was told the name was "being taken and released repeatedly by other processes" — while nothing
+   * held it at all. The reclamation was both wasted and misreported.
+   */
+  it("is used rather than discarded, so the run gets the name it just freed", async () => {
+    const repositoryPath = await repository();
+    const path = runLockPath(repositoryPath, TRIAGE);
+
+    let plantings = 0;
+    const probe: ProcessProbe = {
+      // Plants a fresh stale lock immediately before each of the first three creates, and then
+      // stops. Every attempt therefore finds a lock, judges it stale and reclaims it; the path is
+      // free after the last one and only the create is missing.
+      self: async () => {
+        if (plantings < MAX_PLANTINGS) {
+          plantings += 1;
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(
+            path,
+            `${JSON.stringify({
+              run: TRIAGE,
+              // A different start time each round, so the bytes differ and no round could be
+              // passing by reusing an earlier judgement.
+              owner: { pid: 9500, startedAt: 1_600_000_000_000 + plantings },
+              acquiredAt: Date.now(),
+              host: HERE,
+            })}\n`,
+            "utf8",
+          );
+        }
+        return OPERATOR;
+      },
+      identify: async (pid): Promise<ProbeAnswer> =>
+        pid === OPERATOR.pid
+          ? { kind: "running", identity: OPERATOR }
+          : { kind: "not-found" },
+    };
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe,
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.reclaimed?.reason).toBe("owner-gone");
+    expect((await readLockFile(repositoryPath, TRIAGE)).owner).toEqual(OPERATOR);
+  });
+});
+
+describe("printing what a lock file says", () => {
+  /** Anything a terminal would act on rather than display. */
+  const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+  async function plant(
+    repositoryPath: string,
+    contents: Record<string, unknown>,
+  ): Promise<void> {
+    const path = runLockPath(repositoryPath, TRIAGE);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, `${JSON.stringify(contents)}\n`, "utf8");
+  }
+
+  /**
+   * The lock is a file in the repository, so a commit can put anything in it. Escape sequences in
+   * `host` went straight to the terminal, which means a repository could show an operator a
+   * refusal that says whatever it likes — including one that looks like it came from awcli.
+   */
+  it("strips what a terminal would act on out of a hostname", async () => {
+    const repositoryPath = await repository();
+    await plant(repositoryPath, {
+      run: "triage",
+      owner: { pid: 12_345, startedAt: 1_600_000_000_000 },
+      acquiredAt: Date.now(),
+      host: "\u001b[2J\u001b[1;31mattacker",
+    });
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(OPERATOR),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("undecidable");
+    expect(outcome.message).not.toMatch(CONTROL);
+    // Still says which host, so the operator can act on it.
+    expect(outcome.message).toContain("attacker");
+  });
+
+  /**
+   * `new Date(x).toISOString()` throws RangeError out of range, and `acquiredAt` is a number off
+   * disk. A refusal that throws while formatting itself reaches the operator as a stack trace
+   * instead of as the reason their run will not start.
+   */
+  it("says a lock's acquisition time is unreadable instead of throwing on it", async () => {
+    const repositoryPath = await repository();
+    await plant(repositoryPath, {
+      run: "triage",
+      owner: OPERATOR,
+      acquiredAt: 1e21,
+      host: HERE,
+    });
+
+    const outcome = await acquireRunLock(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      probe: fakeProbe(SCHEDULER, [OPERATOR]),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("held");
+    expect(outcome.message).toContain("an unreadable time");
+  });
+});

@@ -23,7 +23,7 @@ cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 
 mutation_gate_init \
-  "test/runtime/run-lock.test.ts test/runtime/run-identity.test.ts test/runtime/process-probe.test.ts test/runtime/run-lock-staging.test.ts" \
+  "test/runtime/run-lock.test.ts test/runtime/run-identity.test.ts test/runtime/process-probe.test.ts test/runtime/process-probe-ps.test.ts test/runtime/run-lock-fs-faults.test.ts" \
   src/runtime/run-lock.ts src/runtime/run-identity.ts src/runtime/process-probe.ts
 
 # ── Scenario: Two runs of the same name cannot overlap ───────────────────────────────────────
@@ -188,5 +188,55 @@ expect_red "the ancestor walk stays inside the repository" src/runtime/run-lock.
 # deleted a file. The same defect as the two refusal messages a round earlier, missed here.
 expect_red "no message hardcodes a claim that nothing changed" src/runtime/run-lock.ts \
   's/processes\. \$\{changeNote\(reclaimed\)\} Try again\.`/processes. Nothing has been changed; try again.`/'
+
+# ── Found in the second full review round: the eight defects in the remediation itself ───────
+# Two of these were the blockers, and both were introduced by the fix for an earlier one. The
+# pattern is worth naming: the dangerous code on this ticket has consistently been the error
+# handling of a correction, not the original mistake.
+
+# The set-aside lock is deleted even when it could not be put back — so a live run's lock vanishes
+# rather than being displaced, and the next run takes the name alongside it. This is the `finally`
+# the first version had.
+expect_red "a lock that could not be put back is left on disk" src/runtime/run-lock.ts \
+  's/    throw new Error\(\n      `awcli set the lock for a run at/    await unlink(aside).catch(ignoreCleanupFailure);\n    throw new Error(\n      `awcli set the lock for a run at/'
+
+# Tidying up the staging file becomes the outcome of an acquisition that already succeeded, so a
+# lock is taken and then reported as a failure — and nothing ever releases it.
+expect_red "tidying up cannot turn a lock that was taken into a failure" src/runtime/run-lock.ts \
+  's/    await unlink\(staging\)\.catch\(ignoreCleanupFailure\);/    await unlink(staging).catch(ignoreMissing);/'
+
+# The reclamation on the final attempt is thrown away: the stale lock is deleted, the path is left
+# free, and the operator is told the name is being fought over when nothing holds it.
+expect_red "a reclamation on the last attempt is used, not discarded" src/runtime/run-lock.ts \
+  's/      if \(reclaimed !== undefined\) \{\n        await refuseSymlink/      if (false) {\n        await refuseSymlink/'
+
+# A filesystem that answers ENOTSUP or EMLINK reaches the operator as a bare errno.
+expect_red "a filesystem that will not hard-link is explained" src/runtime/run-lock.ts \
+  's/      isErrno\(error, "ENOTSUP"\) \|\|\n/\n/' \
+  's/    if \(isErrno\(error, "EMLINK"\)\) \{/    if (false) {/'
+
+# A lock file's bytes go straight to the terminal, so a repository can repaint an operator's screen
+# and show them a refusal awcli never wrote.
+expect_red "a lock file's bytes are not printed to the terminal unfiltered" src/runtime/run-lock.ts \
+  's/  const stripped = value\.replace\(/  const stripped = String(/'
+
+# A refusal throws while formatting itself, because `acquiredAt` came off disk.
+expect_red "a lock's unreadable acquisition time is reported, not thrown on" src/runtime/run-lock.ts \
+  's/  return Number\.isFinite\(at\.getTime\(\)\)/  return true || Number.isFinite(at.getTime())/'
+
+# `ps` exiting 1 is trusted on its own. busybox's `ps` does not take `-o lstart=` and exits 1 saying
+# so, which would evict a live owner's lock on every ask in any image that ships it.
+expect_red "a ps that refuses the question does not read as 'no such process'" src/runtime/process-probe.ts \
+  's/    if \(failure\.code === 1 && failure\.killed !== true && complaint\.length === 0\) \{/    if (failure.code === 1 \&\& failure.killed !== true) {/'
+
+# The locale pin. Anchored on a mutation the mocked adapter suite catches on every platform: the
+# real-locale test can only run where the C library has fr_FR, which is not most of CI.
+expect_red "the locale of the question is pinned" src/runtime/process-probe.ts \
+  's/      env: \{ \.\.\.process\.env, LC_ALL: "C" \},/      env: { ...process.env },/'
+
+# An id no operating system can assign is asked about anyway, and `ps` complaining about it now
+# comes back as "could not decide" — a refusal no operator can clear.
+expect_red "an out-of-range process id is answered without asking" src/runtime/process-probe.ts \
+  's/ \|\| pid > PID_CEILING//'
 
 mutation_gate_finish "each run-lock criterion has a test that fails when it is broken"

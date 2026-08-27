@@ -101,6 +101,16 @@ export async function livenessOf(
 const PS_TIMEOUT_MS = 2_000;
 
 /**
+ * The largest number any supported OS hands out as a process id.
+ *
+ * Linux's hard ceiling (`PID_MAX_LIMIT`, 2^22); macOS stays far below it. Deliberately a constant
+ * rather than a read of `/proc/sys/kernel/pid_max`, which an administrator can lower — a lock
+ * recording a pid above the *current* limit is still junk, and reading the limit would make the
+ * answer depend on a setting that can change between the write and the read.
+ */
+const PID_CEILING = 2 ** 22;
+
+/**
  * Reads a process's start time from `/proc`, the way Linux exposes it.
  *
  * Field 22 of `/proc/<pid>/stat` is the start time in clock ticks since boot. Converting it to
@@ -163,8 +173,12 @@ async function procIdentify(pid: number): Promise<ProbeAnswer> {
  * `mer. 26 août 19:52:19 2026`, which parses as NaN — so on a French-locale machine every
  * `self()` threw and no run could ever take a lock. `de_DE` parsed only by luck of its
  * abbreviations. Pinning the locale is what makes the format a contract instead of a coincidence.
+ *
+ * Exported for the test that checks the pin, which has to call this on Linux too — where
+ * `identify` goes to `/proc` and never reaches here, so a suite that went through `identify`
+ * asserted nothing at all on the platform most of CI runs on.
  */
-async function psIdentify(pid: number): Promise<ProbeAnswer> {
+export async function psIdentify(pid: number): Promise<ProbeAnswer> {
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)], {
@@ -177,9 +191,18 @@ async function psIdentify(pid: number): Promise<ProbeAnswer> {
       code?: string | number;
       killed?: boolean;
       signal?: string;
+      stderr?: string;
     };
-    // `ps -p` on an id nothing holds exits 1 with no output. That is the answer.
-    if (failure.code === 1 && failure.killed !== true) return { kind: "not-found" };
+    // `ps -p` on an id nothing holds exits 1 with no output. That is the answer — but only when it
+    // said nothing on the way out. Review flagged trusting the status alone: a `ps` that does not
+    // take `-o lstart=` at all, busybox's being the one that ships in container images, also exits
+    // 1, and reading that as "no such process" evicts a *live* owner's lock on every ask. An
+    // unrecognised option is a question that could not be put, and it is distinguishable because
+    // it is the one that complains first.
+    const complaint = (failure.stderr ?? "").trim();
+    if (failure.code === 1 && failure.killed !== true && complaint.length === 0) {
+      return { kind: "not-found" };
+    }
     // Everything else is a question that could not be asked: `ps` absent from the image
     // (ENOENT), the timeout above (killed), EAGAIN from fork on a loaded box.
     return {
@@ -187,7 +210,9 @@ async function psIdentify(pid: number): Promise<ProbeAnswer> {
       reason:
         failure.killed === true
           ? `ps did not answer within ${PS_TIMEOUT_MS}ms`
-          : `ps could not be run (${String(failure.code ?? error)})`,
+          : complaint.length > 0
+            ? `ps refused the question (${complaint.split("\n")[0]})`
+            : `ps could not be run (${String(failure.code ?? error)})`,
     };
   }
 
@@ -248,7 +273,11 @@ export const systemProcessProbe: ProcessProbe = {
   },
 
   async identify(pid: number): Promise<ProbeAnswer> {
-    if (!Number.isInteger(pid) || pid <= 0) {
+    // Out of range before it is asked about. A number no operating system can assign as a process
+    // id is not a process, and asking anyway makes `ps` complain — which, now that a complaint on
+    // stderr is read as "the question could not be put", would come back as `undecidable` and turn
+    // a lock holding junk into a refusal no operator could clear.
+    if (!Number.isInteger(pid) || pid <= 0 || pid > PID_CEILING) {
       return { kind: "not-found" };
     }
     return process.platform === "linux" ? procIdentify(pid) : psIdentify(pid);

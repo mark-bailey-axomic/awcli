@@ -1,11 +1,39 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   forgetOwnIdentity,
   livenessOf,
+  psIdentify,
   systemProcessProbe,
   type ProcessIdentity,
 } from "../../src/runtime/process-probe.js";
+
+const execFileAsync = promisify(execFile);
+
+/** A locale whose `lstart` `Date.parse` cannot read, where the C library has it. */
+const FRENCH = "fr_FR.UTF-8";
+
+/**
+ * What `ps` prints for this process under a locale, with nothing pinned.
+ *
+ * Empty when `ps` will not answer at all. This exists so the locale test can establish that the
+ * locale it is using actually changes the output on *this* machine before asserting anything about
+ * the pin: a locale the C library has not been given falls back to C, and then the assertion holds
+ * whether the adapter pins anything or not.
+ */
+async function lstartUnder(locale: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      "ps",
+      ["-o", "lstart=", "-p", String(process.pid)],
+      { encoding: "utf8", env: { ...process.env, LC_ALL: locale, LC_TIME: locale } },
+    );
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
 
 /**
  * The lock's own tests drive every decision through a substitute probe, so this suite is what
@@ -36,28 +64,42 @@ describe("asking the operating system who is running", () => {
   });
 
   /**
-   * `-o lstart=` prints a *localised* time on macOS, and `Date.parse` understands only the C one.
-   * Under fr_FR the same process reports `mer. 26 août ...`, which parses as NaN — so every
-   * `self()` threw and no run could take a lock at all. The adapter pins LC_ALL; this asserts the
-   * pinning works by asking under a locale that would otherwise break it.
+   * `-o lstart=` prints a *localised* time, and `Date.parse` understands only the C one. Under
+   * fr_FR the same process reports `mer. 26 août ...`, which parses as NaN — so every `self()`
+   * threw and no run could take a lock at all. The adapter pins LC_ALL; this asks under a locale
+   * that would otherwise break it.
+   *
+   * Two things review was right about in the first version of this test. It went through
+   * `identify`, which on Linux reads `/proc` and never reaches `ps` at all — so on the platform
+   * most of CI runs on it asserted nothing, and the mutation that removes the pin would not have
+   * turned it red. And it passed on a machine whose C library has never been given fr_FR, because
+   * `ps` then falls back to C and prints something parseable regardless. So: `psIdentify` directly,
+   * and the localisation is *established* first, with an explicit skip when it cannot be. A test
+   * that cannot fail must say so rather than print a tick.
    */
-  it("answers under a locale whose date format Date.parse cannot read", async () => {
-    const previous = process.env["LC_ALL"];
-    const previousTime = process.env["LC_TIME"];
-    process.env["LC_ALL"] = "fr_FR.UTF-8";
-    process.env["LC_TIME"] = "fr_FR.UTF-8";
+  it("answers under a locale whose date format Date.parse cannot read", async (ctx) => {
+    const localised = await lstartUnder(FRENCH);
+    if (localised.length === 0 || Number.isFinite(Date.parse(localised))) {
+      ctx.skip(
+        `this machine's ps does not localise lstart under ${FRENCH} (it printed "${localised}"), so the pin cannot be observed here`,
+      );
+      return;
+    }
+
+    const previous = { all: process.env["LC_ALL"], time: process.env["LC_TIME"] };
+    process.env["LC_ALL"] = FRENCH;
+    process.env["LC_TIME"] = FRENCH;
     try {
-      forgetOwnIdentity();
-      const answer = await systemProcessProbe.identify(process.pid);
+      const answer = await psIdentify(process.pid);
       expect(answer.kind).toBe("running");
       if (answer.kind !== "running") return;
       expect(Number.isFinite(answer.identity.startedAt)).toBe(true);
       expect(answer.identity.startedAt).toBeLessThanOrEqual(Date.now());
     } finally {
-      if (previous === undefined) delete process.env["LC_ALL"];
-      else process.env["LC_ALL"] = previous;
-      if (previousTime === undefined) delete process.env["LC_TIME"];
-      else process.env["LC_TIME"] = previousTime;
+      if (previous.all === undefined) delete process.env["LC_ALL"];
+      else process.env["LC_ALL"] = previous.all;
+      if (previous.time === undefined) delete process.env["LC_TIME"];
+      else process.env["LC_TIME"] = previous.time;
       forgetOwnIdentity();
     }
   });

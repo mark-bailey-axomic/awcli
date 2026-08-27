@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import type { Acquisition, DisposalStack } from "./disposal.js";
 import {
   livenessOf,
@@ -212,12 +213,7 @@ export async function acquireRunLock(
         // and ENOENT to `readFile` at the same time — the pair that used to spin here for ever.
         await refuseSymlink(path, "lock");
 
-        const contents: RunLockContents = {
-          run: request.runName,
-          owner: await probe.self(),
-          acquiredAt: Date.now(),
-          host: hostname(),
-        };
+        const contents = await freshContents(request, probe);
 
         if (await writeIfAbsent(path, contents)) {
           return { run: request.runName, path, contents };
@@ -229,8 +225,18 @@ export async function acquireRunLock(
         if (existing.kind === "absent") continue;
 
         // A lock nobody can parse is reclaimable, because `writeIfAbsent` links a complete file
-        // into place: a live run cannot have left this. Anything else is decided by asking after
-        // the owner — never by the lock's age, which is why a three-hour run keeps its lock.
+        // into place: no awcli run can have left this behind. Note the limit of that reasoning,
+        // which an earlier comment here overstated as "a live run cannot have left this" — it is a
+        // statement about awcli's writer, not about the file. Something else that rewrites files
+        // in the repository, a sync client mid-transfer being the realistic one, can truncate a
+        // *live* run's lock, and then this reclaims it and two runs share the name. There is
+        // nothing left in a truncated file to tell that case apart from an interrupted write, so
+        // no check here can separate them, and refusing instead would turn any garbage at this
+        // path into a manual intervention — which is the opposite of what BR-035 asks for. The
+        // message says what is actually known rather than implying more.
+        //
+        // Everything else is decided by asking after the owner — never by the lock's age, which is
+        // why a three-hour run keeps its lock.
         const liveness: Liveness =
           existing.kind !== "lock"
             ? "gone"
@@ -278,6 +284,18 @@ export async function acquireRunLock(
           // The file at the path changed between the judgement and the removal, the removal was
           // undone, and this attempt has no verdict. Round again rather than guess.
           continue;
+        }
+      }
+
+      // A reclamation on the final round leaves the path free, and the loop as first written fell
+      // straight out of it: the stale lock was deleted, no lock was taken, and the operator was
+      // told the name was being fought over by other processes when in fact nothing held it. One
+      // more create — bounded, no further judgement — is all that state needs.
+      if (reclaimed !== undefined) {
+        await refuseSymlink(path, "lock");
+        const contents = await freshContents(request, probe);
+        if (await writeIfAbsent(path, contents)) {
+          return { run: request.runName, path, contents };
         }
       }
 
@@ -388,14 +406,37 @@ async function writeIfAbsent(path: string, contents: RunLockContents): Promise<b
     // A filesystem without hard links — some network and fuse mounts — cannot give the atomic
     // create this depends on. Say so, rather than letting an errno reach the operator: the
     // remedy is to put the repository somewhere else, and no message derived from EPERM says that.
-    if (isErrno(error, "EPERM") || isErrno(error, "ENOSYS") || isErrno(error, "EXDEV")) {
+    // ENOTSUP and EOPNOTSUPP are the same answer as ENOSYS from a different filesystem — added
+    // after review pointed out the list was short of the codes fuse and SMB mounts actually
+    // return, which would have reached the operator as a bare errno on exactly the mounts this
+    // message was written for.
+    if (
+      isErrno(error, "EPERM") ||
+      isErrno(error, "ENOSYS") ||
+      isErrno(error, "ENOTSUP") ||
+      isErrno(error, "EOPNOTSUPP") ||
+      isErrno(error, "EXDEV")
+    ) {
       throw new Error(
         `awcli cannot create a run lock at ${path}: this filesystem does not support hard links, which is how the lock is made exclusive. Run against a repository on a local filesystem.`,
       );
     }
+    // A different remedy, so a different message: the link count is exhausted rather than the
+    // operation unsupported, and telling someone to move the repository would not help.
+    if (isErrno(error, "EMLINK")) {
+      throw new Error(
+        `awcli cannot create a run lock at ${path}: the filesystem reports too many links here. Clear out leftover .staging or .stale files in that directory and run again.`,
+      );
+    }
     throw error;
   } finally {
-    await unlink(staging).catch(ignoreMissing);
+    // Best effort, and deliberately not `ignoreMissing`. On the success path the lock is already
+    // linked into place, so a failing unlink here — EIO, a read-only remount — would throw *out of
+    // a successful acquisition*, leaving a lock on disk that nothing will ever release: the run
+    // name would be unusable until someone deleted the file by hand. A leftover
+    // `.staging.<uuid>` is inert by comparison. On the failure paths an exception from a `finally`
+    // would replace the real error, which is worse than the litter either way.
+    await unlink(staging).catch(ignoreCleanupFailure);
   }
 }
 
@@ -403,10 +444,14 @@ async function writeIfAbsent(path: string, contents: RunLockContents): Promise<b
  * Refuses a symlink where awcli expects a real file or directory.
  *
  * The whole path down to the lock is attack-shaped: a repository can carry a committed symlink at
- * `.awcli`, at `.awcli/run`, at the run directory, or at the lock itself, and following any of them
- * would put the lock — and the removal of the lock — wherever it points. A dangling one is worse
- * than a misdirected one, because it answers EEXIST and ENOENT at the same time and the acquisition
- * loop used to spin on the pair.
+ * `.awcli`, at `.awcli/run`, at the run directory, or at the lock itself. What that buys an attacker
+ * differs between the two cases, and an earlier version of this comment ran them together — review
+ * was right that it did. A symlink at a *directory* level is followed by `mkdir` with `recursive`,
+ * so the run directory and the lock are created wherever it points, outside the repository. A
+ * symlink at the *lock path* is not followed by `link`, `rename` or `unlink`, which operate on the
+ * link itself — but it is followed by `readFile`, so an unrelated file elsewhere on disk gets read
+ * as this run's lock, and a dangling one answers EEXIST to `link` and ENOENT to `readFile` at the
+ * same time, which is the pair the acquisition loop used to spin on for ever.
  */
 async function refuseSymlink(path: string, what: string): Promise<void> {
   // Annotated: an unannotated `let` assigned inside a `try` is an implicit `any`, which would hide
@@ -509,10 +554,14 @@ function staleReasonFrom(read: LockRead, liveness: Liveness): StaleReason {
  * which is what the Linux CI leg was for. A lock's bytes carry its pid, start time, host and
  * acquisition instant, so two distinct acquisitions cannot collide the way two inode numbers can.
  *
- * The residual window is the one between the rename and the restoring link, which is two syscalls
- * rather than a subprocess spawn. If a third process links its own lock into that gap the restore
- * fails, and this throws rather than proceeding: at that point the tree is in a state no run should
- * build on, and saying so is better than taking a lock over it.
+ * The window between the rename and the restoring link is not small, and an earlier version of this
+ * comment claimed it was — "two syscalls rather than a subprocess spawn", written before the
+ * re-judgement below was added, which reads the set-aside file and may spawn `ps` inside exactly
+ * that window. Review caught the comment still saying it. What the code actually guarantees is
+ * narrower and worth stating plainly: if a third process links its own lock into the gap, this
+ * throws rather than proceeding, and the displaced lock is left on disk under its set-aside name
+ * rather than deleted. At that point the tree is in a state no run should build on, and saying so —
+ * with the path of the file that was moved — is better than taking a lock over it.
  */
 async function removeExactly(
   path: string,
@@ -568,18 +617,27 @@ async function removeExactly(
     };
   }
 
+  // Only on the success path. The first version put this in a `finally`, which runs on the throw
+  // paths too — so a restore that failed for any reason at all ended with the live lock deleted
+  // rather than merely displaced, and the next run took the name alongside a process still
+  // working under it. That is the BR-010 double-writer this whole function exists to prevent,
+  // reached through the error handling of the fix for it. Reported by review; the two throws below
+  // now leave the displaced lock on disk under its set-aside name, where an operator can see it and
+  // where nothing mistakes it for the lock for this run.
   try {
     await link(aside, path);
   } catch (error) {
     if (isErrno(error, "EEXIST")) {
       throw new Error(
-        `The lock for a run at ${path} was replaced by another process while awcli was reclaiming it, and the live lock it displaced could not be put back. Nothing further has been changed. Check for a run still in progress before starting another.`,
+        `The lock for a run at ${path} was replaced by another process while awcli was reclaiming it, and the live lock it displaced could not be put back — it is at ${aside}. A run may still be in progress under it: check before starting another, then remove that file.`,
       );
     }
-    throw error;
-  } finally {
-    await unlink(aside).catch(ignoreMissing);
+    throw new Error(
+      `awcli set the lock for a run at ${path} aside while reclaiming it and could not put it back (${errnoOf(error) ?? String(error)}). The displaced lock is at ${aside}. A run may still be in progress under it: check before starting another, then remove that file.`,
+      { cause: error },
+    );
   }
+  await unlink(aside).catch(ignoreCleanupFailure);
   return { kind: "disturbed" };
 }
 
@@ -642,12 +700,26 @@ function changeNote(reclaimed: Reclamation | undefined): string {
     : `${reclaimed.message} Nothing else has been changed.`;
 }
 
+/**
+ * The acquisition instant, as a string, for a value that came off disk.
+ *
+ * `new Date(x).toISOString()` throws RangeError for anything out of range, and `acquiredAt` is a
+ * number a commit can contain. A refusal that throws while formatting itself would reach the
+ * operator as a stack trace instead of as the explanation of why their run will not start.
+ */
+function acquiredAtText(holder: RunLockContents): string {
+  const at = new Date(holder.acquiredAt);
+  return Number.isFinite(at.getTime())
+    ? at.toISOString()
+    : `an unreadable time (${printable(String(holder.acquiredAt))})`;
+}
+
 function heldMessage(
   run: string,
   holder: RunLockContents,
   reclaimed: Reclamation | undefined,
 ): string {
-  return `The "${run}" run is already in progress: process ${holder.owner.pid} on ${holder.host} has held its lock since ${new Date(holder.acquiredAt).toISOString()}. ${changeNote(reclaimed)} Wait for it to finish, or start this run under a different --name.`;
+  return `The "${run}" run is already in progress: process ${holder.owner.pid} on ${printable(holder.host)} has held its lock since ${acquiredAtText(holder)}. ${changeNote(reclaimed)} Wait for it to finish, or start this run under a different --name.`;
 }
 
 function undecidableMessage(
@@ -659,7 +731,7 @@ function undecidableMessage(
   const where =
     holder.host === thisHost
       ? `whether process ${holder.owner.pid} is still running could not be established on this machine`
-      : `its lock was taken on "${holder.host}", not on this machine ("${thisHost}"), so a process id in it means nothing here`;
+      : `its lock was taken on "${printable(holder.host)}", not on this machine ("${thisHost}"), so a process id in it means nothing here`;
   return `awcli will not take the lock for the "${run}" run: ${where}. ${changeNote(reclaimed)} If that run is finished, remove ${RUNTIME_ROOT_HINT}'s lock for it, or start this run under a different --name.`;
 }
 
@@ -675,25 +747,77 @@ function reclaimedMessage(
       ? `${owner} is no longer running — the run it belonged to was killed or the machine restarted`
       : reason === "owner-replaced"
         ? `the process id it recorded now belongs to a different process, so ${owner} is gone`
-        : "the lock file could not be read as a lock, and a live run never leaves it that way";
+        : "the lock file could not be read as a lock, and awcli only ever puts a complete one there";
   return `Reclaimed a stale lock on the "${run}" run: ${why}.`;
 }
 
+/**
+ * Waits between attempts, and keeps the event loop alive while it waits.
+ *
+ * The first version unref'd this timer, copying the pattern from `disposal.ts` — where it is
+ * correct, because those timers are timeout races that must not by themselves hold a process open.
+ * Here the delay is the thing the acquisition is waiting *on*, and an unref'd timer with nothing
+ * else pending lets node decide the loop is empty and exit. Reproduced from a child process before
+ * fixing: against a real stale lock, `acquireRunLock` reclaimed it and then never returned at all —
+ * no lock, no refusal, no error, exit 13 on an unsettled await. That is the ordinary BR-035
+ * reclaim path, and it hits every other route round the loop too.
+ *
+ * The suite cannot see this, because vitest holds the event loop open for it. Which is why the
+ * gate for it runs node directly: `scripts/verify-acquisition-returns.sh`.
+ */
 function pause(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
-  });
+  return sleep(ms);
+}
+
+/** What this process would write into a lock right now. */
+async function freshContents(
+  request: RunLockRequest,
+  probe: ProcessProbe,
+): Promise<RunLockContents> {
+  return {
+    run: request.runName,
+    owner: await probe.self(),
+    acquiredAt: Date.now(),
+    host: hostname(),
+  };
 }
 
 function isErrno(error: unknown, code: string): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === code
-  );
+  return errnoOf(error) === code;
+}
+
+function errnoOf(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
 }
 
 function ignoreMissing(error: unknown): void {
   if (!isErrno(error, "ENOENT")) throw error;
 }
+
+/**
+ * Swallows a failure to tidy up.
+ *
+ * Only for removing this process's own scratch files after the outcome is already decided. See
+ * `writeIfAbsent` for why an error from that cannot be allowed to become the outcome.
+ */
+function ignoreCleanupFailure(): void {}
+
+/**
+ * A string from a lock file, safe to put in a message.
+ *
+ * The lock is a file in the repository, so its `host` and `run` arrive from disk and can be
+ * anything a commit can contain. Printed straight to a terminal, an escape sequence in one of them
+ * repaints the screen, and the operator can be shown a refusal that says something awcli never
+ * said. Control characters go, and the length is capped: a hostname is not 4kB long, and a message
+ * that scrolls the real explanation off the screen has failed at the only job it has.
+ */
+function printable(value: string): string {
+  const stripped = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "?");
+  return stripped.length > PRINTABLE_LIMIT
+    ? `${stripped.slice(0, PRINTABLE_LIMIT)}...`
+    : stripped;
+}
+
+const PRINTABLE_LIMIT = 64;

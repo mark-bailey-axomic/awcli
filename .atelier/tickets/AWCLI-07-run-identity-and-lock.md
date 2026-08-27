@@ -166,5 +166,80 @@ names differing only by case are refused, both of which git or a case-insensitiv
 otherwise refuse later, after the run had started work; the staging file is keyed by UUID with
 `wx`, so two acquisitions in one millisecond cannot truncate an already-linked live lock through a
 shared inode; a refusal that reclaimed on the way reports it and no longer claims nothing changed;
-and the gate harness is shared with the disposal gate rather than copied, with every substitution
-counted so a half-applied mutation fails instead of printing `ok`.
+and the gate harness is shared with the disposal gate rather than copied.
+
+A sixth round — a second full review — found eight more, and the two blockers were again in the
+remediation rather than in the original code. That pattern is the most useful thing this ticket has
+produced: on every round, the dangerous code has been the error handling of a correction.
+
+- **The backoff timer was unreferenced, so acquisition never returned.** `timer.unref()`, copied
+  from `disposal.ts` where it is correct — those are timeout races that must not hold a process
+  open. Here the acquisition is *waiting on* the timer, and with nothing else pending node concludes
+  the event loop is empty and exits. Reproduced from a child process: against a real stale lock,
+  `acquireRunLock` reclaimed it and then never returned at all — no lock, no refusal, no error, exit
+  13 on an unsettled await. That is the ordinary BR-035 reclaim path, and it hit every other route
+  round the loop too.
+
+  The suite structurally could not see it, because vitest holds the event loop open. So the gate for
+  it is not a vitest mutation: `scripts/verify-acquisition-returns.sh` bundles a fixture with the
+  project's own bundler, runs it as a plain node process, and requires the answer — then puts the
+  `unref` back and requires the answer to be missing. Watched fail both ways.
+- **`removeExactly` deleted the live lock it could not put back.** The `unlink` of the set-aside
+  file was in a `finally`, which runs on the throw paths too — so a restore that failed for any
+  reason ended with a running owner's lock *deleted* rather than merely displaced, the path free,
+  and the next run taking the name alongside it. The BR-010 double-writer the function exists to
+  prevent, reached through the error handling of the fix for it. The unlink is now on the success
+  path only; both throws name the set-aside path so an operator can find the file.
+- **A reclamation on the final attempt was thrown away.** The loop fell straight out of its last
+  round: the stale lock was deleted, no lock was taken, and the operator was told the name was
+  "being taken and released repeatedly by other processes" while nothing held it. One further
+  create, bounded and with no new judgement, is all that state needed.
+- **Tidying up could turn a taken lock into a failure.** After the lock is linked into place the
+  staging file is removed; a failure there (EIO, a read-only remount) threw out of a *successful*
+  acquisition, leaving a lock nothing would ever release and a run name unusable until someone
+  deleted the file by hand. Cleanup is now best-effort, and deliberately so — a leftover
+  `.staging.<uuid>` is inert by comparison, and on the failure paths an exception from a `finally`
+  would have replaced the real error anyway.
+- **`ps` exiting 1 was trusted on its own.** busybox's `ps` — the one in a great many container
+  images — does not take `-o lstart=` and exits 1 saying so, and reading that status alone as "no
+  such process" would evict a *live* owner's lock on every ask in any image that ships it. An exit
+  of 1 now means "gone" only when nothing was said on stderr. That change surfaced a second thing:
+  an out-of-range process id makes `ps` complain too, so ids above `PID_CEILING` are now answered
+  without asking.
+- **The locale test could not fail.** It went through `identify`, which on Linux reads `/proc` and
+  never reaches `ps` — so on the platform most of CI runs on it asserted nothing — and it passed on
+  any machine whose C library has never been given fr_FR, because `ps` then falls back to C. It now
+  calls `psIdentify` directly, *establishes* that the locale changes the output before asserting
+  anything, and skips explicitly when it cannot. A mocked adapter suite carries the always-available
+  gate: the pin is asserted on the environment handed to the spawn, which fails everywhere.
+- **The mutation harness added its substitution counts up.** One `/g`, or one pattern matching
+  twice, satisfied the total while a sibling matched nothing — so a mutation could half-apply, the
+  suite could go red for the half that landed, and the criterion the other half tested would
+  silently stop being tested. The same defect the check was added to close, one level up. Each
+  substitution must now match exactly once, and the self-test covers all four ways the old check
+  could be fooled.
+- **The gates mutated the shared checkout.** They spend most of their run with tracked sources
+  deliberately broken *in the developer's own working tree*, where an editor, a language server or
+  another session sees a mutation with no way to know it is not theirs — it corrupted the reviewer's
+  own reading of this branch three times. Restoring afterwards does not help; the hazard is the
+  window. Every gate now works in a private copy of the working tree with `node_modules` symlinked,
+  and the self-test asserts that breaking a tracked file leaves the checkout untouched.
+
+Two smaller ones from the same round, both about what a refusal prints: a lock file's `host` went to
+the terminal unfiltered, so a repository could repaint an operator's screen and show them a refusal
+awcli never wrote; and `acquiredAt` came off disk into `new Date(...).toISOString()`, which throws
+out of range — a refusal that throws while formatting itself reaches the operator as a stack trace
+instead of as the reason their run will not start.
+
+Four comments were also corrected rather than reworded: the reclaim window described as "two
+syscalls rather than a subprocess spawn" (the re-judgement added later spawns `ps` inside it), the
+symlink rationale claiming `link`/`rename`/`unlink` follow symlinks (they do not — only `readFile`
+does, which is a different and narrower hazard), and two claims that an unreadable lock cannot have
+come from a live run. That last one is a statement about awcli's writer, not about the file: a sync
+client mid-transfer can truncate a live run's lock, nothing left in the file distinguishes that from
+an interrupted write, and refusing instead would turn any garbage at the path into a manual
+intervention — the opposite of BR-035. The behaviour is unchanged and the limit is now written down.
+
+The gate is 37 lock mutations plus 8 disposal mutations plus the out-of-process acquisition check.
+That is one vitest start per mutation and about two minutes in its own CI job; the cost is inherent
+to mutation testing and is not something this ticket found a way around.
