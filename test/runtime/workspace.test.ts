@@ -25,12 +25,15 @@ import {
   type SlotName,
 } from "../../src/runtime/run-identity.js";
 import {
+  systemGitRunner,
+  type GitOutcome,
+  type GitRunner,
+} from "../../src/runtime/git-process.js";
+import {
   LIVE_CHECKOUT_FLAG,
   WORKING_COPY_RESOURCE,
   acquireWorkspace,
   resolveWorkspaceChoice,
-  type GitOutcome,
-  type GitRunner,
   type LiveCheckoutConsent,
   type WorkspaceChoice,
 } from "../../src/runtime/workspace.js";
@@ -497,7 +500,16 @@ describe("a slot name is validated, never sanitised", () => {
 });
 
 describe("what provisioning refuses rather than does", () => {
-  it("refuses a directory that is already occupied, and leaves it alone", async () => {
+  /**
+   * An ordinary directory in the way, which is not a working copy git knows anything about.
+   *
+   * The remedy has to fit what is actually there. `git worktree remove` on a plain directory exits
+   * 128 with `fatal: ... is not a working tree` — this test runs it to say so — so advising it here,
+   * as the first version of this message did unconditionally, hands the operator a command that
+   * refuses and no second idea. The suite was green over that because it matched the sentence as a
+   * string rather than running what the sentence says.
+   */
+  it("refuses an ordinary directory in the way, and names a remedy git accepts", async () => {
     const repositoryPath = await repository();
     const target = join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main");
     await mkdir(target, { recursive: true });
@@ -514,16 +526,67 @@ describe("what provisioning refuses rather than does", () => {
     if (outcome.ok) return;
     expect(outcome.kind).toBe("occupied");
     expect(outcome.message).toContain(target);
-    // The remedy has to be the one git accepts. Deleting the directory leaves git's registration for
-    // the working copy behind, and that registration goes on holding the branch — so the advice that
-    // reads as obvious is the advice that costs the operator their run name. See the next test.
-    expect(outcome.message).toContain(`git worktree remove ${target}`);
     // Never destructive: provisioning does not remove, force over, reset or clean anything.
     expect(await readFile(join(target, "someone-elses-work.txt"), "utf8")).toBe(
       "keep me\n",
     );
     expect(await branches(repositoryPath)).toEqual(["main"]);
     expect(stack.held).toEqual([]);
+
+    // git rejects the command this message must not be advising, which is the whole finding.
+    await expect(git(repositoryPath, "worktree", "remove", target)).rejects.toThrow(
+      /is not a working tree/,
+    );
+    expect(outcome.message).not.toContain(`git worktree remove ${target}`);
+    expect(outcome.message).toContain("move it or delete it");
+
+    // And what it does advise clears the way.
+    await rm(target, { recursive: true, force: true });
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(second.ok).toBe(true);
+  });
+
+  /**
+   * A working copy git *does* have registered, where the opposite remedy is the one that works.
+   *
+   * Every command the refusal names is run here, in the order it names them, ending in a run that
+   * provisions — because the finding this test exists for is not a wording preference. A refusal
+   * whose remedy git rejects leaves an operator with a run name they cannot use and no next step.
+   */
+  it("refuses a registered working copy, and names the removal that clears it", async () => {
+    const repositoryPath = await repository();
+    const first = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const target = first.workspace.dir;
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+    expect(outcome.message).toContain(`git worktree remove ${target}`);
+    expect(outcome.message).toContain("git branch -D awcli/triage/main");
+
+    await git(repositoryPath, "worktree", "remove", target);
+    await git(repositoryPath, "branch", "-D", "awcli/triage/main");
+    const third = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(third.ok).toBe(true);
   });
 
   it("refuses when the branch it would cut is already there", async () => {
@@ -691,6 +754,31 @@ describe("what provisioning refuses rather than does", () => {
     expect(outcome.kind).toBe("detached-head");
   });
 
+  /**
+   * A mistyped `--repo`, which used to be reported as a machine with no git.
+   *
+   * `execFile` raises ENOENT for a missing binary and for a missing `cwd` alike, so the unconditional
+   * mapping sent the operator to install git on a machine that already had it — and made this refusal
+   * unreachable by that route entirely. The distinction is made in `git-process.ts`; this is the half
+   * an operator sees.
+   */
+  it("refuses a repository path that does not exist as what it is", async () => {
+    const missing = join(await notARepository(), "typo", "not", "here");
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath: missing,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("not-a-repository");
+    expect(outcome.message).toContain(missing);
+    // The remedy is about the path, and says nothing about installing anything.
+    expect(outcome.message).not.toContain("Install git");
+  });
+
   it("refuses when git is not installed", async () => {
     const repositoryPath = await repository();
     const absent: GitRunner = async () => ({
@@ -777,29 +865,94 @@ describe("what provisioning throws rather than refuses", () => {
     },
   );
 
+  /**
+   * The stderr is the shape git actually produces, and that is the point of the test.
+   *
+   * `git worktree add` prints `Preparing worktree (...)` before it fails, so its complaint is never
+   * the first line — and the first version of this mock used a single line, which is precisely why a
+   * green suite covered a message that quoted the progress line and discarded the cause. This is the
+   * one path the module declares it cannot explain and therefore throws on, so the quoted line is the
+   * whole of the remedy.
+   */
+  /**
+   * A symlink planted at the target *after* awcli has looked at it.
+   *
+   * The early check cannot be the guarantee: between it and `git worktree add` sit a subprocess, a
+   * recursive mkdir and four lstats. The window is opened deterministically here rather than raced
+   * for — the git seam is the subprocess that sits inside it, so the runner plants the link on its
+   * way past, which is exactly what another process doing it at that moment would look like.
+   *
+   * Without the non-recursive `mkdir` of the target, git follows the link and checks the tree out at
+   * its destination, outside the repository, while the handle and the operator-facing description
+   * both say it is inside. Reproduced on git 2.55 before this was written.
+   */
+  it("refuses a symlink planted at the target after the check, and follows nothing", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
+    repositories.push(elsewhere);
+    const target = join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main");
+
+    const planting: GitRunner = async (args, cwd) => {
+      // The last git call before the add, and therefore the middle of the window.
+      if (args[0] === "for-each-ref") {
+        await mkdir(dirname(target), { recursive: true });
+        await symlink(elsewhere, target);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: planting,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+    // Nothing was checked out through the link, and no branch was cut for a working copy that would
+    // have been outside the repository.
+    expect(await readdir(elsewhere)).toEqual([]);
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+  });
+
   it("throws when git fails for a reason awcli does not recognise", async () => {
     const repositoryPath = await repository();
-    const real = await import("../../src/runtime/workspace.js");
     const failing: GitRunner = async (args, cwd): Promise<GitOutcome> => {
-      if (args[0] === "worktree") {
+      if (args[0] === "worktree" && args[1] === "add") {
         return {
           kind: "ran",
           code: 128,
           stdout: "",
-          stderr: "fatal: something unforeseen",
+          stderr:
+            "Preparing worktree (new branch 'awcli/triage/main')\nfatal: something unforeseen\n",
         };
       }
-      return real.systemGitRunner(args, cwd);
+      return systemGitRunner(args, cwd);
     };
 
-    await expect(
-      acquireWorkspace(new DisposalStack(), {
-        repositoryPath,
-        runName: TRIAGE,
-        choice: resolveWorkspaceChoice({}),
-        git: failing,
-      }),
-    ).rejects.toThrow(/something unforeseen/);
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: failing,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("fatal: something unforeseen");
+    expect(message).not.toContain("Preparing worktree");
+
+    // And the empty directory awcli made for git is gone again. Leaving it would block the next
+    // invocation with an `occupied` refusal over awcli's own leftover, turning a transient git
+    // failure into a run name that stays unusable until someone deletes a directory by hand.
+    expect(
+      existsSync(join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main")),
+    ).toBe(false);
   });
 });
 

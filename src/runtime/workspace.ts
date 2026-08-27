@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
 import type { Stats } from "node:fs";
-import { lstat, mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { promisify } from "node:util";
+import { lstat, mkdir, realpath, rmdir } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Acquisition, DisposalStack } from "./disposal.js";
+import { gitComplaint, systemGitRunner, type GitRunner } from "./git-process.js";
 import { printable } from "./printable.js";
 import {
   BRANCH_NAMESPACE,
@@ -23,21 +22,30 @@ import {
  *
  * An agent editing the operator's live checkout while they are working in it is the failure mode
  * that makes agentic tooling untrustworthy, so the safe choice is the one you get by asking for
- * nothing. Three properties carry that, and each of them is structural rather than documented:
+ * nothing. Three properties carry that, and they are not equally strong — which is worth saying
+ * here rather than leaving the summary to overstate what the code below delivers:
  *
- *   - **The default is a worktree.** Nothing has to be passed to get isolation; the live checkout
- *     takes a value only this module can make (see `LiveCheckoutConsent`), so a workflow cannot
- *     reach it, a cast cannot forge it, and a caller who asks for it without one is refused rather
- *     than quietly given a worktree instead. A silent downgrade in either direction is a run whose
- *     reported isolation is not the isolation it had, which BR-015 exists to prevent.
+ *   - **The default is a worktree.** Nothing has to be passed to get isolation. The live checkout
+ *     takes a value only this module mints (see `LiveCheckoutConsent`), and a caller who asks for it
+ *     without one is refused outright rather than quietly given a worktree instead — a silent
+ *     downgrade in either direction is a run whose reported isolation is not the isolation it had,
+ *     which BR-015 exists to prevent. What is structural is that the value cannot be forged: the
+ *     check is by identity, so a cast does not produce one. What is *not* structural is that a
+ *     workflow cannot obtain one — nothing routes workflow input into the resolver today, and
+ *     AWCLI-20's flag parsing is the call site that could change that. `LiveCheckoutConsent` sets
+ *     out the three properties one at a time; read that before relying on this paragraph.
  *   - **The branch and the path are pure functions of the run name and the slot** (BR-036). A
  *     resumed run finds what it made by deriving the name again, so a timestamp or a counter
  *     anywhere near either would leave a branch per iteration behind and make AWCLI-14's
  *     reattachment impossible. See `workspaceBranch` in run-identity.ts.
- *   - **Provisioning is never destructive.** There is no `git worktree remove` here, no `--force`,
- *     no reset, no checkout over an existing tree and no clean. Anything already at the target path
- *     is a refusal that leaves it exactly as it was — AWCLI-14 turns that refusal into first-class
- *     reuse, and until it lands, refusing is the only answer that cannot destroy work.
+ *   - **Provisioning is never destructive.** awcli never runs `git worktree remove`, never passes
+ *     `--force`, and never resets, checks out over an existing tree or cleans. Anything already at
+ *     the target path is a refusal that leaves it exactly as it was — AWCLI-14 turns that refusal
+ *     into first-class reuse, and until it lands, refusing is the only answer that cannot destroy
+ *     work. The one thing this file removes is the empty directory it created itself moments
+ *     earlier, when git then failed, and `rmdir` is what holds it to "empty". Note that the
+ *     refusals do *advise* `git worktree remove`: what awcli will not do on its own, an operator
+ *     may well want to do, and the message's job is to name the command that works.
  *
  * Worktree isolation is not security isolation, and this file says so in the sentence it hands the
  * operator: it protects the repository, not the machine. The filesystem outside the repository, the
@@ -46,9 +54,11 @@ import {
  * **`ctx.git` is deliberately not built here.** A `WorkspaceHandle` *is* the exposure of a working
  * copy's dir, branch, head and dirty state, but `GitApi` also declares `log`, `diff` and `commit`,
  * which nothing in AWCLI-13 builds — and `supports()` answers per member, so a half-built `git`
- * would make it lie in one direction or the other (BR-033). So `DELIVERED_BY` in context.ts is
- * untouched: the loop that builds a context around one of these handles is AWCLI-11's. Read the
- * absence as a decision, not an omission.
+ * would make it lie in one direction or the other (BR-033). The loop that builds a context around one
+ * of these handles is AWCLI-11's, and `DELIVERED_BY` in context.ts now says so — it named AWCLI-13
+ * until this unit shipped, which would have sent an author feature-detecting `git` to a ticket with
+ * every box ticked. That entry's own comment records what is still unowned: `log`, `diff` and
+ * `commit` belong to no ticket at all. Read the absence here as a decision, not an omission.
  */
 
 /** The resource name the disposal stack reports this under. Operator-facing. */
@@ -230,95 +240,6 @@ export interface WorkspaceRequest {
 }
 
 /**
- * What running git produced.
- *
- * `unavailable` is separate from a non-zero exit because the remedy is: a git that cannot be started
- * is a machine that has no git, which no run can work around, while a git that ran and complained is
- * about this repository.
- */
-export type GitOutcome =
-  | {
-      readonly kind: "ran";
-      readonly code: number;
-      readonly stdout: string;
-      readonly stderr: string;
-    }
-  | { readonly kind: "unavailable"; readonly reason: string };
-
-/**
- * The seam every git invocation goes through.
- *
- * A port for one reason: the failures that matter here — git missing from the machine, git failing
- * for a reason awcli has no sentence for — cannot be staged against a real repository, and they are
- * the paths where a wrong implementation either refuses when it should throw or throws when it
- * should refuse. Everything else in this unit's suite runs real git against real temp repositories,
- * because a mock cannot tell a worktree from a checkout.
- */
-export type GitRunner = (args: readonly string[], cwd: string) => Promise<GitOutcome>;
-
-const execFileAsync = promisify(execFile);
-
-/**
- * How long any one git invocation may take.
- *
- * Provisioning is required to cost a bounded amount of time, and `git worktree add` on a large
- * repository is the one call here that does real work. Generous rather than tight: the failure this
- * prevents is a run that hangs for ever on a git waiting for a lock or for credentials, not a slow
- * checkout.
- */
-const GIT_TIMEOUT_MS = 120_000;
-
-/** Enough for `git status --porcelain` in a large tree; the answer is only ever read for emptiness. */
-const GIT_MAX_BUFFER = 16 * 1024 * 1024;
-
-/** The real runner: git, in a directory, with its output captured. */
-export const systemGitRunner: GitRunner = async (args, cwd) => {
-  try {
-    const { stdout, stderr } = await execFileAsync("git", [...args], {
-      cwd,
-      encoding: "utf8",
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-    });
-    return { kind: "ran", code: 0, stdout, stderr };
-  } catch (error) {
-    const failure = error as {
-      code?: string | number;
-      killed?: boolean;
-      stdout?: string;
-      stderr?: string;
-    };
-    // A number is an exit status: git ran and answered. A string is an errno from the spawn itself.
-    if (typeof failure.code === "number") {
-      return {
-        kind: "ran",
-        code: failure.code,
-        stdout: failure.stdout ?? "",
-        stderr: failure.stderr ?? "",
-      };
-    }
-    if (failure.code === "ENOENT") {
-      return { kind: "unavailable", reason: "git is not installed, or not on the PATH" };
-    }
-    if (failure.killed === true) {
-      throw new Error(
-        `git ${printable(args.join(" "))} did not finish within ${GIT_TIMEOUT_MS}ms in ${cwd}. Something is holding a git lock, or waiting for input awcli cannot give it.`,
-        { cause: error },
-      );
-    }
-    // EACCES on the binary, EAGAIN from fork on a loaded machine: git could not be started, and that
-    // is not this repository's fault. Reported as unavailable so the refusal names the machine.
-    if (typeof failure.code === "string") {
-      return {
-        kind: "unavailable",
-        reason: `git could not be run (${printable(failure.code)})`,
-      };
-    }
-    throw error;
-  }
-};
-
-/**
  * Provisions the working copy for a run and slot, and registers its release.
  *
  * Acquisition goes through the disposal stack rather than handing back something the caller must
@@ -425,6 +346,15 @@ export async function acquireWorkspace(
   }
 }
 
+/**
+ * How much of a path a message shows.
+ *
+ * Longer than `printable`'s own default, which is sized for a hostname: a repository path an
+ * operator has to recognise is legitimately long, and truncating it to 64 characters would hide the
+ * end, which is the part that is usually wrong.
+ */
+const PATH_LIMIT = 256;
+
 /** Thrown out of the acquisition so an operator-fixable condition becomes a refusal, not a throw. */
 class WorkspaceRefusedError extends Error {
   constructor(readonly refusal: WorkspaceRefusal) {
@@ -458,6 +388,17 @@ async function sharedPreflight(
     refuse(
       "git-unavailable",
       `awcli cannot provision a working copy: ${inside.reason}. awcli works by making a git worktree, so it needs git on this machine. Install git, or put it on the PATH awcli is run with.`,
+    );
+  }
+  // A path that is not there is a mistyped `--repo`, and it used to arrive here as
+  // `git-unavailable` — the errno for a missing `cwd` and for a missing binary is the same one, so
+  // the operator was told to install git on a machine that had it, and this refusal was unreachable
+  // by that route. `git-process.ts` tells the two apart; this says what to do about the one that is
+  // about the repository.
+  if (inside.kind === "no-such-directory") {
+    refuse(
+      "not-a-repository",
+      `There is no directory at ${printable(inside.path, PATH_LIMIT)}, so awcli has nothing to make a working copy from. Check the path — awcli did not get as far as asking git about it.`,
     );
   }
   if (inside.code !== 0) {
@@ -543,7 +484,7 @@ async function openWorktree(
     // removed it first.
     refuse(
       "occupied",
-      `awcli will not provision a working copy at ${target} for the "${runName}" run: something is there already, and awcli never removes or writes over what it finds. If a run is in progress, wait for it. Otherwise clear it with "git worktree remove ${target}", which is the removal to use rather than deleting the directory: git holds a registration for a working copy as well, and a registration left behind goes on holding this run's branch. That command refuses while there is uncommitted work in there, which is the answer you want.`,
+      await occupiedMessage(git, repositoryPath, target, runName, branch),
     );
   }
 
@@ -580,6 +521,31 @@ async function openWorktree(
   }
   await refuseSymlinkedAncestors(repositoryPath, runName);
 
+  // awcli creates the target directory itself, and this is the close of a race rather than a
+  // convenience. The `lstat` at the top of this function is the early, well-worded refusal; it cannot
+  // be the guarantee, because between it and the `git worktree add` below sit a subprocess, a
+  // recursive `mkdir` and four more `lstat`s. A symlink planted at the target inside that window is
+  // followed by git — reproduced on git 2.55, which checked the tree out at the link's destination
+  // *outside the repository* while the handle and the sentence shown to the operator both said it was
+  // inside, which is the exact failure `refuseSymlinkedAncestors` exists to prevent, one level down.
+  //
+  // A non-recursive `mkdir` is what closes it: it never follows a final symlink, so it answers EEXIST
+  // for one rather than creating anything through it, and `git worktree add` accepts a directory that
+  // already exists as long as it is empty. So the path awcli checked and the path git uses are the
+  // same path, established by the same call that would have failed if they were not.
+  try {
+    await mkdir(target);
+  } catch (error) {
+    if (isErrno(error, "EEXIST")) {
+      refuse(
+        "occupied",
+        await occupiedMessage(git, repositoryPath, target, runName, branch),
+      );
+    }
+    refuseUnwritable(error, dirname(target));
+    throw error;
+  }
+
   // No `--force` and no `--detach`: `-b` refuses an existing branch, which is a second line of
   // defence behind the check above rather than a substitute for it, and `HEAD` fixes what the
   // working copy is cut from so it cannot depend on git's own default.
@@ -589,15 +555,98 @@ async function openWorktree(
     repositoryPath,
   );
   if (added.code !== 0) {
+    // The empty directory awcli made a moment ago goes back, and only ever while it is still empty:
+    // `rmdir` is what makes that a property rather than an intention, since it refuses a directory
+    // with anything in it — including a `git worktree add` that got far enough to write something
+    // before failing, which is git's to account for and not awcli's to delete. Without this, a
+    // transient git failure leaves a directory behind that the *next* invocation reports as occupied,
+    // which is a run blocked by awcli's own leftover: the self-inflicted window this file keeps
+    // having to close. Best effort, because the error below is the one worth reporting.
+    await rmdir(target).catch(ignoreCleanupFailure);
     // Every condition awcli has a sentence for was checked above, so whatever this is, it is not
     // something the operator was asked to choose. Thrown rather than refused: a refusal claims awcli
     // knows what is wrong and what to do instead, and here it knows neither.
     throw new Error(
-      `awcli could not create a working copy at ${target} for the "${runName}" run: git worktree add exited ${added.code}. ${printable(firstLine(added.stderr), STDERR_LIMIT)}`,
+      `awcli could not create a working copy at ${target} for the "${runName}" run: git worktree add exited ${added.code}. ${gitComplaint(added.stderr)}`,
     );
   }
 
   return handle(git, target, branch, slot, "worktree");
+}
+
+/**
+ * Whether git has a working copy registered at a path.
+ *
+ * The question the `occupied` refusal turns on, because the two answers have different remedies and
+ * one of them is a command git rejects: `git worktree remove` on an ordinary directory exits 128
+ * with `fatal: ... is not a working tree` (confirmed on git 2.55). The first version of that message
+ * advised it unconditionally, on a branch whose own comment says it fires for *anything at all*, and
+ * the test only string-matched the sentence — so the suite was green over advice that does not run.
+ *
+ * `unknown` is a third answer rather than a default to one of the others, and it is why this asks git
+ * through the raw runner instead of through `run`: this builds a *refusal message*, so it must not
+ * throw, and a git that cannot answer must not be turned into a confident sentence in either
+ * direction.
+ *
+ * Paths are compared with the parent resolved and the last component left alone. `git worktree list`
+ * prints canonical paths — on macOS `/private/var/...` where awcli holds `/var/...` — so a string
+ * comparison answers `unregistered` for every worktree in a temp directory; and resolving the whole
+ * path instead would follow a symlink at the target, which is one of the things that can be there.
+ */
+type WorktreeRegistration = "registered" | "unregistered" | "unknown";
+
+async function worktreeRegistration(
+  git: GitRunner,
+  repositoryPath: string,
+  target: string,
+): Promise<WorktreeRegistration> {
+  const listed = await git(["worktree", "list", "--porcelain"], repositoryPath);
+  if (listed.kind !== "ran" || listed.code !== 0) return "unknown";
+  const wanted = await canonicalPath(target);
+  for (const line of listed.stdout.split("\n")) {
+    const prefix = "worktree ";
+    if (!line.startsWith(prefix)) continue;
+    if ((await canonicalPath(line.slice(prefix.length).trim())) === wanted) {
+      return "registered";
+    }
+  }
+  return "unregistered";
+}
+
+/** A path with its parent resolved and its own last component untouched. See the note above. */
+async function canonicalPath(path: string): Promise<string> {
+  try {
+    return join(await realpath(dirname(path)), basename(path));
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * What to say about a target that is not free, and the remedy that fits what is actually there.
+ *
+ * Three remedies, because there are three truths. A registered working copy is cleared with
+ * `git worktree remove`, which also clears the registration that would otherwise go on holding this
+ * run's branch — and which refuses while there is uncommitted work in it, which is the answer an
+ * operator wants. Anything else is an ordinary directory as far as git is concerned and `git worktree
+ * remove` refuses it, so the remedy is to move it or delete it. And when git could not be asked, the
+ * sentence names both rather than guessing at one.
+ */
+async function occupiedMessage(
+  git: GitRunner,
+  repositoryPath: string,
+  target: string,
+  runName: RunName,
+  branch: string,
+): Promise<string> {
+  const registration = await worktreeRegistration(git, repositoryPath, target);
+  const remedy =
+    registration === "registered"
+      ? `Otherwise that is a working copy git still has registered, so clear it with "git worktree remove ${target}" rather than by deleting the directory — a registration left behind goes on holding this run's branch — and then "git branch -D ${branch}" if the branch is finished with too. The removal refuses while there is uncommitted work in there, which is the answer you want.`
+      : registration === "unregistered"
+        ? `Otherwise git has no working copy registered there, so it is an ordinary directory as far as git is concerned and "git worktree remove" would refuse it: move it or delete it yourself, then run again.`
+        : `Otherwise clear it before running again — "git worktree remove ${target}" if git still has a working copy registered there, and an ordinary move or delete if it does not. awcli could not ask git which of the two this is.`;
+  return `awcli will not provision a working copy at ${target} for the "${runName}" run: something is there already, and awcli never removes or writes over what it finds. If a run is in progress, wait for it. ${remedy}`;
 }
 
 /**
@@ -668,13 +717,6 @@ function collisionMessage(
   return `awcli cannot cut the branch ${branch} for the "${runName}" run: ${where}. That branch is not one of awcli's — awcli only ever creates branches under ${BRANCH_NAMESPACE}/<run>/<slot> — so rename or delete it, or run this under a different --name.`;
 }
 
-/** How much of git's own stderr a message repeats. Enough for the cause, not enough to bury it. */
-const STDERR_LIMIT = 200;
-
-function firstLine(text: string): string {
-  return text.trim().split("\n")[0] ?? "";
-}
-
 /**
  * The handle both axes hand back.
  *
@@ -699,7 +741,7 @@ function handle(
       const answer = await run(git, ["rev-parse", "HEAD"], dir);
       if (answer.code !== 0) {
         throw new Error(
-          `awcli could not read the commit the working copy at ${dir} is on: git rev-parse exited ${answer.code}. ${printable(firstLine(answer.stderr), STDERR_LIMIT)}`,
+          `awcli could not read the commit the working copy at ${dir} is on: git rev-parse exited ${answer.code}. ${gitComplaint(answer.stderr)}`,
         );
       }
       return answer.stdout.trim();
@@ -708,7 +750,7 @@ function handle(
       const answer = await run(git, ["status", "--porcelain"], dir);
       if (answer.code !== 0) {
         throw new Error(
-          `awcli could not tell whether the working copy at ${dir} has uncommitted changes: git status exited ${answer.code}. ${printable(firstLine(answer.stderr), STDERR_LIMIT)}`,
+          `awcli could not tell whether the working copy at ${dir} has uncommitted changes: git status exited ${answer.code}. ${gitComplaint(answer.stderr)}`,
         );
       }
       return answer.stdout.trim().length > 0;
@@ -731,7 +773,7 @@ function describe(workspace: WorkspaceAxis, dir: string, branch: string): string
 }
 
 /**
- * git, with the unavailable case turned into a fault.
+ * git, with the cases that are not an answer turned into faults.
  *
  * Only `sharedPreflight` asks whether git can be run, because it is the first thing to ask and the
  * answer cannot change during one acquisition. Everything after it is entitled to assume git exists,
@@ -747,6 +789,13 @@ async function run(
   if (outcome.kind === "unavailable") {
     throw new Error(
       `awcli could not run git in ${cwd} (${printable(outcome.reason)}), having already run it once in this repository. git has gone missing while the run was starting.`,
+    );
+  }
+  if (outcome.kind === "no-such-directory") {
+    // The preflight established that this directory exists, so it has gone since — a run's own
+    // repository being removed underneath it is a fault, not something to offer a flag for.
+    throw new Error(
+      `awcli could not run git in ${cwd}: that directory is no longer there, and it was when this run started.`,
     );
   }
   return outcome;
@@ -807,6 +856,15 @@ function refuseUnwritable(error: unknown, directory: string): void {
 function isErrno(error: unknown, code: string): boolean {
   return errnoOf(error) === code;
 }
+
+/**
+ * Swallows a failure to tidy up.
+ *
+ * Only for removing the empty directory awcli itself just created, on a path where the outcome is
+ * already decided and already a failure. An exception from here would replace the error that says
+ * what actually went wrong — the same reasoning `run-lock.ts` gives for its own staging files.
+ */
+function ignoreCleanupFailure(): void {}
 
 function errnoOf(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;

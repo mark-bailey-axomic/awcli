@@ -32,12 +32,13 @@ export MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-30000}"
 source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 
 mutation_gate_init \
-  "test/runtime/workspace.test.ts test/runtime/run-identity.test.ts" \
-  src/runtime/workspace.ts src/runtime/run-identity.ts src/contract/awcli.d.ts
+  "test/runtime/workspace.test.ts test/runtime/run-identity.test.ts test/runtime/git-process.test.ts" \
+  src/runtime/workspace.ts src/runtime/run-identity.ts src/runtime/git-process.ts \
+  src/contract/awcli.d.ts
 
 # ── Scenario: The default protects my checkout ───────────────────────────────────────────────
-# The dispatch goes to the live checkout whichever axis was chosen. This is what you get from a
-# condition written the wrong way round, and every worktree assertion in the suite still has a
+# The dispatch goes to the live checkout whichever axis was chosen — the condition dropped rather
+# than inverted, which is the same end state either way. Every worktree assertion in the suite has a
 # directory and a branch to look at — it is just the operator's own.
 expect_red "The default protects my checkout" src/runtime/workspace.ts \
   's/      return choice\.workspace === "liveTree"/      return true/'
@@ -103,8 +104,12 @@ expect_red "the unnamed caller's slot is fixed, not allocated per invocation" sr
   's/  const slot: SlotName = validated === undefined \? DEFAULT_SLOT : validated\.slot;/  const slot: SlotName = validated === undefined ? (`slot-\${Date.now()}` as SlotName) : validated.slot;/'
 
 # ── The working copy is registered, and preserved when it is released ────────────────────────
-# Acquired without registering. The worktree is provisioned correctly and outlives the run with
-# nothing accounting for it — the leak the disposal stack exists to make impossible.
+# Acquired without registering. What that costs is not a leak — a working copy is preserved on
+# purpose, so nothing is left dangling on disk that would not have been left there anyway; the
+# earlier version of this comment called it one, which is the opposite of the disposition twelve
+# lines below. What is lost is the account: the unwind report is what says a working copy was
+# released and preserved, so an unregistered one makes BR-021 unobservable and puts this resource
+# outside the mechanism every other one goes through (ADR-0001).
 expect_red "the working copy is acquired through the disposal stack" src/runtime/workspace.ts \
   's/    const workspace = await stack\.acquire\(acquisition\);/    const workspace = await acquisition.open();/'
 
@@ -128,9 +133,14 @@ expect_red "releasing a working copy does nothing to it on disk" src/runtime/wor
 expect_red "provisioning never removes or writes over what it finds" src/runtime/workspace.ts \
   's/  const existing = await lstatOrMissing\(target\);/  const existing = undefined;\n  await (await import("node:fs\/promises")).rm(target, { recursive: true, force: true });/'
 
-# The branch is taken over instead of refused. A branch outlives the run that made it (BR-036), so
-# meeting one is ordinary — and awcli deleting or moving one is the deliverable going missing.
-expect_red "an existing branch is refused, not taken over" src/runtime/workspace.ts \
+# The collision check is gone, so the ordinary case — a branch an earlier run of this name and slot
+# left behind (BR-036) — walks into `git worktree add -b`, which refuses it, and comes back out of
+# here as an unexplained fault. The point of the check is not that awcli would otherwise take the
+# branch over: it cannot, and `-b` is what makes sure of that. It is that a condition awcli can
+# recognise and name reaches the operator as a refusal with a remedy rather than as git's exit status.
+# (This comment said the opposite for a round: review found it, in the script whose own header calls
+# a mutation that proves less than its label the hole it exists to close.)
+expect_red "an existing branch is refused, not thrown on" src/runtime/workspace.ts \
   's/  if \(collision !== undefined\) \{/  if (false) {/'
 
 # The collision check narrowed to the exact ref, which is what it was until review asked what an
@@ -148,15 +158,44 @@ expect_red "a branch beneath this one is a refusal, not a fault" src/runtime/wor
 
 # ── The remedies a refusal names are ones git accepts ───────────────────────────────────────
 # Release is a no-op and collection is AWCLI-22's, so the only cleanup an operator has today is by
-# hand — and the obvious advice is the advice that costs them their run name. Deleting the working
-# copy's directory leaves git's registration for it, the registration goes on holding the branch, and
-# `git branch -D` then fails naming a path that is not there any more. Both messages are mutated
-# because both were wrong: this is a case where the sentence *is* the fix.
-expect_red "the occupied refusal names a removal that clears git's registration too" src/runtime/workspace.ts \
-  's/Otherwise clear it with "git worktree remove \$\{target\}", which is the removal to use rather than deleting the directory: git holds a registration for a working copy as well, and a registration left behind goes on holding this run'"'"'s branch\. That command refuses while there is uncommitted work in there, which is the answer you want\./Otherwise move or delete that directory and run again./'
+# hand — and each of these refusals had, at some point, advised a command that does not run. The
+# remedies are mutated rather than the checks, because on these paths the sentence *is* the fix: a
+# refusal whose remedy git rejects leaves the operator with a run name they cannot use.
 
+# The occupied refusal advises `git worktree remove` for everything, which is what it did until
+# review ran it: on an ordinary directory git exits 128 with `fatal: ... is not a working tree`, and
+# the branch this fires from says in its own comment that it fires for anything at all. The suite was
+# green over it because it matched the sentence as a string instead of running what it says.
+expect_red "an ordinary directory is not sent to git worktree remove" src/runtime/workspace.ts \
+  's/    registration === "registered"/    true/'
+
+# And the other way round: a working copy git *does* have registered, told to move or delete the
+# directory. That leaves the registration behind, the registration goes on holding this run's branch,
+# and `git branch -D` then fails naming a path that is no longer there — the run name is unusable
+# until the operator finds `git worktree prune` for themselves.
+expect_red "a registered working copy is sent to git worktree remove" src/runtime/workspace.ts \
+  's/    registration === "registered"/    false/'
+
+# The branch refusal drops what to do about the working copy still holding the branch, which is the
+# same journey one step further along.
 expect_red "the branch refusal says what to do about the working copy holding it" src/runtime/workspace.ts \
   's/If it is finished with, remove the working copy that holds it first with "git worktree remove \$\{target\}" \(which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once\), then "git branch -D \$\{branch\}"\./Delete it yourself if it is finished with./'
+
+# ── The path awcli checked and the path git uses are the same path ──────────────────────────
+# `mkdir` with `recursive`, which is what anyone writes by habit — and which *follows* a final
+# symlink instead of refusing it. The early `lstat` cannot cover this: between it and the add sit a
+# subprocess, a mkdir and four more lstats, and a link planted in that window sends `git worktree add`
+# outside the repository while the handle and the operator-facing sentence both say it is inside.
+# Reproduced on git 2.55; the suite stages the window through the git seam rather than racing for it.
+expect_red "the target directory is created without following a symlink" src/runtime/workspace.ts \
+  's/    await mkdir\(target\);/    await mkdir(target, { recursive: true });/'
+
+# The other half of awcli creating that directory itself: when git then fails, the empty directory is
+# left behind, and the *next* invocation refuses over it as occupied. A transient git failure becomes
+# a run name blocked by awcli's own leftover — the self-inflicted window, arrived at through the fix
+# for a different one.
+expect_red "a failed add leaves no directory of awcli's own behind" src/runtime/workspace.ts \
+  's/    await rmdir\(target\)\.catch\(ignoreCleanupFailure\);/    void rmdir;/'
 
 # A symlink in the layout is followed. `mkdir` with `recursive` follows one at any level, so a
 # repository carrying a committed symlink at `.awcli` puts the working copy — and everything an
@@ -171,6 +210,23 @@ expect_red "a symlink in the layout is refused rather than followed" src/runtime
 expect_red "every ancestor of the working copy is inspected, not just the first" src/runtime/workspace.ts \
   's/  for \(const ancestor of worktreePathAncestors\(repositoryPath, runName\)\) \{/  for (const ancestor of worktreePathAncestors(repositoryPath, runName).slice(0, 1)) {/'
 
+# ── What git said went wrong is what gets quoted ────────────────────────────────────────────
+# The first line of stderr, which is what this took until review read git's actual output. Only one
+# command awcli runs prints progress, and it is the one that matters: `git worktree add` writes
+# `Preparing worktree (...)` and then fails, so the first line is the announcement and the cause is
+# thrown away — on the single path this module declares it cannot explain and therefore throws from,
+# where the quoted line is the whole of the remedy.
+expect_red "the line quoted from git is the one that says what went wrong" src/runtime/git-process.ts \
+  's/  return printable\(marked \?\? lines\.at\(-1\) \?\? "", COMPLAINT_LIMIT\);/  return printable(lines[0] ?? "", COMPLAINT_LIMIT);/'
+
+# ── A missing directory is not a missing git ────────────────────────────────────────────────
+# ENOENT mapped straight to "git is not installed", which is what shipped. `execFile` raises it both
+# for a binary it cannot find and for a `cwd` that does not exist — same errno, same `spawn git
+# ENOENT` message — so a mistyped `--repo` told the operator to install git on a machine that had it,
+# and made the not-a-repository refusal unreachable by that route.
+expect_red "a directory that is not there is not reported as a missing git" src/runtime/git-process.ts \
+  's/        if \(!\(await isDirectory\(cwd\)\)\) return \{ kind: "no-such-directory", path: cwd \};/        void isDirectory;/'
+
 # ── A fault is not dressed up as a refusal ──────────────────────────────────────────────────
 # The catch-all: every error out of the acquisition becomes a refusal. It is what you get from
 # "make the caller's life easy", and it is the one mutation the two `rejects.toThrow` tests exist
@@ -181,7 +237,7 @@ expect_red "a fault comes out as a throw, not as a refusal" src/runtime/workspac
   's/    if \(error instanceof WorkspaceRefusedError\) return error\.refusal;\n    throw error;/    if (error instanceof WorkspaceRefusedError) return error.refusal;\n    return refuseWith("occupied", slot, error instanceof Error ? error.message : String(error));/'
 
 # ── The layout is derived, never re-spelled ─────────────────────────────────────────────────
-# Working copies put beside the runtime directory rather than inside it. This is the mistake
+# Working copies put at `.awcli/worktrees` rather than under `.awcli/run`. This is the mistake
 # `worktreePath`'s own docblock warns about, and it is quiet: everything works, the branches are
 # right, and the single generated ignore line — `run/`, which BR-030 says is the only ignored path —
 # stops covering the working copies, so every one of them shows up as untracked in the operator's
@@ -241,7 +297,9 @@ expect_red "a refused slot is not echoed back unfiltered" src/runtime/run-identi
 expect_red "a machine with no git is told so" src/runtime/workspace.ts \
   's/  if \(inside\.kind === "unavailable"\) \{/  if (false) {/'
 
-# A directory that is not a repository, which awcli cannot make a working copy from.
+# The not-a-repository check dropped, so a directory that is not a repository falls through to the
+# next question and is reported as a repository with no commit — a true sentence about the wrong
+# thing, sending the operator to make a commit in a directory git knows nothing about.
 expect_red "a directory that is not a repository is refused" src/runtime/workspace.ts \
   's/  if \(inside\.code !== 0\) \{/  if (false) {/'
 

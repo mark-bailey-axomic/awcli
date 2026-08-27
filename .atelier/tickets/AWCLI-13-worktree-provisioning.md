@@ -1,6 +1,6 @@
 # AWCLI-13 — [AWCLI] Provision worktrees on deterministic branches
 
-**Points:** 3 · **Source:** WB-8 (part 1 of 2) · **Status:** Done
+**Points:** 3 · **Source:** WB-8 (part 1 of 2) · **Status:** In Review
 
 ## Problem / Goal
 

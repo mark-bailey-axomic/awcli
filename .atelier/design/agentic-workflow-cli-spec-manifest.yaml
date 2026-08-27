@@ -288,7 +288,11 @@ tickets:
     points: 3
     work_breakdown: WB-8
     depends_on: [AWCLI-03, AWCLI-07]
-    status: done
+    # in_progress: PR #15 is open with review rounds outstanding, the same state AWCLI-07 records
+    # above and for the same reason — tickets/README.md reserves done for merged-with-every-box-
+    # ticked, and this was marked done on an unmerged branch. The criteria stay ticked: they are
+    # what a reviewer has confirmed, and the status is what says the PR has not landed.
+    status: in_progress
   - id: AWCLI-14
     path: tickets/AWCLI-14-worktree-reuse-and-resume.md
     title: "[AWCLI] Reuse, resume and fresh start"
