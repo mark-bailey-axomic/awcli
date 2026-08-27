@@ -241,13 +241,12 @@ tickets:
     points: 2
     work_breakdown: WB-5
     depends_on: [AWCLI-03]
-    # in_progress: PR #12 is open with review rounds outstanding. tickets/README.md's conventions
-    # reserve done for merged-with-every-box-ticked, and this was marked done on an unmerged branch
-    # for two rounds before review caught it against that rule. The fix for that used `in_review`,
-    # which this schema does not have — spec/patterns/manifest-schema.md allows todo, in_progress and
-    # done, and nothing validates the file, so it went unnoticed for a round. The ticket's own
-    # `Status: In Review` carries the distinction; here it is work that has started and is not done.
-    status: in_progress
+    # done: PR #12 is merged with every criterion ticked. It reached this value twice by the wrong
+    # route first — marked done on an unmerged branch for two rounds, then `in_review`, which this
+    # schema does not have (spec/patterns/manifest-schema.md allows todo, in_progress and done, and
+    # nothing validates the file, so it went unnoticed for a round). Kept as a note because the same
+    # two mistakes are available on every ticket that follows.
+    status: done
   - id: AWCLI-08
     path: tickets/AWCLI-08-run-record.md
     title: "[AWCLI] Record every run so it can be explained the next morning"
