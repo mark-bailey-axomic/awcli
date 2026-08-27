@@ -1,6 +1,6 @@
 # AWCLI-07 — [AWCLI] Name runs and take a reclaimable exclusive lock
 
-**Points:** 2 · **Source:** WB-5 (part 1 of 2) · **Status:** In Review
+**Points:** 2 · **Source:** WB-5 (part 1 of 2) · **Status:** Done
 
 ## Problem / Goal
 
@@ -44,7 +44,7 @@ different writers and may proceed together.
 - [x] Scenario: *A lock left by a killed run is reclaimed automatically*.
 - [x] Scenario: *A slow run keeps its lock*.
 - [x] A reused process ID belonging to a different process does not read as the original owner.
-- [ ] A reclamation is carried on the outcome of every acquisition that made one, on the success
+- [x] A reclamation is carried on the outcome of every acquisition that made one, on the success
       shape and the refusal shape alike, and every stale lock destroyed is accounted for in the
       message.
 - [x] All tests pass, format check clean, type check clean.
@@ -72,16 +72,17 @@ different writers and may proceed together.
 
 Two notes on the criteria themselves, because both are conventions rather than code.
 
-The reclamation criterion was added by a review round, so it is not ticked here: `tickets/README.md`
+The reclamation criterion was added by a review round, so it went in unticked: `tickets/README.md`
 reserves the tick for a criterion a reviewer has confirmed, and the author who adds one does not get
-to close it. It is implemented — `reclaimed` is required on both outcome shapes and `changeNote`
-lists every reclamation — and both halves have mutations in `verify-lock-gate.sh`. The same rule says
-a criterion a round *reopens* should be unticked while it is open, and the reclamation path's
-criterion stayed ticked through a round that had a blocking finding sitting on it. It should not have.
+to close it. It is ticked now because PR #12 was approved and merged with the criterion, its
+implementation and its gates in the diff, which is the confirmation the convention asks for — the
+approval is the reviewer's, and the merge is a person's. The same rule says a criterion a round
+*reopens* should be unticked while it is open, and the reclamation path's criterion stayed ticked
+through a round that had a blocking finding sitting on it. It should not have.
 
 The last criterion said "lint clean" for every one of the 27 tickets, and there is no linter in this
-repository: no eslint, no config, and `npm run check` is `format:check && test && build`. It is
-reworded here to what is actually run. Rewording it across the other tickets, or adding a real
+repository: no eslint, no config, and `npm run check` is `format:check && test && build`. It was
+reworded here to what is actually run, and across the other 26 in the sweep that followed. Adding a real
 linter, belongs to whoever does that as its own change.
 
 Each criterion above was watched failing before it was ticked. `scripts/verify-lock-gate.sh`
