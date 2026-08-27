@@ -48,11 +48,30 @@ npm run check   # format:check + typecheck + test + build
 | `npm run typecheck` | Strict `tsc --noEmit` |
 | `npm run format` / `format:check` | Prettier |
 | `npm run verify:global` | Pack, install into a throwaway prefix, run from an unrelated directory |
-| `npm run verify:typecheck-gate` | Prove the typecheck gate rejects a deliberate error |
+| `npm run check:gates` | Every gate below, in order. This is what CI runs |
 
-The last two exist because a claim nobody tests is a claim that stops being true quietly.
-`verify:global` is the one that matters: running `node dist/main.js` proves nothing about
-whether a *global install* works, and that is this tool's entire premise.
+The `verify:*` scripts exist because a claim nobody tests is a claim that stops being true quietly,
+and they come in two kinds. `verify:global` is the one that matters most: running `node dist/main.js`
+proves nothing about whether a *global install* works, and that is this tool's entire premise.
+
+The rest prove that the suite is a suite. Each takes a claim the tests make, breaks the code the
+claim is about, and fails if the tests still pass — so a test that cannot fail is caught rather than
+counted. `npm run check:gates` runs all of them and takes a few minutes, which is why it is a job of
+its own rather than part of `npm run check`:
+
+| Gate | Breaks | Expects |
+|---|---|---|
+| `verify:typecheck-gate` | a deliberate type error | the typecheck to reject it |
+| `verify:contract-gate` | the runtime, away from its declaration | the build to reject it |
+| `verify:packaged-declaration` | — | the tarball to carry the declaration, byte-identical |
+| `verify:spec-invariants` | — | the rules, feature file, manifest and ticket README to agree |
+| `verify:disposal-gate` | each disposal guarantee, one at a time | the suite to go red for each |
+| `verify:lock-gate` | each run-lock guarantee, one at a time | the suite to go red for each |
+| `verify:acquisition-returns` | the backoff timer, as a plain node process | the acquisition to stop returning |
+| `verify:mutation-gate` | the harness the two gates above share | its own self-test to catch it |
+
+No counts here on purpose: the number of mutations changes with the code, and a number in prose is
+one more thing to be quietly wrong.
 
 ## Platforms
 

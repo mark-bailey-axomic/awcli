@@ -17,6 +17,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test", "tsup.config.ts"],
+  "include": ["src", "test", "scripts", "tsup.config.ts"],
   "exclude": ["test/fixtures/v1-rejected"]
 }
