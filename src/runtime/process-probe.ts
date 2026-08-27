@@ -111,6 +111,19 @@ const PS_TIMEOUT_MS = 2_000;
 const PID_CEILING = 2 ** 22;
 
 /**
+ * Whether a number could be a process id at all.
+ *
+ * Its own function, and exported, because the rule is not observable through `identify` on every
+ * platform: Linux answers from `/proc`, where an out-of-range id is simply a path that does not
+ * exist, so a test going through `identify` asserts nothing there and the gate mutation for this
+ * survived on Linux CI while passing on macOS. That is the same platform-dependence review caught
+ * in the locale test. The rule lives here so it can be checked without an operating system.
+ */
+export function isPossiblePid(pid: number): boolean {
+  return Number.isInteger(pid) && pid > 0 && pid <= PID_CEILING;
+}
+
+/**
  * Reads a process's start time from `/proc`, the way Linux exposes it.
  *
  * Field 22 of `/proc/<pid>/stat` is the start time in clock ticks since boot. Converting it to
@@ -277,7 +290,7 @@ export const systemProcessProbe: ProcessProbe = {
     // id is not a process, and asking anyway makes `ps` complain — which, now that a complaint on
     // stderr is read as "the question could not be put", would come back as `undecidable` and turn
     // a lock holding junk into a refusal no operator could clear.
-    if (!Number.isInteger(pid) || pid <= 0 || pid > PID_CEILING) {
+    if (!isPossiblePid(pid)) {
       return { kind: "not-found" };
     }
     return process.platform === "linux" ? procIdentify(pid) : psIdentify(pid);

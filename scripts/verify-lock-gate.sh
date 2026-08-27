@@ -237,7 +237,10 @@ expect_red "the locale of the question is pinned" src/runtime/process-probe.ts \
 
 # An id no operating system can assign is asked about anyway, and `ps` complaining about it now
 # comes back as "could not decide" — a refusal no operator can clear.
+# Anchored on the predicate rather than on `identify`: Linux answers out-of-range ids from /proc,
+# where the range check makes no difference, so the first version of this mutation survived on Linux
+# CI and passed on macOS.
 expect_red "an out-of-range process id is answered without asking" src/runtime/process-probe.ts \
-  's/ \|\| pid > PID_CEILING//'
+  's/ && pid <= PID_CEILING//'
 
 mutation_gate_finish "each run-lock criterion has a test that fails when it is broken"

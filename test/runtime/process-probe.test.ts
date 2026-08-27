@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   forgetOwnIdentity,
+  isPossiblePid,
   livenessOf,
   psIdentify,
   systemProcessProbe,
@@ -158,5 +159,37 @@ describe("asking the operating system who is running", () => {
       identify: () => Promise.resolve({ kind: "not-found" } as const),
     };
     expect(await livenessOf(owner, absent)).toBe("gone");
+  });
+});
+
+/**
+ * The range check, tested without an operating system.
+ *
+ * On Linux `identify` answers out-of-range ids from `/proc`, where they are simply paths that do not
+ * exist — so going through `identify` proves nothing there, and the first version of this gate
+ * survived on Linux CI while passing on macOS. The numbers are written out rather than imported
+ * from the module: a test that reads the constant it is checking cannot catch a wrong constant.
+ */
+describe("what could be a process id at all", () => {
+  it.each([
+    { label: "the first id", pid: 1, possible: true },
+    { label: "an ordinary id", pid: 4242, possible: true },
+    { label: "Linux's hard ceiling", pid: 4_194_304, possible: true },
+    { label: "one past that ceiling", pid: 4_194_305, possible: false },
+    { label: "an id that would make ps complain", pid: 2_147_483_648, possible: false },
+    { label: "zero", pid: 0, possible: false },
+    { label: "a negative id", pid: -1, possible: false },
+    { label: "a fraction", pid: 1.5, possible: false },
+    { label: "not a number", pid: Number.NaN, possible: false },
+  ])("says $label is $possible", ({ pid, possible }) => {
+    expect(isPossiblePid(pid)).toBe(possible);
+  });
+
+  it("answers an impossible id without asking the operating system", async () => {
+    // Whatever the platform, the answer is that nothing holds it — never "could not decide", which
+    // is what asking `ps` about it produces and what an operator cannot clear.
+    expect(await systemProcessProbe.identify(2_147_483_648)).toEqual({
+      kind: "not-found",
+    });
   });
 });
