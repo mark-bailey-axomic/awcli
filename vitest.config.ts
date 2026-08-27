@@ -1,7 +1,14 @@
 import { defaultExclude, defineConfig } from "vitest/config";
 
 /**
- * Keep vitest out of the session worktrees the agent tooling nests inside the repository.
+ * Keep vitest out of the working copies that get nested inside this repository.
+ *
+ * Two patterns, one defect, one directory apart. The second is awcli's own: this repository is where
+ * awcli is built, so the first person to run awcli on awcli gets a full checkout per run and slot
+ * under `.awcli/run/worktrees/`, each with its own `test/` — and vitest would collect and run every
+ * one of them, against whatever branch that working copy happens to be on. It is the same failure as
+ * the first pattern, waiting for the first person to dogfood the tool, so it is excluded before that
+ * rather than after it.
  *
  * The same defect `.prettierignore` already documents, one tool along. A session worktree at
  * `.claude/worktrees/<session>/` is a whole second copy of this repository, complete with its own
@@ -15,6 +22,6 @@ import { defaultExclude, defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    exclude: [...defaultExclude, ".claude/worktrees/**"],
+    exclude: [...defaultExclude, ".claude/worktrees/**", "**/.awcli/run/worktrees/**"],
   },
 });
