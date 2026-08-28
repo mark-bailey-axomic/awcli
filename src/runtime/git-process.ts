@@ -65,6 +65,54 @@ export type GitOutcome =
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<GitOutcome>;
 
 /**
+ * The variables that decide which repository git operates on, whatever it is told otherwise.
+ *
+ * Every one of these wins over the working directory *and* over `-C`: with `GIT_DIR` set, git
+ * operates on that repository from anywhere on the disk. They are not exotic — git itself exports
+ * them, so anything running under a hook, `git rebase --exec`, `git bisect run` or a filter has them
+ * set for every child it starts, awcli included.
+ *
+ * `GIT_CONFIG_COUNT` and its `KEY_n`/`VALUE_n` are stripped by the prefix rule below rather than
+ * named here, along with `GIT_CONFIG`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and
+ * `GIT_CONFIG_PARAMETERS`: configuration injected that way reaches every invocation, and
+ * `core.hooksPath` set through it is arbitrary code run by a checkout.
+ */
+const GIT_REDIRECTING_VARIABLES: readonly string[] = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+/**
+ * The environment a git child is given: this process's, minus the variables above.
+ *
+ * A subtraction rather than an allowlist. git legitimately reads a great deal of the environment —
+ * `PATH` to find its own subcommands, `HOME` for the operator's configuration, the proxy and
+ * credential variables — and a list of what to keep would be a list that goes stale silently, in the
+ * direction of a git that behaves differently under awcli than in the operator's own shell. What is
+ * removed is the part that answers "which repository", which awcli has already decided by the time
+ * it calls: it is the `cwd` argument, and nothing in the environment may overrule it.
+ *
+ * Built per invocation rather than once, because `process.env` is mutable and a module-level copy
+ * would answer a question about the moment this file was imported.
+ */
+function gitEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env };
+  for (const name of Object.keys(environment)) {
+    if (GIT_REDIRECTING_VARIABLES.includes(name) || name.startsWith("GIT_CONFIG")) {
+      delete environment[name];
+    }
+  }
+  return environment;
+}
+
+/**
  * A runner for a named binary.
  *
  * Exported for the one test that cannot be written any other way: proving that a machine with no git
@@ -77,6 +125,7 @@ export function createGitRunner(binary: string): GitRunner {
     try {
       const { stdout, stderr } = await execFileAsync(binary, [...args], {
         cwd,
+        env: gitEnvironment(),
         encoding: "utf8",
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: GIT_MAX_BUFFER,
@@ -86,6 +135,7 @@ export function createGitRunner(binary: string): GitRunner {
       const failure = error as {
         code?: string | number;
         killed?: boolean;
+        signal?: string | null;
         stdout?: string;
         stderr?: string;
       };
@@ -123,6 +173,21 @@ export function createGitRunner(binary: string): GitRunner {
           { cause: error },
         );
       }
+      // A child killed by something that is not awcli. `code` is null, `killed` is false and the
+      // signal is the only thing in the error that says what happened — so without this it fell past
+      // every branch to the raw rethrow, and an OOM-killed `git worktree add` reached the operator
+      // as execFile's own `Command failed: git ...` rather than the sentence awcli writes for a
+      // provisioning that failed. This module's whole job is telling its failures apart.
+      if (
+        failure.killed !== true &&
+        typeof failure.signal === "string" &&
+        failure.signal.length > 0
+      ) {
+        throw new Error(
+          `${printable(binary)} ${printable(args.join(" "))} was killed by ${printable(failure.signal)} in ${cwd}. Something outside awcli stopped it — the out-of-memory killer is the usual reason on a large repository.`,
+          { cause: error },
+        );
+      }
       if (failure.killed === true) {
         throw new Error(
           `${printable(binary)} ${printable(args.join(" "))} did not finish within ${GIT_TIMEOUT_MS}ms in ${cwd}. Something is holding a git lock, or waiting for input awcli cannot give it.`,
@@ -153,8 +218,25 @@ async function isDirectory(path: string): Promise<boolean> {
   }
 }
 
-/** How much of git's own stderr a message repeats. Enough for the cause, not enough to bury it. */
-export const COMPLAINT_LIMIT = 200;
+/**
+ * How much of git's own stderr a message repeats. Enough for the cause, not enough to bury it.
+ *
+ * `GIT_` in the name because `process-probe.ts` declares its own `COMPLAINT_LIMIT`, for the same
+ * concept — how much of another program's stderr awcli quotes — at a different value (120, sized
+ * for `ps`, which does not print paths). Two identical identifiers one file apart, with different
+ * values and only one of them exported, is a reader assuming the wrong bound; the prefix is which
+ * program's output it bounds.
+ */
+export const GIT_COMPLAINT_LIMIT = 200;
+
+/**
+ * What a message says when git failed and printed nothing at all.
+ *
+ * The empty string was the honest-looking answer and the wrong one: every caller interpolates this
+ * after a full stop, so silence produced `... exited 128. ` — a trailing space and no cause, which
+ * reads as a message that was cut off. Silence is an answer and this is it said out loud.
+ */
+export const NO_COMPLAINT = "git printed nothing.";
 
 /**
  * The line of git's stderr that says what went wrong.
@@ -169,6 +251,9 @@ export const COMPLAINT_LIMIT = 200;
  * So: the first line git marks as a complaint, and failing that the last non-empty one, which is
  * where a program that prints progress puts its verdict. Sanitised, because this is another
  * program's output on its way to a terminal.
+ *
+ * A git that printed nothing gets `NO_COMPLAINT` rather than the empty string, because every caller
+ * interpolates this into a sentence after a full stop. See there.
  */
 export function gitComplaint(stderr: string): string {
   const lines = stderr
@@ -178,5 +263,6 @@ export function gitComplaint(stderr: string): string {
   const marked = lines.find(
     (line) => line.startsWith("fatal:") || line.startsWith("error:"),
   );
-  return printable(marked ?? lines.at(-1) ?? "", COMPLAINT_LIMIT);
+  const line = marked ?? lines.at(-1);
+  return line === undefined ? NO_COMPLAINT : printable(line, GIT_COMPLAINT_LIMIT);
 }
