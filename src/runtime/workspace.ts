@@ -65,7 +65,7 @@ import {
  * which nothing in AWCLI-13 builds — and `supports()` answers per member, so a half-built `git`
  * would make it lie in one direction or the other (BR-033). AWCLI-14 owns the member end to end:
  * `DELIVERED_BY` in context.ts points there, and the amendment that widened that ticket to cover
- * `log`, `diff` and `commit` is the 2026-08-28 row in the rules file's `## Amendments` section. Read
+ * `log`, `diff` and `commit` is the `ctx.git` row in the rules file's `## Amendments` section. Read
  * the absence here as a decision, not an omission.
  */
 
