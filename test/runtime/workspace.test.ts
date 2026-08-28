@@ -1166,6 +1166,35 @@ describe("what provisioning refuses rather than does", () => {
     );
     expect(existsSync(join(outcome.workspace.dir, ".git"))).toBe(true);
   });
+
+  /**
+   * The half of that which the repository root does *not* cover, and which the gate caught.
+   *
+   * Once the layout follows `rev-parse --show-toplevel`, git answers absolutely however it was
+   * asked, so the assertion above passes with the `resolve` at the boundary removed — the criterion
+   * "the repository path is resolved at the boundary" stopped being checked by the test written for
+   * it, without anyone touching that test. What still depends on the resolve is every sentence
+   * raised *before* git has answered, and those are the ones an operator has to act on: a refusal
+   * naming `../../../var/folders/...` is a path that only resolves from the directory awcli was run
+   * in, which is not where it is being read.
+   */
+  it("names the repository absolutely in a refusal, however it was spelled", async () => {
+    const repositoryPath = await notARepository();
+    const asked = relative(process.cwd(), repositoryPath);
+    expect(isAbsolute(asked)).toBe(false);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath: asked,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("not-a-repository");
+    expect(outcome.message).toContain(repositoryPath);
+    expect(outcome.message).not.toContain(asked);
+  });
 });
 
 describe("what provisioning throws rather than refuses", () => {

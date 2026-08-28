@@ -284,13 +284,17 @@ export async function acquireWorkspace(
 ): Promise<WorkspaceOutcome> {
   const git = request.git ?? systemGitRunner;
   const { runName, choice } = request;
-  // Resolved once, here, and everything below uses only the resolved form. Two things need it, and
-  // no caller exists yet to have found either: `WorkspaceHandle.dir` is documented absolute, and
-  // `worktreePath` joins rather than resolves, so a relative repository path would produce a relative
-  // `dir` for `ctx.fs` and `ctx.exec` to resolve again against whatever their cwd happens to be. The
-  // same unresolved value is also the target argument of `git worktree add`, where a path beginning
-  // with `-` is an option rather than a path. One `resolve` closes both, and it has to be at the
-  // boundary — anywhere further in and there are two spellings of the repository in flight.
+  // Resolved once, here, and everything below uses only the resolved form.
+  //
+  // What this buys has *narrowed*, and saying so is the point: `WorkspaceHandle.dir` and the
+  // `git worktree add` target are now derived from `rev-parse --show-toplevel`, which answers
+  // absolutely whatever git was asked from, so neither depends on this any more. What still does is
+  // every sentence raised before that answer exists — the live-checkout refusal, the
+  // not-a-repository refusal, the missing-directory one — and those are the messages an operator
+  // has to act on. A relative path in one of them is only actionable from the directory awcli
+  // happened to be run in, which is not where the operator will be reading it. It stays at the
+  // boundary for the original reason: anywhere further in and there are two spellings of the
+  // repository in flight.
   const repositoryPath = resolve(request.repositoryPath);
 
   const refuseWith = (kind: WorkspaceRefusalKind, slot: string, message: string) => ({
