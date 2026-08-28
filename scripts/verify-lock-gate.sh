@@ -114,13 +114,14 @@ expect_red "the derived run name is deterministic" src/runtime/run-identity.ts \
 # with two message tables: AWCLI-13 needs the same rules for a slot, and a second hand-written copy
 # would have been a weaker copy. Two consequences, and the second is the one worth writing down.
 #
-# Each still proves the run name's criterion, because this gate's suite is the run name's own:
-# run-identity.test.ts asserts the problem discriminant for each of these rungs against a run name,
-# so breaking the rung turns it red on that evidence alone. What none of them proves is anything
-# about a *slot* — the mirror of the note at the same section of verify-workspace-gate.sh, which
-# cannot prove the run-name half. Neither gate is short a check; the two suites are, between them,
-# where both halves are asserted. What would be wrong is reading either set of mutations as covering
-# both kinds of name because the code they break is now shared.
+# Each still proves the run name's criterion: run-identity.test.ts asserts the problem discriminant
+# for each of these rungs against a run name, so breaking the rung turns it red on that evidence
+# alone. What none of them proves is anything about a *slot* — that file now asserts the slot half
+# too, beside the module that owns both, so a red here says one of the two failed and not which.
+# The mirror of the note at the same section of verify-workspace-gate.sh, which cannot prove the
+# run-name half. Neither gate is short a check; that one file is where both halves are asserted.
+# What would be wrong is reading either set of mutations as covering both kinds of name because the
+# code they break is shared.
 expect_red "a reserved run name is refused" src/runtime/run-identity.ts \
   's/  if \(reserved\.includes\(name\)\) return "reserved";/  if (false) return "reserved";/'
 

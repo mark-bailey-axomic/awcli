@@ -89,28 +89,31 @@ export type NameProblem =
   | "not-lowercase"
   | "git-reserved-suffix";
 
-export interface RunNameRefusal {
+export interface NameRefusal {
   readonly ok: false;
   readonly name: string;
   readonly problem: NameProblem;
   /**
    * Why the name cannot be used, with no advice in it.
    *
-   * Separate from the remedy because one caller needs the reason without the remedy: a name derived
-   * from a workflow reference is refused for reasons that are accurate, and told to "choose another
-   * name" for a name nobody chose. Splitting them is what let that be fixed rather than papered
-   * over — `defaultRunName` takes the reason and supplies its own remedy.
+   * Separate from the remedy because one caller needs the reason without the remedy: a run name
+   * derived from a workflow reference is refused for reasons that are accurate, and told to "choose
+   * another name" for a name nobody chose. Splitting them is what let that be fixed rather than
+   * papered over — `defaultRunName` takes the reason and supplies its own remedy.
+   *
+   * `NameRefusal` rather than `RunNameRefusal`, because a slot refusal is one of these too and a
+   * slot has no `--name` and no `defaultRunName` — the same reason `NameProblem` is not
+   * `RunNameProblem`. The sentences differ per kind (`runNameSentences`, `slotSentences`); the
+   * shape does not.
    */
   readonly reason: string;
   /** Operator-facing, the reason and the remedy together (the gate chain prints this verbatim). */
   readonly message: string;
 }
 
-export type RunNameResult =
-  { readonly ok: true; readonly name: RunName } | RunNameRefusal;
+export type RunNameResult = { readonly ok: true; readonly name: RunName } | NameRefusal;
 
-export type SlotNameResult =
-  { readonly ok: true; readonly slot: SlotName } | RunNameRefusal;
+export type SlotNameResult = { readonly ok: true; readonly slot: SlotName } | NameRefusal;
 
 /**
  * The first rule a name breaks, or nothing when it breaks none.
@@ -126,14 +129,19 @@ export type SlotNameResult =
  *
  * The order is the message's order as much as the rules': each rung assumes the ones above it have
  * passed, so `reserved` is only ever reported of a name that is otherwise legal.
+ *
+ * The length limit is read from the constant rather than passed in. It was a parameter, and both
+ * call sites passed the same value once `MAX_RUN_NAME_LENGTH` and the slot's own limit were merged
+ * — the point of merging them being that a run name and a slot land in one path and one ref and so
+ * cannot have separate ceilings. A parameter with one possible value reads as a knob that is not
+ * one. `reserved` stays: it genuinely differs per kind, and says so where it is declared.
  */
 function firstProblem(
   name: string,
-  maxLength: number,
   reserved: readonly string[],
 ): NameProblem | undefined {
   if (name.length === 0) return "empty";
-  if (name.length > maxLength) return "too-long";
+  if (name.length > MAX_NAME_LENGTH) return "too-long";
   // Before the character test, so `..` is reported as what it is rather than as a stray dot.
   // A name reaching a path join is the one illegal character class with a consequence outside
   // the run's own directory.
@@ -154,7 +162,7 @@ function firstProblem(
 
 /** Whether a string may be used as a run name, and why not when it may not. */
 export function validateRunName(name: string): RunNameResult {
-  const problem = firstProblem(name, MAX_NAME_LENGTH, RESERVED_RUN_NAMES);
+  const problem = firstProblem(name, RESERVED_RUN_NAMES);
   if (problem === undefined) return { ok: true, name: name as RunName };
   return refuse(name, problem, ...runNameSentences(name, problem));
 }
@@ -165,7 +173,7 @@ export function validateRunName(name: string): RunNameResult {
  * The sentences are the kind's own even though the rules are shared, and that split is the point of
  * having one ladder and two tables: every remedy here names `--name`, which is not how a slot
  * arrives and would be advice nobody can take about one. Reason and remedy stay separate fields for
- * the reason `RunNameRefusal.reason` gives.
+ * the reason `NameRefusal.reason` gives.
  */
 function runNameSentences(name: string, problem: NameProblem): [string, string] {
   switch (problem) {
@@ -217,7 +225,7 @@ function runNameSentences(name: string, problem: NameProblem): [string, string] 
  * names the slot.
  */
 export function validateSlotName(slot: string): SlotNameResult {
-  const problem = firstProblem(slot, MAX_NAME_LENGTH, RESERVED_SLOT_NAMES);
+  const problem = firstProblem(slot, RESERVED_SLOT_NAMES);
   if (problem === undefined) return { ok: true, slot: slot as SlotName };
   return refuse(slot, problem, ...slotSentences(slot, problem));
 }
@@ -303,7 +311,7 @@ function refuse(
   problem: NameProblem,
   reason: string,
   remedy: string,
-): RunNameRefusal {
+): NameRefusal {
   return {
     ok: false,
     name: printable(name),
@@ -444,6 +452,17 @@ export function runLockPath(repositoryPath: string, runName: RunName): string {
 const WORKTREES_DIRECTORY = "worktrees";
 
 /**
+ * `<repo>/.awcli/run/worktrees` — the directory every working copy is somewhere beneath.
+ *
+ * Exported because provisioning checks its answer against this: where a working copy *is* once git
+ * has finished with it, resolved through every symlink, has to be inside this directory. That check
+ * needs the boundary as a value rather than as a string built a second time.
+ */
+export function worktreesRoot(repositoryPath: string): string {
+  return join(runtimeRoot(repositoryPath), WORKTREES_DIRECTORY);
+}
+
+/**
  * `<repo>/.awcli/run/worktrees/<run>/<slot>` — one slot's working copy.
  *
  * The layout is the one the technical design document sets out under `### Persisted Shapes`
@@ -474,7 +493,7 @@ export function worktreePathAncestors(
   repositoryPath: string,
   runName: RunName,
 ): readonly string[] {
-  const worktrees = join(runtimeRoot(repositoryPath), WORKTREES_DIRECTORY);
+  const worktrees = worktreesRoot(repositoryPath);
   return [
     join(repositoryPath, RUNTIME_DIRECTORY),
     runtimeRoot(repositoryPath),

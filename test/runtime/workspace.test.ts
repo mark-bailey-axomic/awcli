@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -19,11 +21,9 @@ import { DisposalStack } from "../../src/runtime/disposal.js";
 import {
   DEFAULT_SLOT,
   validateRunName,
-  validateSlotName,
   workspaceBranch,
   worktreePath,
   type RunName,
-  type SlotName,
 } from "../../src/runtime/run-identity.js";
 import {
   systemGitRunner,
@@ -74,10 +74,18 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
-/** An empty repository: initialised, no commit. There is no branch to cut from one of these. */
+/**
+ * An empty repository: initialised, no commit. There is no branch to cut from one of these.
+ *
+ * Canonicalised, because awcli asks git where the repository root is (`rev-parse --show-toplevel`)
+ * and git answers canonically: on macOS the temp directory is `/var/folders/...`, a symlink to
+ * `/private/var/folders/...`, and a test comparing awcli's answer against the uncanonicalised
+ * spelling would be asserting which of the two names for one directory git happens to print.
+ */
 async function bareStart(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "awcli-workspace-"));
-  repositories.push(path);
+  const made = await mkdtemp(join(tmpdir(), "awcli-workspace-"));
+  repositories.push(made);
+  const path = await realpath(made);
   await git(path, "init", "-q", "-b", "main", ".");
   return path;
 }
@@ -118,12 +126,6 @@ function runName(name: string): RunName {
   return result.name;
 }
 
-function slotName(name: string): SlotName {
-  const result = validateSlotName(name);
-  if (!result.ok) throw new Error(`test used an invalid slot name: ${result.message}`);
-  return result.slot;
-}
-
 const TRIAGE = runName("triage");
 
 /**
@@ -147,8 +149,16 @@ function consented(): Extract<WorkspaceChoice, { workspace: "liveTree" }> {
  * `.git` is excluded and that exclusion is deliberate rather than convenient: `git worktree add`
  * writes its own bookkeeping under `.git/worktrees/`, which is git's administrative area and not
  * the operator's work. What the scenario promises is that nothing of *theirs* moved — their branch,
- * their files, and their uncommitted changes — and that awcli itself wrote nowhere but
- * `.awcli/run/`.
+ * their files, and their uncommitted changes.
+ *
+ * `.awcli` is *not* excluded, and that is the correction. It was filtered from both the listing and
+ * the status, which made "my uncommitted changes and current branch are untouched" an assertion
+ * against a view that could not show the one thing provisioning does change: until AWCLI-22 writes
+ * the ignore entry, a run leaves `?? .awcli/` in the operator's `git status`. The two exclusions
+ * looked alike and are not — `.git` is git's own area, `.awcli` is awcli's untracked output in
+ * somebody's repository — and the status filter was a substring match besides, so an operator's own
+ * `notes.awcli.md` would have gone with it. The scenario asserts that entry positively instead, so
+ * the day the ignore line lands this has to be updated rather than going on passing.
  */
 async function checkout(repositoryPath: string) {
   const entries = (await readdir(repositoryPath))
@@ -156,10 +166,10 @@ async function checkout(repositoryPath: string) {
     .sort();
   const status = (await git(repositoryPath, "status", "--porcelain"))
     .split("\n")
-    .filter((line) => line.length > 0 && !line.includes(".awcli"))
+    .filter((line) => line.length > 0)
     .sort();
   return {
-    entries: entries.filter((entry) => entry !== ".awcli"),
+    entries,
     status,
     branch: (await git(repositoryPath, "branch", "--show-current")).trim(),
     head: (await git(repositoryPath, "rev-parse", "HEAD")).trim(),
@@ -174,6 +184,17 @@ async function branchExists(repositoryPath: string, branch: string): Promise<boo
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether a recorded git invocation is the provisioning add.
+ *
+ * By membership rather than by position: awcli prefixes the add with `-c core.hooksPath=...`, so a
+ * matcher anchored at `args[0]` silently stops matching — which for the recording test below would
+ * turn "no add was attempted" from an assertion into a tautology.
+ */
+function isWorktreeAdd(args: readonly string[]): boolean {
+  return args.includes("worktree") && args.includes("add");
 }
 
 /** Every branch in the repository, so a test can say that no *second* branch appeared. */
@@ -222,10 +243,17 @@ describe("provisioning a working copy", () => {
     expect(await workspace.head()).toBe(before.head);
     expect(await workspace.dirty()).toBe(false);
 
-    // And the operator's checkout is exactly as it was: same branch, same head, same bytes in the
-    // file they had edited, same untracked file, same working-tree entries apart from `.awcli`.
+    // And the operator's checkout is exactly as it was — same branch, same head, same bytes in the
+    // file they had edited, same untracked file — plus exactly one new thing, named rather than
+    // filtered out: the runtime directory, which shows as untracked until AWCLI-22 writes the
+    // ignore line for it. Stating it is what makes this scenario able to notice a run that leaves
+    // anything else behind, and what makes it fail the day the ignore line lands.
     const after = await checkout(repositoryPath);
-    expect(after).toEqual(before);
+    expect(after).toEqual({
+      ...before,
+      entries: [...before.entries, ".awcli"].sort(),
+      status: [...before.status, "?? .awcli/"].sort(),
+    });
     expect(after.file).toBe("committed\nuncommitted\n");
 
     // Nothing was written into their checkout outside `.awcli/run/`. `.awcli` is the only entry
@@ -271,11 +299,17 @@ describe("provisioning a working copy", () => {
 
     // A consent value is a module-private identity, not a shape. A frozen empty object is what one
     // looks like from the outside, and a spread copy of the real one carries every property it has.
+    // The last two are the ones with discriminating power, which is why the list has to include
+    // them: `Object.create` of the real consent passes any check that walks the prototype chain,
+    // and a `Proxy` around it passes any check that probes properties or asks `instanceof`. Only
+    // comparing by identity refuses all five, and only these two would notice if that changed.
     const real = consented();
     for (const impostor of [
       Object.freeze({}) as LiveCheckoutConsent,
       { ...real.consent },
       JSON.parse("{}") as LiveCheckoutConsent,
+      Object.create(real.consent) as LiveCheckoutConsent,
+      new Proxy(real.consent, {}),
     ]) {
       const outcome = await acquireWorkspace(new DisposalStack(), {
         repositoryPath,
@@ -386,39 +420,7 @@ describe("provisioning a working copy", () => {
   });
 });
 
-describe("the branch and the path a run and slot imply", () => {
-  /**
-   * The determinism criterion. A timestamp, a uuid or a counter anywhere near either of these
-   * would make a resumed run unable to find what it made (BR-036) and would leave one branch per
-   * iteration behind.
-   */
-  it("names the same branch and path for the same run and slot, every time", () => {
-    const first = workspaceBranch(TRIAGE, slotName("reviewer"));
-    const again = workspaceBranch(runName("triage"), slotName("reviewer"));
-    expect(first).toBe(again);
-    // Against a literal as well as against itself: two calls in one process agree even when both
-    // are derived from the clock, and the literal is what rules that out.
-    expect(first).toBe("awcli/triage/reviewer");
-    expect(worktreePath("/repo", TRIAGE, slotName("reviewer"))).toBe(
-      "/repo/.awcli/run/worktrees/triage/reviewer",
-    );
-    expect(worktreePath("/repo", TRIAGE, slotName("reviewer"))).toBe(
-      worktreePath("/repo", runName("triage"), slotName("reviewer")),
-    );
-  });
-
-  it("gives every slot its own branch and its own directory", () => {
-    expect(workspaceBranch(TRIAGE, slotName("one"))).not.toBe(
-      workspaceBranch(TRIAGE, slotName("two")),
-    );
-    expect(worktreePath("/repo", TRIAGE, slotName("one"))).not.toBe(
-      worktreePath("/repo", TRIAGE, slotName("two")),
-    );
-    expect(worktreePath("/repo", TRIAGE, DEFAULT_SLOT)).not.toBe(
-      worktreePath("/repo", runName("release-notes"), DEFAULT_SLOT),
-    );
-  });
-
+describe("the slot a working copy is provisioned for", () => {
   it("uses the default slot for a caller with no name to give", async () => {
     const repositoryPath = await repository();
     const stack = new DisposalStack();
@@ -433,44 +435,6 @@ describe("the branch and the path a run and slot imply", () => {
     expect(outcome.workspace.dir).toBe(
       worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT),
     );
-  });
-});
-
-describe("a slot name is validated, never sanitised", () => {
-  it.each([
-    ["../../etc", "traversal"],
-    ["..", "traversal"],
-    ["a/b", "illegal-characters"],
-    [".hidden", "illegal-characters"],
-    ["trailing.", "illegal-characters"],
-    ["Reviewer", "not-lowercase"],
-    ["nightly.lock", "git-reserved-suffix"],
-    ["", "empty"],
-    ["x".repeat(65), "too-long"],
-  ] as const)("refuses %j as a slot", (name, problem) => {
-    const result = validateSlotName(name);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.problem).toBe(problem);
-    expect(result.message.length).toBeGreaterThan(20);
-  });
-
-  it("accepts what a workflow would sensibly call a slot", () => {
-    expect(validateSlotName("reviewer").ok).toBe(true);
-    expect(validateSlotName("agent-1").ok).toBe(true);
-    expect(validateSlotName("a").ok).toBe(true);
-    expect(validateSlotName(DEFAULT_SLOT).ok).toBe(true);
-  });
-
-  it("does not echo a rejected slot's control characters back to the terminal", () => {
-    const hostile = "reviewer\u001b[2Jgone";
-    const result = validateSlotName(hostile);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.message).not.toContain("\u001b");
-    expect(result.name).not.toContain("\u001b");
-    // Still recognisable enough to act on, minus what a terminal would act on.
-    expect(result.message).toContain("reviewer");
   });
 
   /**
@@ -593,6 +557,81 @@ describe("what provisioning refuses rather than does", () => {
   });
 
   /**
+   * A symlink sitting at the target before awcli looks at all — the static half of the same hazard.
+   *
+   * `assertNoSymlinkedAncestors` deliberately stops at the target's parent, so the only thing standing
+   * between a committed link here and `git worktree add` following it is that awcli refuses to
+   * provision over *anything* at the target. That is a refusal rather than a throw because a link is
+   * one of the things a previous run or an operator can legitimately have put there, and the answer
+   * — leave it alone and say so — is the same either way.
+   */
+  it("refuses a symlink already at the target, and follows nothing", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
+    repositories.push(elsewhere);
+    const target = join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main");
+    await mkdir(dirname(target), { recursive: true });
+    await symlink(elsewhere, target);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+    expect(await readdir(elsewhere)).toEqual([]);
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+    // Left exactly as it was: provisioning never removes what it finds, a link included.
+    expect((await lstat(target)).isSymbolicLink()).toBe(true);
+  });
+
+  /**
+   * A symlink planted at the target *after* awcli has looked at it.
+   *
+   * The early check cannot be the guarantee: between it and `git worktree add` sit a subprocess, a
+   * recursive mkdir and four lstats. The window is opened deterministically here rather than raced
+   * for — the git seam is the subprocess that sits inside it, so the runner plants the link on its
+   * way past, which is exactly what another process doing it at that moment would look like.
+   *
+   * Without the non-recursive `mkdir` of the target, git follows the link and checks the tree out at
+   * its destination, outside the repository, while the handle and the operator-facing description
+   * both say it is inside. Reproduced on git 2.55 before this was written.
+   */
+  it("refuses a symlink planted at the target after the check, and follows nothing", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
+    repositories.push(elsewhere);
+    const target = join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main");
+
+    const planting: GitRunner = async (args, cwd) => {
+      // The last git call before the add, and therefore the middle of the window.
+      if (args[0] === "for-each-ref") {
+        await mkdir(dirname(target), { recursive: true });
+        await symlink(elsewhere, target);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: planting,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+    // Nothing was checked out through the link, and no branch was cut for a working copy that would
+    // have been outside the repository.
+    expect(await readdir(elsewhere)).toEqual([]);
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+  });
+
+  /**
    * A branch that appears between the collision check and the add.
    *
    * The check cannot be the guarantee here any more than the target `lstat` can: a `mkdir` and a
@@ -701,6 +740,57 @@ describe("what provisioning refuses rather than does", () => {
   });
 
   /**
+   * The same fold, one segment further up — the case the fold could not reach.
+   *
+   * `branchCollision` folds case, but the refs it folds came from
+   * `for-each-ref refs/heads/awcli`, and git matches that pattern *case-sensitively*: a branch
+   * called `AWCLI` is simply not in the list, so there is nothing for the fold to fold against and
+   * the second look after a failed add asks the same narrow question again. What an operator on
+   * APFS then gets is `git worktree add exited 128` and no remedy — verbatim the outcome the
+   * folding exists to prevent. So the question is asked of `refs/heads`, and the namespace filter
+   * is the part that folds.
+   */
+  it("refuses a namespace branch that differs from awcli's own only in case", async () => {
+    const repositoryPath = await repository();
+    await git(repositoryPath, "branch", "AWCLI");
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("branch-exists");
+    // Named as the operator spelled it, and named as the collision it is rather than as git's
+    // `cannot lock ref`.
+    expect(outcome.message).toContain("AWCLI");
+    expect(outcome.message).toContain("--name");
+    expect(await branches(repositoryPath)).toEqual(["AWCLI", "main"]);
+  });
+
+  /**
+   * An unrelated branch is not a collision, which is what the widened query has to stay honest
+   * about: asking `refs/heads` for everything and then filtering loosely would refuse every
+   * repository that has any branch at all.
+   */
+  it("provisions past branches that have nothing to do with awcli's namespace", async () => {
+    const repositoryPath = await repository();
+    for (const unrelated of ["feature/awcli-adjacent", "awclish", "main-2"]) {
+      await git(repositoryPath, "branch", unrelated);
+    }
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(true);
+  });
+
+  /**
    * The ordinary case — a branch an earlier run of this name and slot left behind (BR-036).
    *
    * Asserted as what the *check before the add* buys, not only as the refusal that comes out: `-b`
@@ -731,17 +821,37 @@ describe("what provisioning refuses rather than does", () => {
     if (outcome.ok) return;
     expect(outcome.kind).toBe("branch-exists");
     // Decided from the collision query, before anything was tried or made.
-    expect(asked.filter((args) => args[0] === "worktree" && args[1] === "add")).toEqual(
-      [],
-    );
+    expect(asked.filter(isWorktreeAdd)).toEqual([]);
     expect(existsSync(join(repositoryPath, ".awcli", "run", "worktrees"))).toBe(false);
     expect(outcome.message).toContain("awcli/triage/main");
-    expect(outcome.message).toContain("git worktree remove");
-    expect(outcome.message).toContain("git branch -D awcli/triage/main");
     expect((await git(repositoryPath, "rev-parse", "awcli/triage/main")).trim()).toBe(
       before,
     );
     expect(stack.held).toEqual([]);
+
+    // The remedy fits what is there, which for this scenario is a branch no working copy holds.
+    // git rejects `git worktree remove` on a path with nothing registered at it — so advising it
+    // "first", as the message did unconditionally, reads as blocking the one command that works.
+    // Asserted against git rather than as a string, because a string match cannot tell a sentence
+    // git accepts from the same sentence where git rejects it.
+    await expect(
+      git(
+        repositoryPath,
+        "worktree",
+        "remove",
+        worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT),
+      ),
+    ).rejects.toThrow(/is not a working tree/);
+    expect(outcome.message).not.toContain("git worktree remove");
+    expect(outcome.message).toContain("git branch -D awcli/triage/main");
+    // And what it does advise clears the way, run verbatim out of the message.
+    await git(repositoryPath, "branch", "-D", "awcli/triage/main");
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(second.ok).toBe(true);
   });
 
   /**
@@ -910,6 +1020,106 @@ describe("what provisioning refuses rather than does", () => {
     expect(outcome.message).not.toContain("Install git");
   });
 
+  /**
+   * A `--repo` pointing at a subdirectory, which git answers about from the repository above it.
+   *
+   * `rev-parse --git-dir` exits 0 from every directory of a repository, so every check in the
+   * preflight passed for `/repo/packages/api` — and then the whole layout was built from that path:
+   * a second `.awcli/run` inside the repository, holding a whole checkout that the one generated
+   * ignore line BR-030 allows does not cover, while the branch was cut in the repository above. The
+   * root is what git is asked for, and the root is what the layout is derived from.
+   */
+  it("puts the layout at the repository root, not at the subdirectory it was pointed at", async () => {
+    const repositoryPath = await repository();
+    const deep = join(repositoryPath, "packages", "api");
+    await mkdir(deep, { recursive: true });
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath: deep,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.workspace.dir).toBe(
+      worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT),
+    );
+    // One runtime directory in the repository, and it is the one at the root.
+    expect(existsSync(join(deep, ".awcli"))).toBe(false);
+    expect(existsSync(join(repositoryPath, ".awcli", "run", "worktrees"))).toBe(true);
+  });
+
+  /**
+   * git's own complaint reaches the operator, rather than being replaced by a guess at what it was.
+   *
+   * Any non-zero exit from `rev-parse --git-dir` was reported as "is not a git repository", which is
+   * a confident sentence about a cause awcli never established: a repository owned by another uid
+   * exits 128 with `fatal: detected dubious ownership` and the exact remedy, and awcli threw the
+   * remedy away.
+   */
+  it("quotes git rather than guessing when the repository check fails", async () => {
+    const repositoryPath = await repository();
+    const dubious: GitRunner = async (args, cwd): Promise<GitOutcome> =>
+      args[0] === "rev-parse" && args[1] === "--git-dir"
+        ? {
+            kind: "ran",
+            code: 128,
+            stdout: "",
+            stderr: `fatal: detected dubious ownership in repository at '${repositoryPath}'\n`,
+          }
+        : systemGitRunner(args, cwd);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: dubious,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("not-a-repository");
+    expect(outcome.message).toContain("dubious ownership");
+  });
+
+  /**
+   * A target occupied while git cannot say what is registered there.
+   *
+   * `worktreeRegistration` is documented as unable to throw, because it builds a *refusal message* —
+   * but it asks git through the raw runner, and the raw runner throws for a timeout and for an
+   * answer larger than awcli reads. Unguarded, that rejection escaped `acquireWorkspace` as a fault
+   * on the one path the module says never throws, replacing a refusal the operator can act on with
+   * `git worktree list --porcelain did not finish within 120000ms`.
+   */
+  it("still refuses an occupied target when git could not say what is registered there", async () => {
+    const repositoryPath = await repository();
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    await mkdir(target, { recursive: true });
+    const stalling: GitRunner = async (args, cwd) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        throw new Error(
+          "git worktree list --porcelain did not finish within 120000ms in " + cwd,
+        );
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: stalling,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+    // The third answer: both remedies named, and neither claimed.
+    expect(outcome.message).toContain("git worktree remove");
+    expect(outcome.message).toContain("could not ask git");
+  });
+
   it("refuses when git is not installed", async () => {
     const repositoryPath = await repository();
     const absent: GitRunner = async () => ({
@@ -1002,90 +1212,6 @@ describe("what provisioning throws rather than refuses", () => {
       expect(await readdir(elsewhere)).toEqual([]);
     },
   );
-
-  /**
-   * The stderr is the shape git actually produces, and that is the point of the test.
-   *
-   * `git worktree add` prints `Preparing worktree (...)` before it fails, so its complaint is never
-   * the first line — and the first version of this mock used a single line, which is precisely why a
-   * green suite covered a message that quoted the progress line and discarded the cause. This is the
-   * one path the module declares it cannot explain and therefore throws on, so the quoted line is the
-   * whole of the remedy.
-   */
-  /**
-   * A symlink planted at the target *after* awcli has looked at it.
-   *
-   * The early check cannot be the guarantee: between it and `git worktree add` sit a subprocess, a
-   * recursive mkdir and four lstats. The window is opened deterministically here rather than raced
-   * for — the git seam is the subprocess that sits inside it, so the runner plants the link on its
-   * way past, which is exactly what another process doing it at that moment would look like.
-   *
-   * Without the non-recursive `mkdir` of the target, git follows the link and checks the tree out at
-   * its destination, outside the repository, while the handle and the operator-facing description
-   * both say it is inside. Reproduced on git 2.55 before this was written.
-   */
-  /**
-   * A symlink sitting at the target before awcli looks at all — the static half of the same hazard.
-   *
-   * `refuseSymlinkedAncestors` deliberately stops at the target's parent, so the only thing standing
-   * between a committed link here and `git worktree add` following it is that awcli refuses to
-   * provision over *anything* at the target. That is a refusal rather than a throw because a link is
-   * one of the things a previous run or an operator can legitimately have put there, and the answer
-   * — leave it alone and say so — is the same either way.
-   */
-  it("refuses a symlink already at the target, and follows nothing", async () => {
-    const repositoryPath = await repository();
-    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
-    repositories.push(elsewhere);
-    const target = join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main");
-    await mkdir(dirname(target), { recursive: true });
-    await symlink(elsewhere, target);
-
-    const outcome = await acquireWorkspace(new DisposalStack(), {
-      repositoryPath,
-      runName: TRIAGE,
-      choice: resolveWorkspaceChoice({}),
-    });
-
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) return;
-    expect(outcome.kind).toBe("occupied");
-    expect(await readdir(elsewhere)).toEqual([]);
-    expect(await branches(repositoryPath)).toEqual(["main"]);
-    // Left exactly as it was: provisioning never removes what it finds, a link included.
-    expect((await lstat(target)).isSymbolicLink()).toBe(true);
-  });
-
-  it("refuses a symlink planted at the target after the check, and follows nothing", async () => {
-    const repositoryPath = await repository();
-    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
-    repositories.push(elsewhere);
-    const target = join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main");
-
-    const planting: GitRunner = async (args, cwd) => {
-      // The last git call before the add, and therefore the middle of the window.
-      if (args[0] === "for-each-ref") {
-        await mkdir(dirname(target), { recursive: true });
-        await symlink(elsewhere, target);
-      }
-      return systemGitRunner(args, cwd);
-    };
-
-    const outcome = await acquireWorkspace(new DisposalStack(), {
-      repositoryPath,
-      runName: TRIAGE,
-      choice: resolveWorkspaceChoice({}),
-      git: planting,
-    });
-
-    expect(outcome.ok).toBe(false);
-    if (outcome.ok) return;
-    expect(outcome.kind).toBe("occupied");
-    // Nothing was checked out through the link, and no branch was cut for a working copy that would
-    // have been outside the repository.
-    expect(await readdir(elsewhere)).toEqual([]);
-    expect(await branches(repositoryPath)).toEqual(["main"]);
-  });
 
   /**
    * A collision query that failed, which must not read as "no collision".
@@ -1187,10 +1313,19 @@ describe("what provisioning throws rather than refuses", () => {
     expect(message).not.toMatch(/^ENOTDIR/);
   });
 
+  /**
+   * The stderr is the shape git actually produces, and that is the point of the test.
+   *
+   * `git worktree add` prints `Preparing worktree (...)` before it fails, so its complaint is never
+   * the first line — and the first version of this mock used a single line, which is precisely why a
+   * green suite covered a message that quoted the progress line and discarded the cause. This is the
+   * one path the module declares it cannot explain and therefore throws on, so the quoted line is the
+   * whole of the remedy.
+   */
   it("throws when git fails for a reason awcli does not recognise", async () => {
     const repositoryPath = await repository();
     const failing: GitRunner = async (args, cwd): Promise<GitOutcome> => {
-      if (args[0] === "worktree" && args[1] === "add") {
+      if (isWorktreeAdd(args)) {
         return {
           kind: "ran",
           code: 128,
@@ -1223,6 +1358,256 @@ describe("what provisioning throws rather than refuses", () => {
     expect(
       existsSync(join(repositoryPath, ".awcli", "run", "worktrees", "triage", "main")),
     ).toBe(false);
+  });
+});
+
+/**
+ * What awcli's own git invocations inherit from the process that started awcli.
+ *
+ * Both of these are about provisioning being the one moment awcli acts on a repository with the
+ * operator's identity and before anything of the run exists to contain it. The environment decides
+ * *which* repository git acts on — `-C` and a working directory do not settle it — and a checkout
+ * runs whatever `post-checkout` the repository carries.
+ */
+describe("what provisioning does not inherit", () => {
+  /** Sets variables for the length of one call and puts the environment back however it ends. */
+  async function withEnvironment<T>(
+    variables: Readonly<Record<string, string>>,
+    body: () => Promise<T>,
+  ): Promise<T> {
+    const before = new Map(
+      Object.keys(variables).map((name) => [name, process.env[name]] as const),
+    );
+    Object.assign(process.env, variables);
+    try {
+      return await body();
+    } finally {
+      for (const [name, value] of before) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  }
+
+  /**
+   * awcli run from somewhere that has already told git which repository to use.
+   *
+   * A git hook, `git rebase --exec` and `git bisect run` all export `GIT_DIR`, and git obeys it over
+   * both the working directory and `-C`. Inherited, `git worktree add` cuts the branch and checks
+   * the tree out in *that* repository while `WorkspaceHandle.dir`, the BR-015 sentence and every
+   * refusal name the one the operator asked about. Reproduced on git 2.55 before this was written.
+   */
+  it("provisions in the repository it was given, not the one GIT_DIR names", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await repository();
+
+    const outcome = await withEnvironment(
+      {
+        GIT_DIR: join(elsewhere, ".git"),
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "core.bare",
+        GIT_CONFIG_VALUE_0: "false",
+      },
+      async () =>
+        acquireWorkspace(new DisposalStack(), {
+          repositoryPath,
+          runName: TRIAGE,
+          choice: resolveWorkspaceChoice({}),
+        }),
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.workspace.dir).toBe(
+      worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT),
+    );
+    // The repository awcli was pointed at got the branch and the working copy...
+    expect(await branches(repositoryPath)).toEqual(["awcli/triage/main", "main"]);
+    expect(existsSync(join(outcome.workspace.dir, ".git"))).toBe(true);
+    // ...and the other one is exactly as it was: no branch of awcli's, nothing written into it.
+    expect(await branches(elsewhere)).toEqual(["main"]);
+    expect(existsSync(join(elsewhere, ".awcli"))).toBe(false);
+  });
+
+  /**
+   * `git worktree add` performs a checkout, and a checkout runs `post-checkout`.
+   *
+   * Hooks resolve through the *common* git dir, which every worktree of a repository shares, so this
+   * is not a file the run's own working copy controls: an agent in one slot can write
+   * `<repo>/.git/hooks/post-checkout` and the next acquisition — any run, any slot — executes it on
+   * the host, before AWCLI-25's execution boundary exists to contain anything. Provisioning is
+   * awcli's own step, so awcli says which hooks it runs: none.
+   */
+  it("does not run the repository's post-checkout hook while provisioning", async () => {
+    const repositoryPath = await repository();
+    const evidence = await mkdtemp(join(tmpdir(), "awcli-workspace-hook-"));
+    repositories.push(evidence);
+    const marker = join(evidence, "the-hook-ran");
+    const hook = join(repositoryPath, ".git", "hooks", "post-checkout");
+    await mkdir(dirname(hook), { recursive: true });
+    await writeFile(hook, `#!/bin/sh\necho ran > "${marker}"\n`, "utf8");
+    await chmod(hook, 0o755);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    // The provisioning still succeeds — hooks are suppressed, not depended on.
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(existsSync(join(outcome.workspace.dir, ".git"))).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe("faults the operator cannot choose differently", () => {
+  /**
+   * A repository whose HEAD cannot be read, which is not the same thing as one with no commit.
+   *
+   * `rev-parse HEAD` exits non-zero for a commitless repository *and* for a repository awcli cannot
+   * read at all — dubious ownership, a dangling HEAD. Mapping every non-zero exit to "no commit yet"
+   * told an operator with a full history to make their first commit. `--verify --quiet` is what
+   * tells the two apart: 1 for a rev that genuinely resolves to nothing, and git's own exit status
+   * with its own complaint for anything else.
+   */
+  it("throws rather than claiming a repository has no commit when git could not answer", async () => {
+    const repositoryPath = await repository();
+    const unreadable: GitRunner = async (args, cwd): Promise<GitOutcome> =>
+      args[0] === "rev-parse" && args.includes("HEAD")
+        ? {
+            kind: "ran",
+            code: 128,
+            stdout: "",
+            stderr: "fatal: ambiguous argument 'HEAD': unknown revision\n",
+          }
+        : systemGitRunner(args, cwd);
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: unreadable,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("ambiguous argument");
+    // Not the refusal, whose remedy is to make a commit in a repository that has several.
+    expect(message).not.toContain("Make one commit");
+  });
+
+  /**
+   * A git that failed and printed nothing.
+   *
+   * Five thrown messages end by quoting git, and `gitComplaint` answered the empty string for empty
+   * stderr — so the operator got an exit status, a full stop, and a trailing space that reads as a
+   * message cut off mid-sentence. Silence is an answer and gets said as one.
+   */
+  it("says git printed nothing rather than trailing off", async () => {
+    const repositoryPath = await repository();
+    const silent: GitRunner = async (args, cwd): Promise<GitOutcome> =>
+      isWorktreeAdd(args)
+        ? { kind: "ran", code: 128, stdout: "", stderr: "" }
+        : systemGitRunner(args, cwd);
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: silent,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("exited 128");
+    expect(message).toMatch(/git printed nothing/);
+    expect(message).not.toMatch(/\s$/);
+  });
+
+  /**
+   * A symlink planted in the layout after awcli has checked it and before it creates anything.
+   *
+   * The early check is a check, not a guarantee: a subprocess sits between it and the creation of
+   * the directories. `mkdir` with `recursive` follows a link at any level, so the recursive call
+   * created the run's whole directory tree *inside the link's destination* before the second check
+   * looked and threw — awcli had already written outside the repository by the time it refused. One
+   * level at a time, non-recursively, is what makes the refusal precede the writing: `mkdir` never
+   * follows a final symlink, so it answers EEXIST for one and the level is inspected before the
+   * next is attempted.
+   */
+  it("creates nothing through a symlink planted in the layout after the check", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
+    repositories.push(elsewhere);
+    const planting: GitRunner = async (args, cwd) => {
+      // The last git call before the layout is created, and therefore the middle of the window.
+      if (args[0] === "for-each-ref") {
+        await symlink(elsewhere, join(repositoryPath, ".awcli"));
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    await expect(
+      acquireWorkspace(new DisposalStack(), {
+        repositoryPath,
+        runName: TRIAGE,
+        choice: resolveWorkspaceChoice({}),
+        git: planting,
+      }),
+    ).rejects.toThrow(/symbolic link/);
+
+    // Nothing of awcli's was created through it. Not "nothing was checked out through it": the
+    // directories are the part that used to land outside the repository, and they landed there
+    // before anything refused.
+    expect(await readdir(elsewhere)).toEqual([]);
+  });
+
+  /**
+   * A working copy that ended up somewhere other than where awcli put the directory.
+   *
+   * Every check above is checked-then-used, and no arrangement of `lstat` and `mkdir` closes that
+   * completely — the kernel resolves the path again, for git, after awcli last looked. So the
+   * placement is verified once more from the answer that cannot be raced: where the target actually
+   * is once git has finished with it. A working copy outside the runtime directory is a fault
+   * whatever put it there, because `WorkspaceHandle.dir` and the BR-015 sentence would both name a
+   * path inside the repository while an agent worked outside it.
+   */
+  it("throws when the working copy did not land inside the runtime directory", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-elsewhere-"));
+    repositories.push(elsewhere);
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const redirecting: GitRunner = async (args, cwd) => {
+      // Between awcli creating the target and git using it — the window no check can close, staged
+      // here as the one thing that is inside it.
+      if (isWorktreeAdd(args)) {
+        await rm(target, { recursive: true, force: true });
+        await symlink(elsewhere, target);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: redirecting,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("outside");
+    expect(message).toContain(target);
   });
 });
 
@@ -1262,6 +1647,51 @@ describe("releasing a working copy", () => {
   });
 });
 
+describe("a run that is already unwinding", () => {
+  /**
+   * One answer for "the run is shutting down", whichever refusal it would otherwise have been.
+   *
+   * `DisposalStack.acquire` refuses outright once an unwind has begun, so every condition decided
+   * *inside* `open` surfaces as that refusal — but two of the eight used to be decided before the
+   * stack was touched at all, and went on answering. A workflow's in-flight `sandbox({ name:
+   * "Review 1" })` landing after a SIGINT was told its slot name was illegal, implying a workflow
+   * bug, while its sibling `sandbox({ name: "reviewer" })` in the same moment was told the run was
+   * closing. Nothing is lost by deciding them inside: a failed `open` is spliced out of the stack's
+   * entries, so neither appears in the unwind report either way.
+   */
+  it.each([
+    ["an illegal slot name", { slot: "Review 1" }],
+    [
+      "a live checkout with no consent",
+      { choice: { workspace: "liveTree", consent: {} as LiveCheckoutConsent } },
+    ],
+    ["nothing wrong at all", {}],
+  ] as const)(
+    "answers %s the same way once the stack is closed",
+    async (_case, extra) => {
+      const repositoryPath = await repository();
+      const stack = new DisposalStack();
+      await stack.unwind();
+
+      const thrown = await acquireWorkspace(stack, {
+        repositoryPath,
+        runName: TRIAGE,
+        choice: resolveWorkspaceChoice({}),
+        ...extra,
+      }).then(
+        (outcome) => outcome,
+        (error: unknown) => error,
+      );
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect(String(thrown)).toContain(WORKING_COPY_RESOURCE);
+      // And nothing was provisioned for any of them.
+      expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
+      expect(await branches(repositoryPath)).toEqual(["main"]);
+    },
+  );
+});
+
 describe("what the isolation awcli reports says, and what it leaves to others", () => {
   /**
    * `WorkspaceIsolation` is one axis of two (ADR-0003), and the sentence has to stay inside it.
@@ -1295,6 +1725,37 @@ describe("what the isolation awcli reports says, and what it leaves to others", 
     expect(description).not.toMatch(/network/i);
     expect(description).not.toMatch(/credential/i);
     expect(description).not.toMatch(/reachable/i);
+  });
+});
+
+describe("what the operator's own repository is allowed to put in a message", () => {
+  /**
+   * A branch name carrying a right-to-left override, on the live checkout.
+   *
+   * git's ref rules ban the C0 controls and DEL and permit everything else, the bidirectional format
+   * characters included — verified: `git checkout -b` accepts one and `branch --show-current`
+   * answers it back verbatim. That value went into `WorkspaceHandle.branch` and into the BR-015
+   * sentence unfiltered, so the line the operator read was not the line awcli emitted: everything
+   * after the override renders reversed. The refusal path already sanitises refs read out of the
+   * repository (`branchCollision`'s `short`); this is the same class of value on the success path.
+   */
+  it("does not carry a bidi override out of the operator's branch name into what it prints", async () => {
+    const repositoryPath = await repository();
+    const hostile = "main\u202egnitset-elbuort";
+    await git(repositoryPath, "checkout", "-q", "-b", hostile);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.workspace.branch).not.toContain("\u202e");
+    expect(outcome.workspace.isolation.description).not.toContain("\u202e");
+    // Still recognisable: what is removed is what a terminal renders differently, not the name.
+    expect(outcome.workspace.branch).toContain("main");
   });
 });
 

@@ -1,6 +1,6 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, realpath, rmdir } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import type { Acquisition, DisposalStack } from "./disposal.js";
 import { gitComplaint, systemGitRunner, type GitRunner } from "./git-process.js";
 import { printable } from "./printable.js";
@@ -12,6 +12,7 @@ import {
   workspaceBranchPrefixes,
   worktreePath,
   worktreePathAncestors,
+  worktreesRoot,
   type RunName,
   type SlotName,
 } from "./run-identity.js";
@@ -46,6 +47,13 @@ import {
  *     earlier, when git then failed, and `rmdir` is what holds it to "empty". Note that the
  *     refusals do *advise* `git worktree remove`: what awcli will not do on its own, an operator
  *     may well want to do, and the message's job is to name the command that works.
+ *
+ * Provisioning itself runs no code out of the repository. `git worktree add` performs a checkout,
+ * and a checkout runs `post-checkout` from the *shared* git dir — so the one moment awcli acts with
+ * the operator's identity, before any execution boundary exists, would be handing execution to a
+ * file any agent in any slot can have written. Hooks are off for it (`NO_HOOKS`), and `describe`
+ * says so, because "the worktree protects your checkout" is not a claim to make while making the
+ * worktree ran the repository's code.
  *
  * Worktree isolation is not security isolation, and this file says so in the sentence it hands the
  * operator: it protects the repository, not the machine (BR-015). What it does *not* say is what an
@@ -96,9 +104,18 @@ export type WorkspaceAxis = "liveTree" | "worktree";
  *   - **Out of a workflow's reach.** Not because the sentinel is unexported — it *is* handed out, by
  *     that resolver, and what comes back is an ordinary reusable value that a caller can keep. What
  *     keeps it away from a workflow is that nothing routes workflow input into the resolver:
- *     `SandboxOptions` declares only `name`, and the flag is read from the command line. That is the
- *     property to preserve. A future call site passing workflow-supplied data to
- *     `resolveWorkspaceChoice` would defeat all of this without touching a line in here.
+ *     `SandboxOptions` declares only `name`, the flag is read from the command line, and nothing in
+ *     `src/` performs a dynamic `import` at all, so there is no workflow code in this process to
+ *     call the resolver in the first place. That is the property to preserve, and it is the weakest
+ *     of the three: it is a fact about the call sites that exist today, not about this module.
+ *
+ *     What preserves it is a rule for the ticket that changes it. AWCLI-20 is where a workflow first
+ *     gets loaded in-process, and the requirement on that ticket is that `resolveWorkspaceChoice` is
+ *     called from the CLI layer, from the parsed command line, and the `WorkspaceChoice` handed down
+ *     — never re-derived anywhere a workflow can reach. Binding the consent to the run name instead
+ *     was considered and is not the answer: a workflow knows its own run name, so it would satisfy
+ *     the check as readily as the CLI does, and the ceremony would read as a guarantee where the
+ *     call-site rule is the whole of it.
  *
  * BR-014 wants the person whose uncommitted work is at stake to be the one asking. A boolean flag on
  * a request object would have been the obvious design and it is exactly what a workflow could set.
@@ -284,31 +301,19 @@ export async function acquireWorkspace(
     message,
   });
 
-  // Before the stack, both of them. Neither needs a resource opened to be decided, and a refusal
-  // that has registered an acquisition is a resource nobody asked for appearing in the unwind
-  // report.
+  // The slot is decided out here because two things need it before anything is opened: the refusal
+  // shape carries it, and so does the message for a slot that is not usable. Deciding is all that
+  // happens here — the *answer* is given inside `open` with every other one, see below.
   const asked = request.slot;
   const validated = asked === undefined ? undefined : validateSlotName(asked);
-  if (validated !== undefined && !validated.ok) {
-    return refuseWith(
+  const invalidSlot = (refusal: Extract<typeof validated, { ok: false }>) =>
+    refuseWith(
       "invalid-slot",
-      validated.name,
-      `awcli will not use "${validated.name}" as a slot in the "${runName}" run: ${validated.message} No working copy was provisioned and nothing was changed.`,
+      refusal.name,
+      `awcli will not use "${refusal.name}" as a slot in the "${runName}" run: ${refusal.message} No working copy was provisioned and nothing was changed.`,
     );
-  }
-  const slot: SlotName = validated === undefined ? DEFAULT_SLOT : validated.slot;
-
-  // The consent check, and the one thing it must never do is fall back. A `liveTree` asked for
-  // without the operator's own consent is refused outright: quietly giving a worktree would answer a
-  // request with something else, and quietly proceeding would put an agent in their checkout on the
-  // strength of a value a workflow could have written.
-  if (choice.workspace === "liveTree" && choice.consent !== OPERATOR_CONSENT) {
-    return refuseWith(
-      "live-checkout-not-consented",
-      slot,
-      `awcli will not work in your checkout at ${repositoryPath} for the "${runName}" run: working there is the operator's decision and this run has no ${LIVE_CHECKOUT_FLAG} from one. Nothing was provisioned, and awcli has not silently used a worktree instead — run it again with ${LIVE_CHECKOUT_FLAG} to work in your checkout, or without it to have awcli provision a worktree.`,
-    );
-  }
+  const slot: SlotName =
+    validated === undefined || !validated.ok ? DEFAULT_SLOT : validated.slot;
 
   // The refusal travels on the error and nowhere else. `open` either returns a handle or throws,
   // there is no third channel through the stack, and `DisposalStack.acquire` rethrows what `open`
@@ -325,10 +330,31 @@ export async function acquireWorkspace(
     // its branch carries the commits that are the whole deliverable (BR-021, BR-036).
     disposition: "preserve",
     open: async () => {
-      const head = await sharedPreflight(git, repositoryPath, refuse);
+      // Inside `open`, with the six that need git, and that is the point rather than an accident of
+      // placement. `DisposalStack.acquire` refuses outright once an unwind has begun, so a check
+      // decided *before* it went on answering while the run was shutting down: a workflow's
+      // in-flight `sandbox({ name: "Review 1" })` was told its slot name was illegal — implying a
+      // workflow bug — while its sibling `sandbox({ name: "reviewer" })` was told the run was
+      // closing. One question, two answers, decided by which refusal it would have been. Nothing is
+      // lost by moving them: a failed `open` is spliced out of the stack's entries, so neither shows
+      // up in the unwind report either way (disposal.ts).
+      if (validated !== undefined && !validated.ok) {
+        throw new WorkspaceRefusedError(invalidSlot(validated));
+      }
+      // The consent check, and the one thing it must never do is fall back. A `liveTree` asked for
+      // without the operator's own consent is refused outright: quietly giving a worktree would
+      // answer a request with something else, and quietly proceeding would put an agent in their
+      // checkout on the strength of a value a workflow could have written.
+      if (choice.workspace === "liveTree" && choice.consent !== OPERATOR_CONSENT) {
+        refuse(
+          "live-checkout-not-consented",
+          `awcli will not work in your checkout at ${repositoryPath} for the "${runName}" run: working there is the operator's decision and this run has no ${LIVE_CHECKOUT_FLAG} from one. Nothing was provisioned, and awcli has not silently used a worktree instead — run it again with ${LIVE_CHECKOUT_FLAG} to work in your checkout, or without it to have awcli provision a worktree.`,
+        );
+      }
+      const { root, head } = await sharedPreflight(git, repositoryPath, refuse);
       return choice.workspace === "liveTree"
-        ? await openLiveTree(git, repositoryPath, slot, refuse)
-        : await openWorktree(git, repositoryPath, runName, slot, head, refuse);
+        ? await openLiveTree(git, root, slot, refuse)
+        : await openWorktree(git, root, runName, slot, head, refuse);
     },
     // Nothing. A working copy is preserved, so there is nothing to undo — and for a live checkout
     // this is the whole point: releasing it must not touch the operator's tree in any way at all.
@@ -357,6 +383,20 @@ export async function acquireWorkspace(
  */
 const PATH_LIMIT = 256;
 
+/**
+ * The arguments that keep a git invocation from running the repository's hooks.
+ *
+ * A path under `/dev/null`, which is a character device on every platform awcli runs on: nothing can
+ * exist beneath it and nothing can create anything there, so this cannot become a directory an agent
+ * plants a hook in — which a path inside the repository, or a temporary directory, could. git looks
+ * for the hook, does not find it, and proceeds; verified against git 2.55, where the same add runs
+ * the hook without this and does not with it.
+ */
+const NO_HOOKS: readonly string[] = [
+  "-c",
+  "core.hooksPath=/dev/null/awcli-runs-no-hooks",
+];
+
 /** Thrown out of the acquisition so an operator-fixable condition becomes a refusal, not a throw. */
 class WorkspaceRefusedError extends Error {
   constructor(readonly refusal: WorkspaceRefusal) {
@@ -384,7 +424,7 @@ async function sharedPreflight(
   git: GitRunner,
   repositoryPath: string,
   refuse: Refuse,
-): Promise<string> {
+): Promise<{ readonly root: string; readonly head: string }> {
   const inside = await git(["rev-parse", "--git-dir"], repositoryPath);
   if (inside.kind === "unavailable") {
     refuse(
@@ -408,20 +448,56 @@ async function sharedPreflight(
     );
   }
   if (inside.code !== 0) {
+    // With git's own complaint attached, which this used to drop. A non-zero exit here is not
+    // evidence of *why*: a repository owned by another uid exits 128 with `fatal: detected dubious
+    // ownership` and the exact remedy, and replacing that with "is not a git repository" is a
+    // confident sentence about a cause awcli never established. The refusal keeps its own remedy —
+    // it is right for the common case — and git says the rest.
     refuse(
       "not-a-repository",
-      `${repositoryPath} is not a git repository, so awcli has nothing to make a working copy from. Run awcli from a repository, or point it at one.`,
+      `${repositoryPath} is not a git repository, so awcli has nothing to make a working copy from. Run awcli from a repository, or point it at one. git said: ${gitComplaint(inside.stderr)}`,
     );
   }
 
-  const head = await run(git, ["rev-parse", "HEAD"], repositoryPath);
-  if (head.code !== 0) {
-    refuse(
-      "no-commit",
-      `The repository at ${repositoryPath} has no commit yet, so there is no branch for awcli to cut a working copy from. Make one commit and run again.`,
+  // Where the repository *starts*, which is not necessarily where awcli was pointed. `rev-parse
+  // --git-dir` exits 0 from every subdirectory, so `--repo /repo/packages/api` passed every check
+  // above and then built the whole layout under the subdirectory: a second `.awcli/run` inside the
+  // repository, holding a working copy the one generated ignore line (BR-030) does not cover, while
+  // the branch was cut in the repository above. The layout follows from this answer; the path the
+  // operator gave stays what git is asked *from*.
+  const top = await run(git, ["rev-parse", "--show-toplevel"], repositoryPath);
+  const root = top.stdout.trim();
+  if (top.code !== 0 || root.length === 0) {
+    // A bare repository is the reachable case: it is a repository, so the refusal above does not
+    // fire, and it has no working tree for `.awcli/run` to live in. Thrown rather than refused
+    // because there is no different flag to offer — everything a run owns is kept in the repository
+    // it works on, and a repository with no working tree has nowhere to keep it.
+    throw new Error(
+      `awcli could not find the root of the repository at ${repositoryPath}: git rev-parse --show-toplevel exited ${top.code}. ${gitComplaint(top.stderr)} awcli keeps everything a run owns under <repository>/.awcli/run, so it needs a repository with a working tree.`,
     );
   }
-  return head.stdout.trim();
+
+  // `--verify --quiet`, because the two answers this used to fold together have opposite remedies.
+  // A repository with nothing committed exits 1; a repository awcli cannot read — dubious
+  // ownership, a HEAD pointing at a missing ref — exits 128 with a fatal of its own. Mapping every
+  // non-zero exit to "no commit yet" told an operator with a full history to make their first one.
+  const head = await run(
+    git,
+    ["rev-parse", "--verify", "--quiet", "HEAD"],
+    repositoryPath,
+  );
+  if (head.code === 1) {
+    refuse(
+      "no-commit",
+      `The repository at ${root} has no commit yet, so there is no branch for awcli to cut a working copy from. Make one commit and run again.`,
+    );
+  }
+  if (head.code !== 0) {
+    throw new Error(
+      `awcli could not read the commit the repository at ${root} is on: git rev-parse HEAD exited ${head.code}. ${gitComplaint(head.stderr)}`,
+    );
+  }
+  return { root, head: head.stdout.trim() };
 }
 
 /**
@@ -459,7 +535,14 @@ async function openLiveTree(
       `awcli could not read which branch your checkout at ${repositoryPath} is on: git branch --show-current exited ${current.code}. ${gitComplaint(current.stderr)} awcli needs git 2.22 or later, which is where --show-current arrived.`,
     );
   }
-  const branch = current.stdout.trim();
+  // Sanitised, because this one is not awcli's name. A run's own branches are refused unless they
+  // are already lowercase letters, digits, dots, dashes and underscores — but the live checkout's
+  // branch is whatever the repository has, and git's ref rules ban only the C0 controls and DEL.
+  // The bidirectional format characters are legal in a ref and are the class `printable` exists for:
+  // a branch called `main‮...` reverses the rendering of everything after it in the BR-015
+  // sentence, so the operator reads a line awcli did not emit. The refusal path already sanitises
+  // refs read out of the same repository (`branchCollision`'s `short`); this is the success path.
+  const branch = printable(current.stdout.trim(), PATH_LIMIT);
   if (branch.length === 0) {
     // `branch --show-current` answers with an empty line on a detached HEAD. Refused rather than
     // reported as an empty branch or as the commit id: a run's branch is what AWCLI-14 reattaches by
@@ -491,11 +574,13 @@ async function openWorktree(
   const branch = workspaceBranch(runName, slot);
   const target = worktreePath(repositoryPath, runName, slot);
 
-  // Before the mkdir, and again after it, for the reason `run-lock.ts` gives at length: `mkdir` with
-  // `recursive` *follows* an existing symlink at any level, so a repository carrying a committed
-  // symlink at `.awcli` or `.awcli/run` would have its working copies created outside the repository
-  // altogether — with the operator's own files as a plausible destination.
-  await refuseSymlinkedAncestors(repositoryPath, runName);
+  // Before anything, for the reason `run-lock.ts` gives at length: a symlink at `.awcli` or
+  // `.awcli/run` would have this run's working copies created outside the repository altogether,
+  // with the operator's own files as a plausible destination. This is the early, well-worded
+  // refusal — it reads the layout as it stands and says which component is the problem. What
+  // actually keeps awcli from writing through a link is `makeLayout` below, which checks each level
+  // as it creates it; see there for why one check up front cannot be the guarantee.
+  await assertNoSymlinkedAncestors(repositoryPath, runName);
 
   const existing = await lstatOrMissing(target);
   if (existing !== undefined) {
@@ -518,7 +603,7 @@ async function openWorktree(
     // remedy. A question awcli could not get an answer to is a fault: there is nothing for the
     // operator to choose differently, and answering it wrongly is what costs them the refusal.
     throw new Error(
-      `awcli could not list the branches under ${BRANCH_NAMESPACE}/ in ${repositoryPath}, so it cannot tell whether ${branch} is free: git for-each-ref exited ${namespaced.code}. ${gitComplaint(namespaced.stderr)}`,
+      `awcli could not list the branches in ${repositoryPath}, so it cannot tell whether ${branch} is free: git for-each-ref exited ${namespaced.code}. ${gitComplaint(namespaced.stderr)}`,
     );
   }
   const collision = branchCollision(branch, runName, namespaced.refs);
@@ -527,24 +612,21 @@ async function openWorktree(
     // exceptional — it is what a second invocation of the same run and slot finds. Refused, and not
     // reused, moved or deleted: reattaching to an existing branch is AWCLI-14's, and until that
     // exists the honest answer is to stop and say what is in the way.
-    refuse("branch-exists", collisionMessage(collision, branch, runName, target));
+    refuse(
+      "branch-exists",
+      await collisionMessage(git, repositoryPath, collision, branch, runName, target),
+    );
   }
 
-  try {
-    await mkdir(dirname(target), { recursive: true });
-  } catch (error) {
-    refuseUnwritable(error, dirname(target));
-    throw error;
-  }
-  await refuseSymlinkedAncestors(repositoryPath, runName);
+  await makeLayout(repositoryPath, runName);
 
   // awcli creates the target directory itself, and this is the close of a race rather than a
   // convenience. The `lstat` at the top of this function is the early, well-worded refusal; it cannot
-  // be the guarantee, because between it and the `git worktree add` below sit a subprocess, a
-  // recursive `mkdir` and four more `lstat`s. A symlink planted at the target inside that window is
-  // followed by git — reproduced on git 2.55, which checked the tree out at the link's destination
-  // *outside the repository* while the handle and the sentence shown to the operator both said it was
-  // inside, which is the exact failure `refuseSymlinkedAncestors` exists to prevent, one level down.
+  // be the guarantee, because between it and the `git worktree add` below sit a subprocess and the
+  // creation of four directories. A symlink planted at the target inside that window is followed by
+  // git — reproduced on git 2.55, which checked the tree out at the link's destination *outside the
+  // repository* while the handle and the sentence shown to the operator both said it was inside,
+  // which is the exact failure `assertNoSymlinkedAncestors` exists to prevent, one level down.
   //
   // A non-recursive `mkdir` is what closes it: it never follows a final symlink, so it answers EEXIST
   // for one rather than creating anything through it, and `git worktree add` accepts a directory that
@@ -559,16 +641,25 @@ async function openWorktree(
         await occupiedMessage(git, repositoryPath, target, runName, branch),
       );
     }
-    refuseUnwritable(error, dirname(target));
+    faultOnUnwritable(error, dirname(target));
     throw error;
   }
 
   // No `--force` and no `--detach`: `-b` refuses an existing branch, which is a second line of
   // defence behind the check above rather than a substitute for it, and `HEAD` fixes what the
   // working copy is cut from so it cannot depend on git's own default.
+  //
+  // With hooks off, which is not a detail: `git worktree add` performs a checkout, and a checkout
+  // runs `post-checkout` — resolved through the *common* git dir and through `core.hooksPath` in the
+  // shared config, neither of which is per-worktree. So the hook a run executes here is one any
+  // agent in any slot of any run can have written, and provisioning is the moment before AWCLI-25's
+  // execution boundary exists, with the operator's own identity. awcli's isolation prose is bounded
+  // at what an agent reaches *from inside its working copy*; handing execution to a file in the
+  // repository as part of making that working copy is outside what that sentence covers, so it does
+  // not happen. See `describe`.
   const added = await run(
     git,
-    ["worktree", "add", "-b", branch, target, head],
+    [...NO_HOOKS, "worktree", "add", "-b", branch, target, head],
     repositoryPath,
   );
   if (added.code !== 0) {
@@ -592,7 +683,10 @@ async function openWorktree(
     // acquisition of this run and slot included — got there first.
     const late = await lateCollision(git, repositoryPath, runName, branch);
     if (late !== undefined) {
-      refuse("branch-exists", collisionMessage(late, branch, runName, target));
+      refuse(
+        "branch-exists",
+        await collisionMessage(git, repositoryPath, late, branch, runName, target),
+      );
     }
     // Nothing awcli has a sentence for, then. Thrown rather than refused: a refusal claims awcli
     // knows what is wrong and what to do instead, and here it knows neither.
@@ -601,7 +695,44 @@ async function openWorktree(
     );
   }
 
+  // Where the working copy actually is, asked once git has finished with it.
+  //
+  // Everything above is checked-then-used and no arrangement of `lstat` and `mkdir` closes that
+  // completely: the kernel resolves the path again — for `mkdir`, and then for git — after awcli
+  // last looked, and node offers no `openat`/`O_NOFOLLOW` to make the check and the use one act. So
+  // the last word is the one answer that cannot be raced ahead of: where the target resolves to
+  // now. A working copy outside the runtime directory is a fault whoever put it there, because
+  // `WorkspaceHandle.dir` and the BR-015 sentence would both name a path inside the repository
+  // while an agent worked outside it — which is the whole of what this module promises.
+  await assertInsideRuntimeDirectory(repositoryPath, target);
+
   return handle(git, target, branch, slot, "worktree");
+}
+
+/**
+ * Refuses a target that is not, in fact, inside the runtime directory.
+ *
+ * `realpath` on both sides, and the comparison is against the resolved boundary rather than against
+ * the spelling: `/repo/.awcli/run/worktrees` reached through a symlinked `/repo` is still inside the
+ * runtime directory, and a target that resolves next door to it is not. A `realpath` that fails is
+ * refused too — this is the check that says where the working copy is, and "awcli could not tell"
+ * is not an answer to hand back as a handle.
+ */
+async function assertInsideRuntimeDirectory(
+  repositoryPath: string,
+  target: string,
+): Promise<void> {
+  const boundary = await realpath(worktreesRoot(repositoryPath)).catch(() => undefined);
+  const placed = await realpath(target).catch(() => undefined);
+  if (
+    boundary === undefined ||
+    placed === undefined ||
+    !placed.startsWith(`${boundary}${sep}`)
+  ) {
+    throw new Error(
+      `awcli made a working copy at ${target}, and it is not inside ${worktreesRoot(repositoryPath)}: it is at ${placed ?? "a path awcli could not resolve"}. That is outside the runtime directory, so an agent would be working outside the repository while everything awcli reports says otherwise. Nothing was removed — look at what is at that path before running again.`,
+    );
+  }
 }
 
 /**
@@ -630,8 +761,18 @@ async function worktreeRegistration(
   repositoryPath: string,
   target: string,
 ): Promise<WorktreeRegistration> {
-  const listed = await git(["worktree", "list", "--porcelain"], repositoryPath);
-  if (listed.kind !== "ran" || listed.code !== 0) return "unknown";
+  // Guarded, because "does not throw" was an intention rather than a property: the raw runner is
+  // not total. It throws for an answer larger than awcli reads and for a git it had to kill on the
+  // timeout — and this is called while building a refusal, so that rejection escaped
+  // `acquireWorkspace` past the `WorkspaceRefusedError` catch and an operator with an occupied
+  // target got `git worktree list --porcelain did not finish within 120000ms` instead of the
+  // refusal and its remedies. `unknown` is the answer that already exists for "git could not say",
+  // and a git that could not be run at all is a git that could not say.
+  const listed = await git(["worktree", "list", "--porcelain"], repositoryPath).catch(
+    () => undefined,
+  );
+  if (listed === undefined || listed.kind !== "ran" || listed.code !== 0)
+    return "unknown";
   const wanted = await canonicalPath(target);
   for (const line of listed.stdout.split("\n")) {
     const prefix = "worktree ";
@@ -643,7 +784,18 @@ async function worktreeRegistration(
   return "unregistered";
 }
 
-/** A path with its parent resolved and its own last component untouched. See the note above. */
+/**
+ * A path with its parent resolved and its own last component untouched. See the note above.
+ *
+ * The `catch` is a fallback with a cost, which is worth naming here rather than leaving to be found:
+ * `resolve` is not `realpath`, so if the parent could not be resolved this answers a spelling git
+ * may not use, the comparison in `worktreeRegistration` misses, and a *registered* working copy is
+ * reported `unregistered` — with the remedy that leaves the registration behind holding the branch.
+ * It is a fallback rather than an `unknown` because the case it covers is the parent having gone
+ * between the `lstat` that found something at the target and this call: nothing is registered at a
+ * path whose parent does not exist, so `unregistered` is the true answer for it. What must not
+ * happen is this branch quietly widening to cover cases where that reasoning does not hold.
+ */
 async function canonicalPath(path: string): Promise<string> {
   try {
     return join(await realpath(dirname(path)), basename(path));
@@ -702,12 +854,19 @@ type BranchCollision = {
 };
 
 /**
- * Every ref in awcli's namespace, or why git could not say.
+ * Every branch in the repository, or why git could not say.
  *
- * One question rather than three. Every ref that can collide with a run's branch lives at or under
- * `refs/heads/${BRANCH_NAMESPACE}`, and `for-each-ref` with a literal pattern matches that ref itself
- * as well as everything beneath it — so one call answers the exact-branch case and both
- * directory/file cases `branchCollision` decides between.
+ * All of them rather than the namespace, which is the correction: this asked
+ * `for-each-ref refs/heads/${BRANCH_NAMESPACE}`, and git matches that pattern *case-sensitively*
+ * while `branchCollision` compares with case folded. A branch called `AWCLI` was therefore never in
+ * the list the fold folds, so the fold had nothing to fold against and the case the fold exists for
+ * — an operator's branch colliding with awcli's namespace on a case-insensitive filesystem — walked
+ * on into `git worktree add` and came back as `exited 128` with no remedy. Verified on git 2.55:
+ * with `refs/heads/AWCLI` present, the namespaced query prints nothing and the add fails.
+ *
+ * So the pattern stops being the filter and `branchCollision` becomes the whole of it, in the one
+ * place that already folds. The cost is a longer list from a repository with many branches, read
+ * once per acquisition and never printed.
  *
  * The failure is returned rather than thrown because the two call sites want different things from
  * it: before the add it is a fault, and after a failed add it is a second opinion awcli can do
@@ -722,7 +881,7 @@ async function namespaceRefs(
 > {
   const listed = await run(
     git,
-    ["for-each-ref", "--format=%(refname)", `refs/heads/${BRANCH_NAMESPACE}`],
+    ["for-each-ref", "--format=%(refname)", "refs/heads"],
     repositoryPath,
   );
   if (listed.code !== 0) {
@@ -805,14 +964,30 @@ function branchCollision(
  * name is unusable until they find `git worktree prune`. Reproduced on git 2.55 before this was
  * written; `git worktree remove` clears the registration even when the directory has already gone.
  */
-function collisionMessage(
+async function collisionMessage(
+  git: GitRunner,
+  repositoryPath: string,
   collision: BranchCollision,
   branch: string,
   runName: RunName,
   target: string,
-): string {
+): Promise<string> {
   if (collision.kind === "same") {
-    return `awcli will not cut the branch ${branch} for the "${runName}" run: it already exists, and awcli never moves or deletes a branch — the commits on one are the deliverable. If it is finished with, remove the working copy that holds it first with "git worktree remove ${target}" (which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once), then "git branch -D ${branch}". Or run this under a different --name.`;
+    // Which command to name is the same question `occupiedMessage` asks, and it has to be asked
+    // here too: this path is only reached once the `occupied` check has established that nothing is
+    // at the target, so the live cases are a registration whose directory has already been deleted
+    // — where `git worktree remove` is exactly right — and a branch nothing has ever held, where it
+    // exits 128 with `fatal: '<path>' is not a working tree`. Naming the removal "first"
+    // unconditionally told the second operator that the command they need is blocked behind one
+    // that refuses. `unknown` names both, and claims neither.
+    const held = await worktreeRegistration(git, repositoryPath, target);
+    const remedy =
+      held === "registered"
+        ? `If it is finished with, remove the working copy that holds it first with "git worktree remove ${target}" (which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once), then "git branch -D ${branch}".`
+        : held === "unregistered"
+          ? `If it is finished with, "git branch -D ${branch}" deletes it — git has no working copy registered at ${target}, so there is nothing to remove first.`
+          : `If it is finished with, "git branch -D ${branch}" deletes it; if git refuses because a working copy still holds it, "git worktree remove ${target}" clears that registration first ("git worktree prune" clears every stale one at once). awcli could not ask git which of the two this is.`;
+    return `awcli will not cut the branch ${branch} for the "${runName}" run: it already exists, and awcli never moves or deletes a branch — the commits on one are the deliverable. ${remedy} Or run this under a different --name.`;
   }
   const where =
     collision.kind === "prefix"
@@ -878,7 +1053,7 @@ function handle(
 function describe(workspace: WorkspaceAxis, dir: string, branch: string): string {
   return workspace === "liveTree"
     ? `Working directly in your own checkout at ${dir}, on your branch ${branch}, because this run was given ${LIVE_CHECKOUT_FLAG}: uncommitted changes there are an agent's to change, and nothing about the working copy protects them. What an agent can touch beyond your checkout is settled by where this run executes, not by the working copy it was given.`
-    : `Working in a worktree at ${dir}, on the branch ${branch}: your own checkout, its branch and its uncommitted changes are untouched. That is the whole of what a working copy protects — it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
+    : `Working in a worktree at ${dir}, on the branch ${branch}: your own checkout, its branch and its uncommitted changes are untouched, and awcli ran none of the repository's git hooks to make it. That is the whole of what a working copy protects — it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
 }
 
 /**
@@ -913,6 +1088,12 @@ async function run(
 /**
  * Refuses a symlink anywhere between the repository root and a run's worktree directory.
  *
+ * Named `assert*` rather than `refuse*`: this throws a plain `Error`, which is the *fault* channel,
+ * and `refuse`/`refuseWith` produce a `WorkspaceRefusal`, which is the operator-fixable one. Sharing
+ * the verb across the two put the file's central distinction in the one place a maintainer copies
+ * from — a new guard shaped like this one, expected to produce a refusal, ships a throw the gate
+ * chain cannot print as a remedy.
+ *
  * Outside in, stopping at the first component that does not exist: nothing can be below a path that
  * is not there, and `mkdir` will create the rest as real directories. The list comes from
  * `worktreePathAncestors`, derived forwards from the layout — see the note there on why walking back
@@ -922,29 +1103,67 @@ async function run(
  * about this run, and the consequence — a working copy, and an agent, landing outside the repository
  * — is not something to offer them a different flag for.
  */
-async function refuseSymlinkedAncestors(
+async function assertNoSymlinkedAncestors(
   repositoryPath: string,
   runName: RunName,
 ): Promise<void> {
   for (const ancestor of worktreePathAncestors(repositoryPath, runName)) {
     const stats = await lstatOrMissing(ancestor);
     if (stats === undefined) return;
-    if (stats.isSymbolicLink()) {
-      throw new Error(
-        `${ancestor} is a symbolic link, and awcli will not follow one to reach a run's working copies: the working copy, and everything an agent writes in it, would land outside the repository. Remove it and run again.`,
-      );
+    assertUsableDirectory(ancestor, stats);
+  }
+}
+
+/**
+ * Creates the directories above a working copy, one level at a time, checking each as it goes.
+ *
+ * `mkdir` with `recursive` was what this did, and it is the wrong call twice over: it *follows* an
+ * existing symlink at any level, and it creates every level in one act — so a link planted at
+ * `.awcli` after the check above had awcli create the run's whole directory tree inside the link's
+ * destination, and only then did the second check look and throw. awcli had already written outside
+ * the repository by the time it refused. Verified with node: `mkdirSync` through a symlinked
+ * intermediate creates the leaf at the link's destination.
+ *
+ * Non-recursively, level by level, is what makes the refusal precede the writing: `mkdir` never
+ * follows a *final* symlink, so a link at this level answers EEXIST rather than being created
+ * through, and the `lstat` that follows says what is there before the next level is attempted. That
+ * is still check-then-use for the level below — nothing available in node makes it one act — which
+ * is why `assertInsideRuntimeDirectory` asks git's finished work where it actually landed. Between
+ * them, the window is narrowed to one level at a time and closed after the fact.
+ */
+async function makeLayout(repositoryPath: string, runName: RunName): Promise<void> {
+  for (const ancestor of worktreePathAncestors(repositoryPath, runName)) {
+    try {
+      await mkdir(ancestor);
+    } catch (error) {
+      // EEXIST says nothing about *what* exists there, which is the question below.
+      if (!isErrno(error, "EEXIST")) {
+        faultOnUnwritable(error, dirname(ancestor));
+        throw error;
+      }
     }
-    // Anything else that is not a directory, which is the sibling case and used to have no sentence
-    // at all: `lstatOrMissing` turns ENOENT into "not there" and rethrows every other errno as it
-    // came, so a repository carrying a tracked file named `.awcli` produced `ENOTDIR: not a
-    // directory, lstat ...` and a stack trace from the *next* iteration's lstat. Named here, at the
-    // component that is actually the problem — a message about `.awcli/run` would send the operator
-    // looking for a path that cannot exist.
-    if (!stats.isDirectory()) {
-      throw new Error(
-        `${ancestor} is a file, and awcli needs a directory there to hold this run's working copies. awcli never writes over what it finds: move or remove it and run again.`,
-      );
-    }
+    const stats = await lstat(ancestor);
+    assertUsableDirectory(ancestor, stats);
+  }
+}
+
+/** A component of the layout awcli can use: a real directory, and not a link to one. */
+function assertUsableDirectory(ancestor: string, stats: Stats): void {
+  if (stats.isSymbolicLink()) {
+    throw new Error(
+      `${ancestor} is a symbolic link, and awcli will not follow one to reach a run's working copies: the working copy, and everything an agent writes in it, would land outside the repository. Remove it and run again.`,
+    );
+  }
+  // Anything else that is not a directory, which is the sibling case and used to have no sentence
+  // at all: `lstatOrMissing` turns ENOENT into "not there" and rethrows every other errno as it
+  // came, so a repository carrying a tracked file named `.awcli` produced `ENOTDIR: not a
+  // directory, lstat ...` and a stack trace from the *next* iteration's lstat. Named here, at the
+  // component that is actually the problem — a message about `.awcli/run` would send the operator
+  // looking for a path that cannot exist.
+  if (!stats.isDirectory()) {
+    throw new Error(
+      `${ancestor} is a file, and awcli needs a directory there to hold this run's working copies. awcli never writes over what it finds: move or remove it and run again.`,
+    );
   }
 }
 
@@ -960,11 +1179,13 @@ async function lstatOrMissing(path: string): Promise<Stats | undefined> {
 /**
  * Turns "cannot write here" into a sentence about the directory, or leaves the error alone.
  *
+ * `faultOnUnwritable`, not `refuseUnwritable`: it throws. See `assertNoSymlinkedAncestors`.
+ *
  * The same failure `run-lock.ts` explains for the run directory, one directory along: an unwritable
  * repository is the one fault on this path an operator can fix without knowing anything about awcli,
  * and an `EACCES` with a stack trace does not tell them so.
  */
-function refuseUnwritable(error: unknown, directory: string): void {
+function faultOnUnwritable(error: unknown, directory: string): void {
   if (isErrno(error, "EACCES") || isErrno(error, "EPERM") || isErrno(error, "EROFS")) {
     throw new Error(
       `awcli cannot create a working copy in ${directory} (${errnoOf(error) ?? "permission denied"}): that directory is not writable. Check its permissions, or run against a repository this user can write to.`,
