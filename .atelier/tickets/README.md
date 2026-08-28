@@ -1,12 +1,14 @@
 # awcli — implementation tickets
 
-29 tickets, 72 points, twenty-seven of them derived from the 17-unit work breakdown in
-[`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). Five of the seven
-5-point units were split into a 3 and a 2; WB-5 split into two 2-point tickets, WB-11 into two
-3-point ones, and WB-8 into two 3-point ones, which is where three of the ten extra points over
-the design's 62 come from — separating the lock from the record, the sandbox scope from the
-container inside it, and `ctx.git` from the provisioning that needs only half of it, each revealing
-work the single estimate had compressed. AWCLI-00 accounts for two more: project scaffolding the
+29 tickets, 72 points, twenty-five of them derived from the 17-unit work breakdown in
+[`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md) and worth 65 of the
+points. Those twenty-five carry three of the ten extra points over the design's 62, and all three
+come from splits that did not go evenly. Five of the seven 5-point units were split
+into a 3 and a 2, which adds nothing. The other two of the seven, WB-8 and WB-11, each became two
+3-point tickets; and WB-5 — a 3-point unit, not one of the seven — became two 2-point ones.
+Separating the lock from the record, the sandbox scope from the container inside it, and `ctx.git`
+from the provisioning that needs only half of it each revealed work the single estimate had
+compressed. AWCLI-00 accounts for two more: project scaffolding the
 work breakdown never named, because a design document assumes a project exists.
 AWCLI-26 accounts for two more, and for a different reason again: no unit was missing and no
 estimate was wrong — PR #8 merged the specification of the context surface's final shape without the
@@ -93,6 +95,20 @@ own `ctx.git` end to end and re-estimated 2 → 3, no rule added and no scenario
 the tickets by way of a source comment in `src/runtime/context.ts` that had recorded the gap
 accurately and where no ticket reads it.
 
+The sixth of these is not a context member at all, and it is the one where the deferral rather than
+the code was the orphan. AWCLI-13 delivers `resolveWorkspaceChoice` and put the `--live-checkout`
+flag that reaches it out of scope, naming AWCLI-20 — which had no requirement, no acceptance
+criterion and no dependency edge for it, so the opt-in BR-014 requires would have shipped as
+never-written, which is the precedent that bullet was written to avoid. AWCLI-20 is still the right
+owner: WB-12 already assigns `awcli run`'s invocation surface to it through `ctx.args`, and the
+boundary that decides whether a flag is awcli's or the workflow's is where BR-014's "nothing a
+workflow passes selects the workspace" is enforceable rather than merely stated. So AWCLI-20 now
+carries the requirement, two criteria and AWCLI-13 as a blocker, and AWCLI-21 carries stating the
+resolved choice in the run's output. It stays at 3 points, because unlike AWCLI-19 and AWCLI-14 it
+constructs nothing new — and because nothing here is larger than 3, a widening that did grow the
+work by a point would have to be split instead. The scenario the three of them discharge is unticked
+on AWCLI-13 until all three have landed.
+
 ## Tickets
 
 | ID | Title | Pts | WB | Blocked by |
@@ -117,7 +133,7 @@ accurately and where no ticket reads it.
 | [AWCLI-17](AWCLI-17-structured-output-and-reask.md) | Structured output and re-ask | 3 | WB-10 | 15 |
 | [AWCLI-18](AWCLI-18-dockerfile-and-build-cache.md) | Dockerfile and build cache | 3 | WB-11 | 00 |
 | [AWCLI-19](AWCLI-19-container-exec-target.md) | Sandbox scope and container target | 3 | WB-11 | 01, 03, 13, 18 |
-| [AWCLI-20](AWCLI-20-resolution-scaffolding-args.md) | Resolution, scaffolding, args | 3 | WB-12 | 05 |
+| [AWCLI-20](AWCLI-20-resolution-scaffolding-args.md) | Resolution, scaffolding, args, `--live-checkout` | 3 | WB-12 | 05, 13 |
 | [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 15 |
 | [AWCLI-22](AWCLI-22-runtime-layout-ignore-clean.md) | Runtime layout, ignore, clean | 3 | WB-14 | 07, 13, 14, 18 |
 | [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | WB-15 | 01, 13, 25 |
@@ -142,8 +158,8 @@ a blocker has landed; the waves are a reading of the dependencies, not a schedul
 wave 0    00
 wave 1    01    03    18
 wave 2    02    04    05    07    26
-wave 3    06    08    09    13    20
-wave 4    11    14    15    19    25
+wave 3    06    08    09    13
+wave 4    11    14    15    19    20    25
 wave 5    10    12    16    17    21    22    23    24
 ```
 
@@ -161,6 +177,7 @@ The multi-parent tickets, which the waves alone do not show:
 | AWCLI-13 | 03, 07 |
 | AWCLI-15 | 01, 02, 13 |
 | AWCLI-19 | 01, 03, 13, 18 |
+| AWCLI-20 | 05, 13 |
 | AWCLI-21 | 07, 08, 15 |
 | AWCLI-22 | 07, 13, 14, 18 |
 | AWCLI-23 | 01, 13, 25 |
@@ -185,8 +202,9 @@ nothing installed. Everything after that is capability rather than viability.
   are not. *Done* means merged with every box ticked. A ticket whose PR is still being reviewed is
   never *Done*, however complete it looks from the inside — AWCLI-01 sat at *Ready* with every box
   unchecked through four review rounds, which is the failure this line exists to prevent.
-- A `—` in the WB column means no work-breakdown unit owns the ticket, and two carry it for
-  unrelated reasons. AWCLI-00 is scaffolding: the work breakdown described the tool, not the
+- A `—` in the WB column means no work-breakdown unit owns the ticket, and four carry it, for
+  unrelated reasons. AWCLI-27 and AWCLI-28 are the two easy ones: they describe no product
+  behaviour, so no unit of a breakdown of the product could have named them. AWCLI-00 is scaffolding: the work breakdown described the tool, not the
   project that holds it. AWCLI-26 is the residue of a merge — WB-1 does own the context contract,
   but the unit is already spent across AWCLI-01 and AWCLI-02, and what AWCLI-26 carries is the
   shape decisions review round 4 took after both were written. Giving it a WB number would say the

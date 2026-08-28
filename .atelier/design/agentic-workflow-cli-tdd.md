@@ -155,7 +155,7 @@ generated ignore entry is a single line written once (BR-030).
 
 | Command | Purpose | Key options | Refusals |
 |---|---|---|---|
-| `awcli run <name-or-path>` | Run a workflow | `--repo`, `--iterations`, `--max-duration`, `--name`, `--fresh`, `--dry-run`, `--arg k=v`, `--reset-state`, `--live` | BR-001…010, BR-035 |
+| `awcli run <name-or-path>` | Run a workflow | `--repo`, `--iterations`, `--max-duration`, `--name`, `--fresh`, `--dry-run`, `--arg k=v`, `--reset-state`, `--live-checkout` | BR-001…010, BR-035 |
 | `awcli create <name>` | Scaffold a workflow | `--project`, `--template` | Name already exists |
 | `awcli init` | Write `.awcli/` into a repository, including all five required profile fields — `commands.test`, `commands.build`, `commands.lint`, `paths.docs`, `paths.standards` (BR-006) | — | BR-002 |
 | `awcli clean` | Release leftovers; collect branches | `--run`, `--branches` | Never touches unmerged commits (BR-036) |
@@ -380,7 +380,8 @@ text, `usage` possibly unknown (ADR-0004).
 - **Summary:** [AWCLI] Resolve workflows project-first then global, scaffold new ones, and pass invocation arguments through
 - **Story Points:** 3
 - **Dependencies:** WB-3
-- **Contracts:** `awcli create`; `ctx.args`
+- **Contracts:** `awcli create`; `ctx.args`; `awcli run --live-checkout` (the operator's own flags on
+  `run`, which are consumed rather than forwarded — added by the 2026-08-28 `--live-checkout` amendment)
 - **Acceptance Criteria:**
   - [ ] *A project's own workflow shadows the shared one* / *The shared workflow is used when the project has none*
   - [ ] *An explicit path is always honoured*

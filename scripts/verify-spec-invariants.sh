@@ -13,6 +13,12 @@
 # scenario is an acceptance criterion on exactly one ticket, and that every @BR tag names a rule
 # that exists.
 #
+# Two later checks reach past those four. Check 9 reads the DELIVERED_BY table in
+# src/runtime/context.ts and the work breakdown in the TDD, because that table is the pointer saying
+# which unit delivers each unbuilt context member and it has shipped wrong; check 10 reads the
+# manifest's own freshness stamp against git. Both are still comparisons between things a person
+# maintains by hand, which is the only thing this script knows how to do.
+#
 # Unlike the other gates here it perturbs nothing, so there is no backup to restore and no window
 # in which a Ctrl-C leaves a tracked file corrupted. Every check is a comparison, and all of them
 # run before anything is reported — a spec that has drifted in four places should say so once. That
@@ -31,6 +37,8 @@ RULES="$DESIGN/agentic-workflow-cli-rules.md"
 BDD="$DESIGN/agentic-workflow-cli-bdd.feature"
 MANIFEST="$DESIGN/agentic-workflow-cli-spec-manifest.yaml"
 README="$TICKETS/README.md"
+TDD="$DESIGN/agentic-workflow-cli-tdd.md"
+CONTEXT="src/runtime/context.ts"
 
 fail=0
 ok() { printf '  ok: %s\n' "$1"; }
@@ -46,7 +54,7 @@ same() {
 
 # A renamed or moved document would otherwise make every grep below return nothing, and eleven
 # simultaneous count mismatches do not say "the path is wrong".
-for document in "$RULES" "$BDD" "$MANIFEST" "$README"; do
+for document in "$RULES" "$BDD" "$MANIFEST" "$README" "$TDD" "$CONTEXT"; do
   if [ ! -f "$document" ]; then
     echo "FAIL: $document is not on disk — this script is checking nothing" >&2
     exit 1
@@ -238,11 +246,130 @@ while read -r rule; do
 done < <(grep -oE '^#{2,3} BR-[0-9]+' "$RULES" | grep -oE 'BR-[0-9]+')
 [ "$untagged" -eq 0 ] && ok "8  every rule has at least one scenario tagged to it"
 
+# --- 9. Every DELIVERED_BY id names a ticket, and one the work breakdown agrees with ------------
+# The only check here that reads source rather than specification, and it is here because this is
+# the one number in the corpus that has shipped wrong on a branch that looked finished. DELIVERED_BY
+# in src/runtime/context.ts says, for each declared-but-unbuilt context member, which unit delivers
+# it — the pointer the amendments call authoritative — and until now nothing read it. `git` moved
+# twice inside PR #15: to AWCLI-11, which owns WB-7 and no part of the member, and then to AWCLI-14.
+# Both values named a ticket that exists, so existence alone would have caught neither.
+#
+# What decides it is the work breakdown. The TDD's Contracts column assigns a member to a unit, and
+# a ticket's `**Source:**` line names the unit it came from, so a member whose id points outside its
+# own unit is a mismatch with teeth: it is what makes AWCLI-11 (WB-7) wrong for `ctx.git` (WB-8).
+#
+# Be clear about what it does not catch. The first wrong value, AWCLI-13, is inside WB-8 — it is the
+# other half of a split unit, and the work breakdown cannot see a split it predates. Nothing
+# arithmetic can decide which half of a split owns a member; that is what a ticket's own scope text
+# is for. This check catches the id that left its unit, which is the failure that reached a commit.
+if ! python3 - "$CONTEXT" "$TDD" "$TICKETS" <<'DELIVERED_BY_PY'
+import pathlib, re, sys
+
+context, tdd, tickets = (pathlib.Path(a) for a in sys.argv[1:4])
+
+# The DELIVERED_BY object literal, and only it: `member: "AWCLI-nn"` lines between the opening
+# brace and the `as const` that closes it.
+body = re.search(r"const DELIVERED_BY = \{(.*?)\n\} as const", context.read_text(), re.S)
+if not body:
+    print(f"FAIL: 9  DELIVERED_BY is not in the shape this check reads — renamed or reformatted "
+          f"in {context}", file=sys.stderr)
+    sys.exit(1)
+delivered = dict(re.findall(r'^\s*(\w+):\s*"(AWCLI-\d+)"', body.group(1), re.M))
+
+# `ctx.<member>` anywhere in a unit's Contracts line assigns the member to that unit. A member may
+# legitimately be named by more than one, so this is a set and not a single answer.
+assigned = {}
+unit = None
+for line in tdd.read_text().splitlines():
+    heading = re.match(r"^### (WB-\d+):", line)
+    if heading:
+        unit = heading.group(1)
+    elif unit and line.startswith("- **Contracts:**"):
+        for member in re.findall(r"`ctx\.(\w+)", line):
+            assigned.setdefault(member, set()).add(unit)
+
+# `ctx.schema` is the one place this table and the TDD knowingly disagree, and the disagreement is
+# argued at length above DELIVERED_BY: SchemaApi declares only storable(), which answers BR-008's
+# question about shared state, and AWCLI-09 is the unit that has to answer it anyway — so the code
+# side stands and WB-10's Contracts line is the side that needs correcting. Named here rather than
+# silently skipped, so that settling the disagreement means deleting this line.
+KNOWN_DISAGREEMENT = {"schema": "WB-10 names ctx.schema; the code side stands — see context.ts"}
+
+broken = 0
+for member, ticket_id in sorted(delivered.items()):
+    found = sorted(tickets.glob(f"{ticket_id}-*.md"))
+    if not found:
+        print(f"FAIL: 9  DELIVERED_BY.{member} names {ticket_id}, which is not a ticket on disk",
+              file=sys.stderr)
+        broken = 1
+        continue
+    units = assigned.get(member)
+    if not units:
+        print(f"note: 9  the work breakdown assigns ctx.{member} to no unit, so {ticket_id} "
+              f"cannot be checked against it")
+        continue
+    if member in KNOWN_DISAGREEMENT:
+        print(f"note: 9  ctx.{member} -> {ticket_id} is the recorded disagreement "
+              f"({KNOWN_DISAGREEMENT[member]})")
+        continue
+    source = re.search(r"\*\*Source:\*\*\s*(WB-\d+)", found[0].read_text())
+    named = ", ".join(sorted(units))
+    if source is None:
+        print(f"FAIL: 9  {ticket_id} has no **Source:** line, so DELIVERED_BY.{member} cannot be "
+              f"checked against the work breakdown, which assigns ctx.{member} to {named}",
+              file=sys.stderr)
+        broken = 1
+    elif source.group(1) not in units:
+        print(f"FAIL: 9  DELIVERED_BY.{member} names {ticket_id}, which is {source.group(1)}; "
+              f"the work breakdown assigns ctx.{member} to {named}", file=sys.stderr)
+        broken = 1
+
+if not broken:
+    print(f"  ok: 9  {len(delivered)} DELIVERED_BY ids name a ticket, each from the unit the "
+          f"work breakdown assigns the member to")
+sys.exit(broken)
+DELIVERED_BY_PY
+then
+  fail=1
+fi
+
+# --- 10. The manifest's own freshness stamp is not behind its contents --------------------------
+# `metadata.updated` exists so a reader can tell whether the manifest has been reconciled with a
+# given round of work, and it has now drifted behind its own contents twice — the 2026-08-25
+# amendment row records the first as a finding that was fixed, and PR #15 changed a status and a
+# points value in this file without moving it again. Author date rather than commit date, so a
+# rebase that changes nothing about the file does not fail this.
+manifest_updated="$(sole_match '^  updated: "[0-9]{4}-[0-9]{2}-[0-9]{2}' "$MANIFEST" |
+  grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')"
+if ! git rev-parse --git-dir >/dev/null 2>&1; then
+  printf 'note: 10 not a git checkout, so the manifest freshness stamp cannot be checked\n'
+elif [ -z "$manifest_updated" ]; then
+  bad "10 manifest metadata.updated is missing, duplicated, or not a plain date"
+else
+  if git diff --quiet -- "$MANIFEST" && git diff --cached --quiet -- "$MANIFEST"; then
+    manifest_touched="$(git log -1 --format=%as -- "$MANIFEST")"
+    touched_by="its last commit"
+  else
+    # Uncommitted changes are the moment the stamp is meant to move, and a change being made now is
+    # being made today.
+    manifest_touched="$(date -u +%Y-%m-%d)"
+    touched_by="uncommitted changes"
+  fi
+  if [ -z "$manifest_touched" ]; then
+    printf 'note: 10 the manifest has no commit history here, so its stamp cannot be checked\n'
+  elif [[ "$manifest_updated" < "$manifest_touched" ]]; then
+    bad "10 manifest metadata.updated ($manifest_updated) is behind $touched_by ($manifest_touched)"
+  else
+    ok "10 manifest metadata.updated ($manifest_updated) is not behind $touched_by"
+  fi
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "PASS: the rules file, the feature file, the manifest and the ticket README describe one"
   echo "      corpus — $rule_headings rules, and $bdd_scenarios scenarios each owned by exactly"
-  echo "      one of $disk_tickets tickets"
+  echo "      one of $disk_tickets tickets — and the work breakdown, the DELIVERED_BY table and the"
+  echo "      manifest's own stamp agree with them"
   exit 0
 fi
 echo "FAIL: the specification's documents disagree — see the failures above" >&2

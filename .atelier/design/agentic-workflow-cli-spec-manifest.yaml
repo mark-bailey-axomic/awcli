@@ -10,10 +10,14 @@ metadata:
   source_ticket: ""
   version: 1
   created: "2026-08-24T16:57:51Z"
-  updated: "2026-08-26T00:00:00Z"
+  updated: "2026-08-28T00:00:00Z"
   # The rules and scenarios this manifest describes were amended after their
   # 2026-08-24 approval, during PR #8 (AWCLI-01) review rounds 2, 3 and 4. See
   # the `## Amendments` section of design/agentic-workflow-cli-rules.md.
+  # `amended` is older than `updated` on purpose: the three 2026-08-28 rows of the
+  # rules file's `## Amendments` are ticket-scope corrections, and none of them
+  # changed a rule or a scenario. `updated` tracks this file; `amended` tracks the
+  # corpus it describes.
   amended: "2026-08-26"
   amendments_status: pending-pm-re-approval
 
@@ -290,14 +294,17 @@ tickets:
     depends_on: [AWCLI-03, AWCLI-07]
     # in_progress: PR #15 is open with review rounds outstanding, the same state AWCLI-07 records
     # above and for the same reason — tickets/README.md reserves done for merged-with-every-box-
-    # ticked, and this was marked done on an unmerged branch. The criteria stay ticked: they are
-    # what a reviewer has confirmed, and the status is what says the PR has not landed.
+    # ticked, and this was marked done on an unmerged branch. Not every criterion is ticked either:
+    # *Working on the live checkout requires asking for it* was unticked in review round 3, because
+    # two of its four steps are unimplemented and belong to AWCLI-20 and AWCLI-21. A tick here is
+    # what a reviewer has confirmed; the status is what says the PR has not landed.
     status: in_progress
   - id: AWCLI-14
     path: tickets/AWCLI-14-worktree-reuse-and-resume.md
     title: "[AWCLI] Reuse, resume and fresh start"
-    # Widened to own ctx.git end to end and re-estimated 2 -> 3 by the 2026-08-28 amendment; the
-    # same shape of ticket-scope correction the row above it made for AWCLI-19 and ctx.sandbox.
+    # Widened to own ctx.git end to end and re-estimated 2 -> 3 by the 2026-08-28 ctx.git
+    # amendment; the same shape of ticket-scope correction the row above it made for AWCLI-19
+    # and ctx.sandbox.
     points: 3
     work_breakdown: WB-8
     depends_on: [AWCLI-13]
@@ -344,9 +351,13 @@ tickets:
   - id: AWCLI-20
     path: tickets/AWCLI-20-resolution-scaffolding-args.md
     title: "[AWCLI] Resolve workflows project-first, scaffold new ones, pass arguments through"
+    # Widened to own the --live-checkout flag by the 2026-08-28 --live-checkout amendment, which
+    # is why AWCLI-13 is a blocker: the flag is answered by that ticket's resolveWorkspaceChoice.
+    # Points stay at 3 — nothing new is constructed, and README.md caps a ticket at one session's
+    # work.
     points: 3
     work_breakdown: WB-12
-    depends_on: [AWCLI-05]
+    depends_on: [AWCLI-05, AWCLI-13]
     status: todo
   - id: AWCLI-21
     path: tickets/AWCLI-21-logging-isolation-spend.md

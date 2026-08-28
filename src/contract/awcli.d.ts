@@ -124,10 +124,19 @@ interface SchemaApi {
  * default path, and an operator who reads "sandbox" will assume otherwise (BR-015).
  *
  * Nothing a workflow can pass selects the workspace axis, and that is deliberate. The live
- * checkout is opted into by the operator on the command line (`awcli run --live`), never by
- * the workflow: BR-014 requires the person whose uncommitted work is at stake to be the one
- * asking, and it keeps one workflow file portable across both modes. AWCLI-13 implements the
- * flag; it adds nothing here.
+ * checkout is opted into by the operator on the command line (`awcli run --live-checkout`), never
+ * by the workflow: BR-014 requires the person whose uncommitted work is at stake to be the one
+ * asking, and it keeps one workflow file portable across both modes.
+ *
+ * The flag is spelled `--live-checkout`, which is what LIVE_CHECKOUT_FLAG in
+ * src/runtime/workspace.ts refuses on and what every refusal message names. This line said
+ * `--live` until the 2026-08-28 `--live-checkout` amendment, and so did the CLI table in the TDD.
+ * Two spellings of one operator-facing string is the kind of drift a frozen surface exists to
+ * prevent, so both were reconciled to the one the code ships. It also said AWCLI-13 implements
+ * the flag, which that ticket's own Out of Scope contradicts. Three tickets stand behind it:
+ * AWCLI-13 resolves the choice and provisions what it names, AWCLI-20 parses the flag off
+ * `awcli run`, AWCLI-21 states the answer in the run's output. None of the three adds anything
+ * here — this is a comment, and BR-033 admits only additive changes to what is declared below.
  *
  * Both unions are closed, and stay closed. ADR-0003 defines exactly two values per axis, so a
  * third is a change to the model rather than a new option, and it deserves the major version

@@ -18,10 +18,10 @@ discarding one without the other leaves an inconsistent run. Branches outlive th
 
 This ticket also owns `ctx.git`, the whole of it. AWCLI-13 provisions a working copy and hands back a
 handle carrying `dir`, `branch`, `head` and `dirty`, and constructs no context around one; `GitApi`
-declares `log`, `diff` and `commit` besides, and until the 2026-08-28 amendment in the rules file
-those three were owned by no ticket while AWCLI-19, AWCLI-23 and AWCLI-25 all carried criteria that
-consume them. WB-8's Contracts column names `ctx.git`, so the member was assigned and the two tickets
-derived from the unit had between them narrowed it away. `supports()` answers per member (BR-033), so
+declares `log`, `diff` and `commit` besides, and until the 2026-08-28 `ctx.git` amendment in the
+rules file those three were owned by no ticket while AWCLI-19, AWCLI-23 and AWCLI-25 all carried
+criteria that consume them. WB-8's Contracts column names `ctx.git`, so the member was assigned and
+the two tickets derived from the unit had between them narrowed it away. `supports()` answers per member (BR-033), so
 a half-built `git` lies in one direction or the other — which is why the member is delivered by one
 ticket rather than split again.
 
@@ -69,8 +69,8 @@ ticket rather than split again.
 
 ## Notes
 
-Re-estimated 2 → 3 and widened to own `ctx.git` end to end by the 2026-08-28 row of the
-`## Amendments` section in [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md).
+Re-estimated 2 → 3 and widened to own `ctx.git` end to end by the 2026-08-28 `ctx.git` row of
+the `## Amendments` section in [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md).
 No rule and no scenario changed: the gap was in what the two WB-8 tickets claimed, not in what the
 specification states.
 
