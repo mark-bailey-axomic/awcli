@@ -1,16 +1,24 @@
 # awcli — implementation tickets
 
-27 tickets, 69 points, derived from the 17-unit work breakdown in
+29 tickets, 72 points, twenty-seven of them derived from the 17-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). Five of the seven
 5-point units were split into a 3 and a 2; WB-5 split into two 2-point tickets, WB-11 into two
-3-point ones, and WB-8 into two 3-point ones, which is where three of the seven extra points over
+3-point ones, and WB-8 into two 3-point ones, which is where three of the ten extra points over
 the design's 62 come from — separating the lock from the record, the sandbox scope from the
 container inside it, and `ctx.git` from the provisioning that needs only half of it, each revealing
 work the single estimate had compressed. AWCLI-00 accounts for two more: project scaffolding the
 work breakdown never named, because a design document assumes a project exists.
-AWCLI-26 accounts for the last two, and for a different reason again: no unit was missing and no
+AWCLI-26 accounts for two more, and for a different reason again: no unit was missing and no
 estimate was wrong — PR #8 merged the specification of the context surface's final shape without the
 code that implements it, so the work exists as a ticket only because a merge left it behind.
+AWCLI-27 and AWCLI-28 account for the last three, and are the first two tickets here that describe
+no product behaviour at all. They came out of PR #15's review as surrounding observations rather
+than findings — debt in how this repository is worked in and how its own specification is checked,
+neither caused by the PR that surfaced them. AWCLI-27 moves the session worktree exclusion into a
+tracked file so each tool that walks the tree stops keeping its own copy; AWCLI-28 populates the
+manifest's empty traceability so a renamed scenario cannot silently lose its test. Counting them
+against the design's 62 would suggest the breakdown had underestimated the product, and it had
+not — this is the cost of the project around it.
 
 The breakdown was fourteen units and 56 points until PR #8's fourth review round. WB-15, WB-16 and
 WB-17 were added then for `ctx.fs`, `ctx.env` and `ctx.exec` on the host — the three context members
@@ -41,8 +49,12 @@ change, its date and the finding that drove it. Every ticket below derived from 
 inherits that pending status: AWCLI-01, AWCLI-06, AWCLI-09, AWCLI-10, AWCLI-13, AWCLI-21, AWCLI-22,
 AWCLI-23, AWCLI-24, AWCLI-25 and AWCLI-26.
 
-The converse does not hold, and it applies to four tickets: AWCLI-00, AWCLI-03, AWCLI-15 and
-AWCLI-18 carry no scenario at all. Scaffolding, the disposal stack, the agent driver and the
+The converse does not hold, and it applies to six tickets. AWCLI-27 and AWCLI-28 carry no
+scenario because they describe no product behaviour — a tracked ignore entry and a traceability
+check are properties of the repository rather than of the tool, and writing scenarios for them
+would put statements about awcli's own toolchain into a feature file that specifies what awcli
+does. The other four are a different case: AWCLI-00, AWCLI-03, AWCLI-15 and AWCLI-18 carry no
+scenario at all. Scaffolding, the disposal stack, the agent driver and the
 image build are machinery whose observable behaviour is asserted on the tickets built on top of
 them — 04, 16, 17, 19 and 21. It was six tickets until BR-038 and BR-039 were added: `ctx.fs`
 and `ctx.env` were the only two of the twelve context members the TDD governed with no business
@@ -112,6 +124,8 @@ accurately and where no ticket reads it.
 | [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | WB-16 | 01, 19, 25, 26 |
 | [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | WB-17 | 01, 13 |
 | [AWCLI-26](AWCLI-26-land-frozen-surface.md) | Frozen surface's final shape | 2 | — | 01 |
+| [AWCLI-27](AWCLI-27-tracked-ignore-for-session-worktrees.md) | Tracked ignore for session worktrees | 1 | — | — |
+| [AWCLI-28](AWCLI-28-manifest-traceability.md) | Manifest traceability and coverage | 2 | — | — |
 
 ## Order
 
@@ -132,6 +146,10 @@ wave 3    06    08    09    13    20
 wave 4    11    14    15    19    25
 wave 5    10    12    16    17    21    22    23    24
 ```
+
+**AWCLI-27 and AWCLI-28 sit outside the waves.** Neither blocks nor is blocked by anything: one
+edits ignore files, the other reads a feature file and the test suite, and both are workable the
+moment someone picks them up. Placing them in a wave would imply a dependency neither has.
 
 The multi-parent tickets, which the waves alone do not show:
 

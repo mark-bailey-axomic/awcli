@@ -22,6 +22,13 @@ configuration written without them would leave `awcli init` producing a reposito
 immediately refuses. The five are named in the TDD's command table; this ticket is where they get
 written.
 
+Where that runtime path is anchored is part of what makes the one ignore line work. `git rev-parse
+--git-dir` succeeds from any directory inside a repository, so a `--repo` pointing at a
+subdirectory would put a second runtime directory beside it — and a single root-anchored ignore
+entry would not cover it, which is the premise BR-030 rests on. AWCLI-13 provisions the first
+thing to actually live under that path, so this is the ticket where the anchor has to be decided
+rather than assumed.
+
 ## Requirements
 
 ### Functional
@@ -33,7 +40,8 @@ written.
   repository passes the profile gate as initialised (BR-006, AWCLI-06).
 - Write the ignore entry once and never rewrite it.
 - Place all mutable state — run state, records, locks, logs, working copies — under one runtime
-  path.
+  path, anchored at the repository root however the repository was named, so the single ignore
+  entry covers every run's data (BR-030).
 - Provide a clean command that releases leftovers and, on request, collects branches.
 - Never remove a branch holding commits that exist nowhere else.
 
@@ -58,6 +66,11 @@ written.
 - [ ] Adding a new runtime file kind requires no ignore change — asserted by test.
 - [ ] Re-running initialisation over an existing layout changes nothing.
 - [ ] Clean run against a live run skips the locked run and reports it.
+- [ ] Naming a subdirectory of a repository puts the runtime path at the repository root, not
+      beside the subdirectory — asserted by running against a real repository, not by inspection.
+- [ ] The suite can observe a run dirtying the operator's repository: the test helper no longer
+      filters the runtime path out of `git status` or directory listings, so the ignore entry is
+      what makes the assertion pass rather than the helper.
 - [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope

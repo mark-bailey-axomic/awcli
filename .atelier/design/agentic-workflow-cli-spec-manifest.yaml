@@ -390,6 +390,20 @@ tickets:
     work_breakdown: null  # no unit: PR #8 merged round 4's surface decisions without their code
     depends_on: [AWCLI-01]
     status: done
+  - id: AWCLI-27
+    path: tickets/AWCLI-27-tracked-ignore-for-session-worktrees.md
+    title: "[AWCLI] Ignore the nested session worktrees in one tracked place"
+    points: 1
+    work_breakdown: null  # no unit: repository hygiene, raised as S-004 by PR #15's review
+    depends_on: []
+    status: todo
+  - id: AWCLI-28
+    path: tickets/AWCLI-28-manifest-traceability.md
+    title: "[AWCLI] Link every scenario to the test that runs it, and let the link break loudly"
+    points: 2
+    work_breakdown: null  # no unit: this manifest's own empty traceability, raised as S-002
+    depends_on: []
+    status: todo
 
 plans: []
 
