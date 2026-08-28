@@ -1,12 +1,13 @@
 # awcli — implementation tickets
 
-27 tickets, 68 points, derived from the 17-unit work breakdown in
+27 tickets, 69 points, derived from the 17-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md). Five of the seven
-5-point units were split into a 3 and a 2; WB-5 split into two 2-point tickets and WB-11 into two
-3-point ones, which is where two of the six extra points over the design's 62 come from —
-separating the lock from the record, and the sandbox scope from the container inside it, each
-revealed work the single estimate had compressed. AWCLI-00 accounts for the other two: project
-scaffolding the work breakdown never named, because a design document assumes a project exists.
+5-point units were split into a 3 and a 2; WB-5 split into two 2-point tickets, WB-11 into two
+3-point ones, and WB-8 into two 3-point ones, which is where three of the seven extra points over
+the design's 62 come from — separating the lock from the record, the sandbox scope from the
+container inside it, and `ctx.git` from the provisioning that needs only half of it, each revealing
+work the single estimate had compressed. AWCLI-00 accounts for two more: project scaffolding the
+work breakdown never named, because a design document assumes a project exists.
 AWCLI-26 accounts for the last two, and for a different reason again: no unit was missing and no
 estimate was wrong — PR #8 merged the specification of the context surface's final shape without the
 code that implements it, so the work exists as a ticket only because a merge left it behind.
@@ -70,6 +71,16 @@ scenario was written. It also surfaced a dependency that had been invisible whil
 construction — AWCLI-10 freezes state inside a `sandbox()` scope, so it cannot land before the
 ticket that builds one.
 
+A fifth member has closed the same way, and it is the second where a rule would have been the wrong
+instrument. `ctx.git` is assigned by WB-8, which is AWCLI-13 and AWCLI-14 between them — AWCLI-13
+provisions a working copy and constructs no context around one, AWCLI-14 reattaches it, and neither
+named `GitApi`'s `log`, `diff` or `commit`, which AWCLI-19, AWCLI-23 and AWCLI-25 already carried
+criteria consuming. Nothing behavioural was missing and WB-8's Contracts column already named the
+member, so this too is a ticket-scope correction rather than a spec amendment: AWCLI-14 widened to
+own `ctx.git` end to end and re-estimated 2 → 3, no rule added and no scenario written. It reached
+the tickets by way of a source comment in `src/runtime/context.ts` that had recorded the gap
+accurately and where no ticket reads it.
+
 ## Tickets
 
 | ID | Title | Pts | WB | Blocked by |
@@ -88,7 +99,7 @@ ticket that builds one.
 | [AWCLI-11](AWCLI-11-iteration-loop.md) | Iteration loop and termination | 3 | WB-7 | 04, 09 |
 | [AWCLI-12](AWCLI-12-failure-isolation-and-drain.md) | Failure isolation and drain | 2 | WB-7 | 04, 11 |
 | [AWCLI-13](AWCLI-13-worktree-provisioning.md) | Worktree provisioning | 3 | WB-8 | 03, 07 |
-| [AWCLI-14](AWCLI-14-worktree-reuse-and-resume.md) | Reuse, resume, fresh start | 2 | WB-8 | 13 |
+| [AWCLI-14](AWCLI-14-worktree-reuse-and-resume.md) | Reuse, resume, fresh start | 3 | WB-8 | 13 |
 | [AWCLI-15](AWCLI-15-claude-agent-driver.md) | Claude agent driver | 3 | WB-9 | 01, 02, 13 |
 | [AWCLI-16](AWCLI-16-agent-silence-and-teardown.md) | Silence, lingering, degradation | 2 | WB-9 | 04, 15 |
 | [AWCLI-17](AWCLI-17-structured-output-and-reask.md) | Structured output and re-ask | 3 | WB-10 | 15 |

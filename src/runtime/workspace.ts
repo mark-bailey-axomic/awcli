@@ -48,17 +48,17 @@ import {
  *     may well want to do, and the message's job is to name the command that works.
  *
  * Worktree isolation is not security isolation, and this file says so in the sentence it hands the
- * operator: it protects the repository, not the machine. The filesystem outside the repository, the
- * network and this machine's credentials all stay reachable (BR-015).
+ * operator: it protects the repository, not the machine (BR-015). What it does *not* say is what an
+ * agent can reach beyond the repository, because that is the execution axis's answer and this module
+ * carries no execution target — see `WorkspaceIsolation` and `describe`.
  *
  * **`ctx.git` is deliberately not built here.** A `WorkspaceHandle` *is* the exposure of a working
  * copy's dir, branch, head and dirty state, but `GitApi` also declares `log`, `diff` and `commit`,
  * which nothing in AWCLI-13 builds — and `supports()` answers per member, so a half-built `git`
- * would make it lie in one direction or the other (BR-033). The loop that builds a context around one
- * of these handles is AWCLI-11's, and `DELIVERED_BY` in context.ts now says so — it named AWCLI-13
- * until this unit shipped, which would have sent an author feature-detecting `git` to a ticket with
- * every box ticked. That entry's own comment records what is still unowned: `log`, `diff` and
- * `commit` belong to no ticket at all. Read the absence here as a decision, not an omission.
+ * would make it lie in one direction or the other (BR-033). AWCLI-14 owns the member end to end:
+ * `DELIVERED_BY` in context.ts points there, and the amendment that widened that ticket to cover
+ * `log`, `diff` and `commit` is the 2026-08-28 row in the rules file's `## Amendments` section. Read
+ * the absence here as a decision, not an omission.
  */
 
 /** The resource name the disposal stack reports this under. Operator-facing. */
@@ -80,9 +80,10 @@ export type WorkspaceAxis = "liveTree" | "worktree";
 /**
  * The operator's consent to work in their own checkout.
  *
- * A branded, module-private *value*, not a boolean. Three properties are what BR-014 rests on here,
- * and each is worth stating exactly, because the first version of this comment claimed a fourth that
- * is not true:
+ * A branded, module-private *value*, not a boolean. Three properties are what BR-014 rests on here.
+ * They are stated one at a time and bounded rather than summarised, because the summary a reader
+ * would write from them — that a workflow cannot obtain one — is a fourth property, and it holds for
+ * a different reason than the three do:
  *
  *   - **Unforgeable by shape.** The check compares by identity against the frozen sentinel below, so
  *     a frozen `{}`, a spread copy of the real one, `JSON.parse("{}")`, an `Object.create` of it and
@@ -309,12 +310,13 @@ export async function acquireWorkspace(
     );
   }
 
-  // Held outside the acquisition so a refusal survives it: `open` either returns a handle or throws,
-  // and there is no third channel through the stack. Same arrangement as `acquireRunLock`.
-  let refusal: WorkspaceRefusal | undefined;
+  // The refusal travels on the error and nowhere else. `open` either returns a handle or throws,
+  // there is no third channel through the stack, and `DisposalStack.acquire` rethrows what `open`
+  // threw unchanged — so the catch below reads the refusal off the error it caught. A copy held in a
+  // binding out here would be read by a future edit *instead* of the error, and a path that reaches
+  // it without the throw having happened would report success on a refused run.
   const refuse = (kind: WorkspaceRefusalKind, message: string): never => {
-    refusal = refuseWith(kind, slot, message);
-    throw new WorkspaceRefusedError(refusal);
+    throw new WorkspaceRefusedError(refuseWith(kind, slot, message));
   };
 
   const acquisition: Acquisition<WorkspaceHandle> = {
@@ -387,7 +389,11 @@ async function sharedPreflight(
   if (inside.kind === "unavailable") {
     refuse(
       "git-unavailable",
-      `awcli cannot provision a working copy: ${inside.reason}. awcli works by making a git worktree, so it needs git on this machine. Install git, or put it on the PATH awcli is run with.`,
+      // The reason is stated without naming a worktree, because this refusal is raised for both
+      // axes: an operator who passed --live-checkout would otherwise be told awcli works by making a
+      // worktree, which is exactly what that flag stopped it doing, and could reasonably conclude
+      // the flag had been ignored.
+      `awcli cannot provision a working copy: ${inside.reason}. awcli reads the repository through git whichever working copy a run is given, so it needs git on this machine. Install git, or put it on the PATH awcli is run with.`,
     );
   }
   // A path that is not there is a mistyped `--repo`, and it used to arrive here as
@@ -421,8 +427,12 @@ async function sharedPreflight(
 /**
  * The operator's own checkout, which awcli reads and never prepares.
  *
- * Nothing is created, nothing is written, no branch is cut: the whole of this is two questions put to
- * git. That is what the axis means — the operator asked to work where they already are.
+ * Nothing is created, nothing is written, no branch is cut: this asks git which branch the checkout
+ * is on and does nothing else. That is what the axis means — the operator asked to work where they
+ * already are. It is not the whole of what the live-checkout path costs, and a count here would
+ * invite a reader to think it were: `sharedPreflight` runs first on this axis too, so a live
+ * checkout is also refused for a machine with no git, a directory that is not a repository, and a
+ * repository with no commit.
  *
  * The slot does not separate anything here, and that is worth stating rather than leaving to be
  * discovered: there is one live checkout however many slots ask for it, so the branch is the
@@ -438,8 +448,19 @@ async function openLiveTree(
   refuse: Refuse,
 ): Promise<WorkspaceHandle> {
   const current = await run(git, ["branch", "--show-current"], repositoryPath);
+  if (current.code !== 0) {
+    // Kept apart from the refusal below, which the two used to share. `--show-current` answers an
+    // empty line on a detached HEAD and exits zero doing it, so a non-zero exit is something else —
+    // and the likeliest something else is a git older than 2.22, which has no `--show-current` at
+    // all. Folded together, an operator on git 2.21 sitting on `main` was refused with "check out a
+    // branch and run again": advice that cannot work, because they are on one. The minimum git
+    // version is stated in the README beside the Node one.
+    throw new Error(
+      `awcli could not read which branch your checkout at ${repositoryPath} is on: git branch --show-current exited ${current.code}. ${gitComplaint(current.stderr)} awcli needs git 2.22 or later, which is where --show-current arrived.`,
+    );
+  }
   const branch = current.stdout.trim();
-  if (current.code !== 0 || branch.length === 0) {
+  if (branch.length === 0) {
     // `branch --show-current` answers with an empty line on a detached HEAD. Refused rather than
     // reported as an empty branch or as the commit id: a run's branch is what AWCLI-14 reattaches by
     // and what an operator reads, and neither of those has any meaning for a detached head.
@@ -488,23 +509,19 @@ async function openWorktree(
     );
   }
 
-  // One question rather than three. Every ref that can collide with this branch lives at or under
-  // `refs/heads/${BRANCH_NAMESPACE}`, and `for-each-ref` with a literal pattern matches that ref
-  // itself as well as everything beneath it — so one call answers the exact-branch case and both
-  // directory/file cases below.
-  const namespaced = await run(
-    git,
-    ["for-each-ref", "--format=%(refname)", `refs/heads/${BRANCH_NAMESPACE}`],
-    repositoryPath,
-  );
-  const collision = branchCollision(
-    branch,
-    runName,
-    namespaced.stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0),
-  );
+  const namespaced = await namespaceRefs(git, repositoryPath);
+  if (!namespaced.ok) {
+    // Thrown rather than read as "nothing in the way". Every other git call in this module inspects
+    // its exit status, and this one used its stdout unconditionally — but a non-zero exit yields
+    // empty stdout, so an unreadable `packed-refs` was indistinguishable from a repository with no
+    // awcli branches at all, and the run walked on into `git worktree add` to fail there with no
+    // remedy. A question awcli could not get an answer to is a fault: there is nothing for the
+    // operator to choose differently, and answering it wrongly is what costs them the refusal.
+    throw new Error(
+      `awcli could not list the branches under ${BRANCH_NAMESPACE}/ in ${repositoryPath}, so it cannot tell whether ${branch} is free: git for-each-ref exited ${namespaced.code}. ${gitComplaint(namespaced.stderr)}`,
+    );
+  }
+  const collision = branchCollision(branch, runName, namespaced.refs);
   if (collision !== undefined) {
     // The branch outlives the run that made it (BR-036), so meeting one is ordinary rather than
     // exceptional — it is what a second invocation of the same run and slot finds. Refused, and not
@@ -563,8 +580,21 @@ async function openWorktree(
     // which is a run blocked by awcli's own leftover: the self-inflicted window this file keeps
     // having to close. Best effort, because the error below is the one worth reporting.
     await rmdir(target).catch(ignoreCleanupFailure);
-    // Every condition awcli has a sentence for was checked above, so whatever this is, it is not
-    // something the operator was asked to choose. Thrown rather than refused: a refusal claims awcli
+    // The conditions awcli has sentences for were checked above — but a check is not a guarantee,
+    // and cannot be: a `mkdir` and a subprocess sit between the last of them and this call, and `-b`
+    // is the second line of defence that catches whatever landed in that window. So the collision
+    // question is put again, to the repository as it is now, before the fault is raised. A branch
+    // that appeared meanwhile has a refusal already written for it, and reporting it as
+    // `git worktree add exited 128` hands the operator git's exit status where a remedy exists.
+    //
+    // The `occupied` half of the same window needs no second look: `mkdir(target)` above is what
+    // claims the path, and it fails with EEXIST rather than reaching here if anything — another
+    // acquisition of this run and slot included — got there first.
+    const late = await lateCollision(git, repositoryPath, runName, branch);
+    if (late !== undefined) {
+      refuse("branch-exists", collisionMessage(late, branch, runName, target));
+    }
+    // Nothing awcli has a sentence for, then. Thrown rather than refused: a refusal claims awcli
     // knows what is wrong and what to do instead, and here it knows neither.
     throw new Error(
       `awcli could not create a working copy at ${target} for the "${runName}" run: git worktree add exited ${added.code}. ${gitComplaint(added.stderr)}`,
@@ -671,22 +701,96 @@ type BranchCollision = {
   readonly ref: string;
 };
 
-/** The first ref that collides with `branch`, or nothing. See `BranchCollision`. */
+/**
+ * Every ref in awcli's namespace, or why git could not say.
+ *
+ * One question rather than three. Every ref that can collide with a run's branch lives at or under
+ * `refs/heads/${BRANCH_NAMESPACE}`, and `for-each-ref` with a literal pattern matches that ref itself
+ * as well as everything beneath it — so one call answers the exact-branch case and both
+ * directory/file cases `branchCollision` decides between.
+ *
+ * The failure is returned rather than thrown because the two call sites want different things from
+ * it: before the add it is a fault, and after a failed add it is a second opinion awcli can do
+ * without.
+ */
+async function namespaceRefs(
+  git: GitRunner,
+  repositoryPath: string,
+): Promise<
+  | { readonly ok: true; readonly refs: readonly string[] }
+  | { readonly ok: false; readonly code: number; readonly stderr: string }
+> {
+  const listed = await run(
+    git,
+    ["for-each-ref", "--format=%(refname)", `refs/heads/${BRANCH_NAMESPACE}`],
+    repositoryPath,
+  );
+  if (listed.code !== 0) {
+    return { ok: false, code: listed.code, stderr: listed.stderr };
+  }
+  return {
+    ok: true,
+    refs: listed.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  };
+}
+
+/**
+ * The same question again, after `git worktree add` has already failed.
+ *
+ * Nothing when git cannot answer: the caller is on its way to raising a fault that names git's own
+ * complaint, and replacing that with a second complaint about a follow-up query would bury the one
+ * the operator needs. Only a collision it can actually see turns the fault into a refusal.
+ */
+async function lateCollision(
+  git: GitRunner,
+  repositoryPath: string,
+  runName: RunName,
+  branch: string,
+): Promise<BranchCollision | undefined> {
+  const namespaced = await namespaceRefs(git, repositoryPath).catch(() => undefined);
+  if (namespaced === undefined || !namespaced.ok) return undefined;
+  return branchCollision(branch, runName, namespaced.refs);
+}
+
+/**
+ * The first ref that collides with `branch`, or nothing. See `BranchCollision`.
+ *
+ * Compared with case folded, which is wider than git's own ref rules and deliberately so. git
+ * resolves a loose ref through the filesystem, and the filesystem ignores case on the APFS and NTFS
+ * defaults — so `awcli/Triage` and `awcli/triage` are one ref there and two on ext4. An exact
+ * comparison misses the first case entirely: git then answers `fatal: cannot lock ref` and the run
+ * exits through the thrown fault this type exists to stop, or, with the ref packed rather than loose,
+ * the add succeeds and leaves two branches a case-insensitive checkout cannot tell apart.
+ *
+ * Folding can only ever add a refusal, never remove one, and it cannot produce a false one about
+ * awcli's own names: a run name and a slot are refused unless they are already lowercase
+ * (`firstProblem`, `not-lowercase`), so awcli never asks about a ref whose case could vary. What is
+ * left is an operator's own branch, reported back in the spelling they gave it — they have to be able
+ * to find it.
+ */
 function branchCollision(
   branch: string,
   runName: RunName,
   existing: readonly string[],
 ): BranchCollision | undefined {
-  const full = `refs/heads/${branch}`;
-  if (existing.includes(full)) return { kind: "same", ref: printable(branch) };
-  const prefix = workspaceBranchPrefixes(runName).find((candidate) =>
-    existing.includes(`refs/heads/${candidate}`),
-  );
-  if (prefix !== undefined) return { kind: "prefix", ref: printable(prefix) };
-  const below = existing.find((ref) => ref.startsWith(`${full}/`));
-  if (below !== undefined) {
-    return { kind: "below", ref: printable(below.slice("refs/heads/".length)) };
+  const short = (ref: string): string => printable(ref.slice("refs/heads/".length));
+  const matching = (candidate: string): string | undefined => {
+    const wanted = `refs/heads/${candidate}`.toLowerCase();
+    return existing.find((ref) => ref.toLowerCase() === wanted);
+  };
+
+  const same = matching(branch);
+  if (same !== undefined) return { kind: "same", ref: short(same) };
+  for (const candidate of workspaceBranchPrefixes(runName)) {
+    const prefix = matching(candidate);
+    if (prefix !== undefined) return { kind: "prefix", ref: short(prefix) };
   }
+  const beneath = `refs/heads/${branch}/`.toLowerCase();
+  const below = existing.find((ref) => ref.toLowerCase().startsWith(beneath));
+  if (below !== undefined) return { kind: "below", ref: short(below) };
   return undefined;
 }
 
@@ -761,15 +865,20 @@ function handle(
 /**
  * The sentence an operator reads about what they got (BR-015).
  *
- * It names what is *not* protected as well as what is, and that is the rule rather than caution:
- * "sandbox" and "worktree" both read as a machine boundary and neither is one. A worktree protects
- * the repository. The filesystem outside it, the network and this machine's credentials stay
- * reachable on both axes, and only a container changes that.
+ * It names the bound of what is protected as well as what is protected, and that is the rule rather
+ * than caution: "sandbox" and "worktree" both read as a machine boundary and neither is one. What it
+ * must not do is state the *other* axis's answer. The filesystem outside the repository, the network
+ * and this machine's credentials named as reachable are all properties of running on the host, and
+ * this type carries no execution target — deliberately, for the reason `WorkspaceIsolation` gives.
+ * The BR-015 scenario that wants that sentence is scoped to an agent running *without a container*,
+ * and a worktree composed with one (AWCLI-19) would reuse this description to tell the operator their
+ * credentials are reachable inside a container that blocks them. So each axis says its own half, and
+ * whatever composes them into the contract's `Isolation` says both.
  */
 function describe(workspace: WorkspaceAxis, dir: string, branch: string): string {
   return workspace === "liveTree"
-    ? `Working directly in your own checkout at ${dir}, on your branch ${branch}, because this run was given ${LIVE_CHECKOUT_FLAG}: uncommitted changes there are an agent's to change, and nothing protects them. Nothing outside the repository is protected either — the filesystem, the network and this machine's credentials are all reachable.`
-    : `Working in a worktree at ${dir}, on the branch ${branch}: your own checkout, its branch and its uncommitted changes are untouched. This protects the repository and nothing else — the filesystem outside it, the network and this machine's credentials are all reachable.`;
+    ? `Working directly in your own checkout at ${dir}, on your branch ${branch}, because this run was given ${LIVE_CHECKOUT_FLAG}: uncommitted changes there are an agent's to change, and nothing about the working copy protects them. What an agent can touch beyond your checkout is settled by where this run executes, not by the working copy it was given.`
+    : `Working in a worktree at ${dir}, on the branch ${branch}: your own checkout, its branch and its uncommitted changes are untouched. That is the whole of what a working copy protects — it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
 }
 
 /**
@@ -823,6 +932,17 @@ async function refuseSymlinkedAncestors(
     if (stats.isSymbolicLink()) {
       throw new Error(
         `${ancestor} is a symbolic link, and awcli will not follow one to reach a run's working copies: the working copy, and everything an agent writes in it, would land outside the repository. Remove it and run again.`,
+      );
+    }
+    // Anything else that is not a directory, which is the sibling case and used to have no sentence
+    // at all: `lstatOrMissing` turns ENOENT into "not there" and rethrows every other errno as it
+    // came, so a repository carrying a tracked file named `.awcli` produced `ENOTDIR: not a
+    // directory, lstat ...` and a stack trace from the *next* iteration's lstat. Named here, at the
+    // component that is actually the problem — a message about `.awcli/run` would send the operator
+    // looking for a path that cannot exist.
+    if (!stats.isDirectory()) {
+      throw new Error(
+        `${ancestor} is a file, and awcli needs a directory there to hold this run's working copies. awcli never writes over what it finds: move or remove it and run again.`,
       );
     }
   }

@@ -70,10 +70,10 @@ const MAX_NAME_LENGTH = 64;
  * Alphanumeric at both ends, dots, dashes and underscores inside.
  *
  * The ends are constrained because git's ref rules are: a component may not begin with a dot and
- * may not end with one. This does not cover git's third rule — a component may not end in `.lock`
- * — and the first version of this comment claimed it did: `k` is a letter, so `nightly.lock`
- * passed here and would have been refused later by git, at branch-creation time, after the run had
- * taken its lock and started work. That rule is checked explicitly below.
+ * may not end with one. This does not cover git's third rule — a component may not end in `.lock`.
+ * `k` is a letter, so `nightly.lock` satisfies this pattern and would be refused later by git, at
+ * branch-creation time, after the run had taken its lock and started work. That rule is checked
+ * explicitly below, and not by this.
  *
  * Constraining the ends also keeps a name from looking like a shell option in a message.
  */
@@ -89,18 +89,10 @@ export type NameProblem =
   | "not-lowercase"
   | "git-reserved-suffix";
 
-/**
- * The old spelling, kept as an alias.
- *
- * The problems are not the run name's own: a slot breaks the same rules for the same reasons, so
- * the union is shared. Renaming it at every call site would be churn in exchange for nothing.
- */
-export type RunNameProblem = NameProblem;
-
 export interface RunNameRefusal {
   readonly ok: false;
   readonly name: string;
-  readonly problem: RunNameProblem;
+  readonly problem: NameProblem;
   /**
    * Why the name cannot be used, with no advice in it.
    *
@@ -125,12 +117,12 @@ export type SlotNameResult =
  *
  * One ladder for a run name and a slot, and that is not tidying. Both become a component of a path
  * under the runtime directory and a component of the branch `awcli/<run>/<slot>` (BR-036), so both
- * meet git's ref rules, a filesystem that may ignore case, and a path join. This ladder took three
- * corrections to get right — `..` tested before the character class so it is reported as what it is,
- * the `.lock` suffix that the edge-character rule cannot catch because `k` is a letter, and the case
- * rule — and none of those are visible from a call site that writes the obvious regex instead. A
- * second copy would be a weaker copy, and the weakness would be in the code that keeps a workflow's
- * slot from escaping the runtime directory.
+ * meet git's ref rules, a filesystem that may ignore case, and a path join. Three of the rungs are
+ * invisible from a call site that writes the obvious regex instead: `..` has to be tested before the
+ * character class or it is reported as a stray dot, the `.lock` suffix escapes the edge-character
+ * rule because `k` is a letter, and the case rule follows from a name being a directory and a ref at
+ * once. A second copy would be a weaker copy, and the weakness would be in the code that keeps a
+ * workflow's slot from escaping the runtime directory.
  *
  * The order is the message's order as much as the rules': each rung assumes the ones above it have
  * passed, so `reserved` is only ever reported of a name that is otherwise legal.
@@ -239,13 +231,25 @@ export function validateSlotName(slot: string): SlotNameResult {
  */
 const RESERVED_SLOT_NAMES: readonly string[] = [];
 
+/**
+ * The name of the slot a caller with no name to give lands in.
+ *
+ * Separate from `DEFAULT_SLOT` below, and declared up here, because `slotSentences` interpolates it
+ * and `DEFAULT_SLOT` is initialised by `defaultSlot()` — which calls `validateSlotName("main")`,
+ * which reaches `slotSentences` if that name ever stops validating. Reading `DEFAULT_SLOT` from
+ * there was a read during its own initialiser: verified to produce `ReferenceError: Cannot access
+ * 'DEFAULT_SLOT' before initialization` at module load, in place of the diagnostic `defaultSlot`
+ * exists to produce. A plain string has no such window.
+ */
+const DEFAULT_SLOT_NAME = "main";
+
 /** Why a slot was refused, and what to do about it. See `runNameSentences` for why these differ. */
 function slotSentences(slot: string, problem: NameProblem): [string, string] {
   switch (problem) {
     case "empty":
       return [
         "A slot name cannot be empty.",
-        `Leave the name out to use the default slot "${DEFAULT_SLOT}", or give the slot a name.`,
+        `Leave the name out to use the default slot "${DEFAULT_SLOT_NAME}", or give the slot a name.`,
       ];
     case "too-long":
       return [
@@ -296,7 +300,7 @@ function slotSentences(slot: string, problem: NameProblem): [string, string] {
  */
 function refuse(
   name: string,
-  problem: RunNameProblem,
+  problem: NameProblem,
   reason: string,
   remedy: string,
 ): RunNameRefusal {
@@ -329,10 +333,10 @@ export function defaultRunName(workflowReference: string): RunNameResult {
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")
     // Collapse, then strip the ends, so `--nightly--.ts` cannot produce a name the validator would
-    // then reject for its edges. The principle is that narrow one and not the aphorism this comment
-    // used to carry — "a default that can be refused is not a default" — which the code fifteen
-    // lines below contradicts on purpose: a slug that comes out `worktrees` *is* refused, and has to
-    // be. What must never happen is a default refused for something slugification itself produced.
+    // then reject for its edges. The principle is exactly that narrow: what must never happen is a
+    // default refused for something slugification itself produced. A default that can be refused at
+    // all is fine and has to be — the `validateRunName(slug)` call below refuses a slug that comes
+    // out `worktrees`, deliberately.
     .replace(/-{2,}/g, "-")
     .replace(/^[^a-z0-9]+/, "")
     .replace(/[^a-z0-9]+$/, "")
@@ -440,7 +444,10 @@ export function runLockPath(repositoryPath: string, runName: RunName): string {
 const WORKTREES_DIRECTORY = "worktrees";
 
 /**
- * `<repo>/.awcli/run/worktrees/<run>/<slot>` — one slot's working copy (the TDD's persisted shapes).
+ * `<repo>/.awcli/run/worktrees/<run>/<slot>` — one slot's working copy.
+ *
+ * The layout is the one the technical design document sets out under `### Persisted Shapes`
+ * (`.atelier/design/agentic-workflow-cli-tdd.md`).
  *
  * Derived from the same constants as the lock's path, never from a re-spelling of `.awcli/run`. The
  * runtime directory is the single ignored path (BR-030) and a second literal of it is a second place
@@ -517,10 +524,10 @@ export function workspaceBranch(runName: RunName, slot: SlotName): string {
 /**
  * The slot a caller with no name to give lands in.
  *
- * `main` because that is how it reads on the branch an operator sees — `awcli/triage/main` is the
- * run's own working copy, and the run's name is already the interesting half of that. Auto-allocating
- * a slot per unnamed `sandbox()` call is AWCLI-19's; this is the single slot a run uses when nobody
- * has asked for more than one.
+ * `DEFAULT_SLOT_NAME`, which is `main`, because that is how it reads on the branch an operator
+ * sees: `awcli/triage/main` is the run's own working copy, and the run's name is already the
+ * interesting half of that. Auto-allocating a slot per unnamed `sandbox()` call is AWCLI-19's; this
+ * is the single slot a run uses when nobody has asked for more than one.
  *
  * Validated at module load rather than cast, so the default cannot drift out of the rules every
  * other slot is held to — a cast here would be the one slot in the system that never met them.
@@ -528,7 +535,7 @@ export function workspaceBranch(runName: RunName, slot: SlotName): string {
 export const DEFAULT_SLOT: SlotName = defaultSlot();
 
 function defaultSlot(): SlotName {
-  const result = validateSlotName("main");
+  const result = validateSlotName(DEFAULT_SLOT_NAME);
   if (!result.ok) {
     throw new Error(
       `internal: the default slot is not a legal slot name: ${result.message}`,

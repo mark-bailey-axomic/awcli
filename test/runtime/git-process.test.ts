@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  GIT_MAX_BUFFER,
   createGitRunner,
   gitComplaint,
   systemGitRunner,
@@ -81,6 +82,38 @@ describe("running git", () => {
     if (noBinary.kind !== "unavailable") return;
     expect(noBinary.reason).toContain("awcli-definitely-not-git");
     expect(noBinary.reason).toContain("PATH");
+  });
+
+  /**
+   * More output than awcli reads, which is a bound this module imposes rather than a missing git.
+   *
+   * Exceeding `maxBuffer` gives `err.code` the *string* `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` with
+   * `killed` undefined — verified — so it used to fall through the generic string-errno branch and
+   * come back as `unavailable`. `workspace.ts` turns that into "git has gone missing while the run
+   * was starting", which is neither true nor actionable for a `git status --porcelain` on a working
+   * copy with more than sixteen megabytes to say. Thrown, and naming the limit, like the timeout
+   * beside it: both are awcli's own bounds and neither is a choice the operator can make differently.
+   *
+   * `head` stands in for git because producing that much output from git means a repository this
+   * suite has no business building. The runner is the same one; only the binary differs, which is
+   * what `createGitRunner` is exported for.
+   */
+  it("names an answer too large to read rather than reporting a missing git", async () => {
+    const cwd = await directory();
+    const flood = createGitRunner("head");
+
+    const thrown = await flood(
+      ["-c", String(GIT_MAX_BUFFER + 1024 * 1024), "/dev/zero"],
+      cwd,
+    ).then(
+      (outcome) => outcome,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain(String(GIT_MAX_BUFFER));
+    expect(message).not.toMatch(/not installed|could not be run/);
   });
 
   /** A `cwd` that exists and is a file answers the same way: there is no directory to run in. */

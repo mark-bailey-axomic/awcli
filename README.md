@@ -28,7 +28,9 @@ Both steps are needed. `npm install -g .` on a bare clone fails: npm does not in
 devDependencies for a local folder install, so the `prepare` build has no bundler to run.
 It fails loudly rather than installing a broken command.
 
-Requires Node >= 20.11. Then, from any directory:
+Requires Node >= 20.11 and git >= 2.22. The git floor is `git branch --show-current`, which
+awcli uses to read the branch of a live checkout and which arrived in 2.22; `git worktree add`
+is older than that. Then, from any directory:
 
 ```bash
 awcli --version

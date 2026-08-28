@@ -30,7 +30,11 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 - Branch names are derived from run name and slot, and are stable across runs of the same name.
 - Provisioning a working copy costs a bounded amount of time and disk for a repository of
   ordinary size.
-- Nothing is written to the operator's checkout when isolation is in effect.
+- Nothing is written to the operator's checkout outside the single runtime path `.awcli/run/`
+  when isolation is in effect: their tracked files, their branch and their uncommitted work are
+  untouched (BR-030). Working copies live *inside* the checkout, at
+  `.awcli/run/worktrees/<run>/<slot>`, and BR-030 is what makes that acceptable — one runtime
+  directory covered by one generated ignore line.
 
 ## Constraints
 
@@ -50,6 +54,26 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 
 - Reuse across iterations, resume and fresh start — AWCLI-14.
 - Branch collection — AWCLI-22.
+- **Exposing the working copy to the workflow.** The functional requirement above is delivered as
+  far as a `WorkspaceHandle`, which carries `dir`, `branch`, `head` and `dirty`; nothing constructs
+  a context around one, so `ctx.git` stays unbuilt and `supports("git")` answers false. `GitApi`
+  also declares `log`, `diff` and `commit`, which no unit had claimed at all, and `supports()`
+  answers per member (BR-033) — so a half-built `git` would lie in one direction or the other.
+  **AWCLI-14** owns the member end to end, by the 2026-08-28 amendment. Named here rather than left
+  to a docblock, because a requirement half that no ticket owns is a half that ships as
+  never-written — the AWCLI-07 precedent.
+- **Writing the generated ignore line.** BR-030 allows working copies inside the checkout because
+  one line covers them, and that line is unwritten: until it exists, `.awcli/` shows up untracked
+  in the operator's repository and a habit of `git add -A` would commit worktree directories into
+  it. **AWCLI-22** owns the runtime layout and the ignore entry. The test helper filters `.awcli`
+  out of both the entry list and `git status`, so this suite cannot observe the window.
+- **The `--live-checkout` flag itself, and printing the isolation line.** BR-014 puts the opt-in on
+  the command line and the scenario ends "and that choice is stated in the run's output"; this
+  ticket delivers the resolver and the sentence, one layer below both. `src/cli.ts` parses only
+  `--version` and `--help`, and nothing prints `WorkspaceIsolation.description`. **AWCLI-20** owns
+  the flag parsing that reaches `resolveWorkspaceChoice`; **AWCLI-21** owns the run's output,
+  including the isolation line. Without those two named, BR-014's opt-in ships as never-written and
+  an operator has no way to ask for their own checkout.
 
 ## Dependencies
 

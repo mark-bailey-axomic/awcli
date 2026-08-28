@@ -11,7 +11,7 @@ import { printable } from "./printable.js";
  * against a real repository — git missing from the machine, a git that hangs, a `cwd` that is not
  * there — and they are the ones where a caller either refuses when it should throw or throws when it
  * should refuse. They also need testing without a repository at all, which a module fused into
- * `workspace.ts` cannot offer. And AWCLI-11 needs the same thing next: `ctx.git.log`, `.diff` and
+ * `workspace.ts` cannot offer. And AWCLI-14 needs the same thing next: `ctx.git.log`, `.diff` and
  * `.commit` are more git invocations, and a second copy of the classification below is a second copy
  * that will drift from this one.
  *
@@ -31,8 +31,13 @@ const execFileAsync = promisify(execFile);
  */
 export const GIT_TIMEOUT_MS = 120_000;
 
-/** Enough for `git status --porcelain` in a large tree; the answer is only read for emptiness. */
-const GIT_MAX_BUFFER = 16 * 1024 * 1024;
+/**
+ * Enough for `git status --porcelain` in a large tree; the answer is only read for emptiness.
+ *
+ * Exported because the message for exceeding it names it, and a test that hard-coded the number
+ * would go on passing if the bound moved.
+ */
+export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 
 /**
  * What running git produced.
@@ -104,6 +109,19 @@ export function createGitRunner(binary: string): GitRunner {
           kind: "unavailable",
           reason: `${printable(binary)} is not installed, or not on the PATH`,
         };
+      }
+      // Before the generic string-errno branch below, which this used to fall through: exceeding
+      // `maxBuffer` gives the *string* `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` with `killed` undefined,
+      // so it came back as `unavailable` and `workspace.ts` turned that into "git has gone missing
+      // while the run was starting" — for a `git status --porcelain` on a working copy with more
+      // than GIT_MAX_BUFFER to say, which is neither true nor actionable. Thrown, like the timeout
+      // below it: both are bounds awcli imposes on git rather than anything the operator chose, and
+      // an operator who reads the size can tell which bound they met.
+      if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+        throw new Error(
+          `${printable(binary)} ${printable(args.join(" "))} printed more than ${GIT_MAX_BUFFER} bytes in ${cwd}, which is more than awcli reads from one git invocation.`,
+          { cause: error },
+        );
       }
       if (failure.killed === true) {
         throw new Error(

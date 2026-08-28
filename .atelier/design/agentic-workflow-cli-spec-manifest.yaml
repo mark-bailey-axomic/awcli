@@ -296,7 +296,9 @@ tickets:
   - id: AWCLI-14
     path: tickets/AWCLI-14-worktree-reuse-and-resume.md
     title: "[AWCLI] Reuse, resume and fresh start"
-    points: 2
+    # Widened to own ctx.git end to end and re-estimated 2 -> 3 by the 2026-08-28 amendment; the
+    # same shape of ticket-scope correction the row above it made for AWCLI-19 and ctx.sandbox.
+    points: 3
     work_breakdown: WB-8
     depends_on: [AWCLI-13]
     status: todo
