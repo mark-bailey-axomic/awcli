@@ -411,11 +411,16 @@ expect_red "every branch is a collision candidate, not just the ones git's patte
 # established that nothing is at the target, so the live cases are a registration whose directory has
 # been deleted and a branch nothing has ever held. `git worktree remove` is exactly right for the
 # first and exits 128 with `fatal: ... is not a working tree` for the second.
+# The answer is forced rather than the condition flipped, and that distinction cost a gate run: with
+# `held === "registered"` mutated to `false`, the ternary falls through to the *unknown* arm, which
+# names both remedies and so satisfies both tests. A mutation that lands on the honest third answer
+# proves nothing about the two confident ones. Forcing the registration answer itself is also the
+# more faithful wrong implementation: what this replaced was a message that assumed one of them.
 expect_red "a branch no working copy holds is not sent to git worktree remove" src/runtime/workspace.ts \
-  's/      held === "registered"/      true/'
+  's/    const held = await worktreeRegistration\(git, repositoryPath, target\);/    const held: WorktreeRegistration = "registered";/'
 
 expect_red "a branch a registered working copy still holds names the removal" src/runtime/workspace.ts \
-  's/      held === "registered"/      false/'
+  's/    const held = await worktreeRegistration\(git, repositoryPath, target\);/    const held: WorktreeRegistration = "unregistered";/'
 
 # And the question dropped altogether: `worktreeRegistration` asks git through the raw runner, which
 # throws for a timeout and for an answer larger than awcli reads. Unguarded, that rejection escapes
