@@ -257,4 +257,40 @@ describe("a working copy that cannot answer for itself", () => {
     expect(message).toContain(outcome.workspace.dir);
     expect(message).toContain("fatal: unable to read the object store");
   });
+  /**
+   * The target claimed between awcli's own `lstat` and its own `mkdir`.
+   *
+   * This is the losing side of two concurrent acquisitions of one run and slot, and it cannot be
+   * staged from a real repository: which of the two sites the loser discovers the collision at
+   * depends on how the two are scheduled. On this machine the loser's `mkdir` lost eight times out
+   * of eight; on a CI runner the winner's `mkdir` landed before the loser's `lstat` on the first
+   * attempt, so the loser saw a target that was simply there and never reached EEXIST at all. A test
+   * that raced for it asserted whichever arm that machine happened to produce.
+   *
+   * EEXIST from awcli's own `mkdir` is the one discovery that carries evidence: the path was free
+   * when awcli looked and taken by the time it created, which is another writer working right now
+   * rather than something left behind. The message may say so, and this is what holds it to saying
+   * so. (What makes the *other* arm safe is that it stopped claiming a settled world at all — see
+   * the ordinary-directory test in workspace-occupied.test.ts.)
+   */
+  it("says the path was claimed under it when its own mkdir finds one there", async () => {
+    const repositoryPath = await repository();
+    failMkdir = { endingWith: join("worktrees", "triage", "main"), code: "EEXIST" };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+    expect(outcome.message).toContain("free when awcli looked");
+    expect(outcome.message).toContain("Wait for that run");
+    // And it does not read git's answer out to the operator as a settled one: nothing is registered
+    // at a target whose checkout has not started, and saying so would be the same false confidence
+    // one arm over.
+    expect(outcome.message).not.toContain("git has nothing registered there");
+  });
 });

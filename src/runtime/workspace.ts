@@ -966,8 +966,15 @@ async function canonicalPath(path: string): Promise<string> {
  *
  * `found` is the `lstat` at the top of `openWorktree`: awcli looked, and something was there before
  * it touched anything. `raced` is EEXIST from awcli's own `mkdir` — the path was free when it looked
- * and taken by the time it created, which for this run and slot means another acquisition of the same
- * run and slot is the likeliest writer, and it is *mid-flight*.
+ * and taken by the time it created, which is direct evidence of another writer working right now.
+ *
+ * The distinction is worth making and is *not* what makes the `unregistered` sentence safe, which is
+ * what a first attempt at this assumed. A losing racer reaches either site depending on scheduling:
+ * if the winner's `mkdir` lands before the loser's `lstat`, the loser discovers a `found` target and
+ * never sees EEXIST at all. That is not a rare ordering — it is the one a CI runner produced on the
+ * first try, where this machine had produced the other eight times out of eight. So `unregistered`
+ * had to stop claiming a settled world on *both* paths; `raced` is the stronger sentence awcli can
+ * give when it happens to have the stronger evidence, not the fix.
  */
 type Occupancy = "found" | "raced";
 
@@ -1005,7 +1012,7 @@ async function occupiedMessage(
     registration === "registered"
       ? `Otherwise that is a working copy git still has registered, so clear it with "git worktree remove ${shellPath(target)}" rather than by deleting the directory — a registration left behind goes on holding this run's branch — and then "git branch -D ${branch}" if the branch is finished with too. The removal refuses while there is uncommitted work in there, which is the answer you want.`
       : registration === "unregistered"
-        ? `Otherwise git has no working copy registered there, so it is an ordinary directory as far as git is concerned and "git worktree remove" would refuse it: move it or delete it yourself, then run again.`
+        ? `Otherwise git has nothing registered there as far as it can say right now — and a working copy another run is still checking out is not registered until that checkout finishes, so this answer does not tell an ordinary directory from a run in flight. Wait for any run that is in progress and look at what is actually in there before you move or delete it; "git worktree remove" is not the command for an ordinary directory and git refuses it for one.`
         : `Otherwise clear it before running again — "git worktree remove ${shellPath(target)}" if git still has a working copy registered there, and an ordinary move or delete if it does not. awcli could not ask git which of the two this is.`;
   return `awcli will not provision a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: something is there already, and awcli never removes or writes over what it finds. If a run is in progress, wait for it. ${remedy} Or run this under a different --name.`;
 }

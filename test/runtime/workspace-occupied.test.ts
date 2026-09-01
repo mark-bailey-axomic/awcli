@@ -68,8 +68,15 @@ describe("what provisioning refuses rather than does: something at the target", 
     await expect(git(repositoryPath, "worktree", "remove", target)).rejects.toThrow(
       /is not a working tree/,
     );
+    expect(outcome.message).not.toContain(`git worktree remove '${target}'`);
+    // The unquoted form as well, because the remedies quote their paths now and an assertion against
+    // the bare spelling would pass whatever the message said.
     expect(outcome.message).not.toContain(`git worktree remove ${target}`);
-    expect(outcome.message).toContain("move it or delete it");
+    // Moving or deleting it is still the remedy — it is now stated as the thing to do after looking
+    // rather than as an instruction to follow blind, because "git has nothing registered there" is
+    // also what a working copy another run is mid-way through checking out looks like.
+    expect(outcome.message).toContain("before you move or delete it");
+    expect(outcome.message).toContain("look at what is actually in there");
 
     // And what it does advise clears the way.
     await rm(target, { recursive: true, force: true });
@@ -282,16 +289,23 @@ describe("what provisioning refuses rather than does: something at the target", 
     for (const outcome of outcomes) {
       if (outcome.ok) continue;
       expect(outcome.kind).toBe("occupied");
-      // And the loser is not told to delete the winner's working copy, which is what it said.
-      // Measured 8 times out of 8 before this: the loser's `mkdir` fails while the winner's
-      // `git worktree add` is still running, so `worktree list` has nothing registered at the target
-      // yet and the message took the `unregistered` arm — "git has no working copy registered there
-      // ... move it or delete it yourself", about a directory that a second later holds another run's
-      // live agent. The three registration answers are all about a settled world; a target another
-      // writer is halfway through claiming is a fourth state, and the sentence has to say so rather
-      // than pick one.
-      expect(outcome.message).not.toContain("move it or delete it yourself");
-      expect(outcome.message).toContain("Wait for that run");
+      // And the loser is not told to delete the winner's working copy, which is what it said: "git
+      // has no working copy registered there ... move it or delete it yourself, then run again",
+      // about a directory that a second later holds another run's live agent. `worktree list` does
+      // not register a working copy until its checkout finishes, so the `unregistered` answer is
+      // exactly what a losing racer gets.
+      //
+      // Asserted without naming which arm produced it, and that is the correction rather than
+      // fussiness. The first version of this test asserted the `raced` wording, on the strength of
+      // the loser's `mkdir` failing eight times out of eight here — and CI produced the other
+      // ordering on the first attempt, where the winner's `mkdir` lands before the loser's `lstat`
+      // and the loser never sees EEXIST at all. Both discoveries are reachable, so what has to hold
+      // is the property, not the sentence: no unconditional instruction to remove what is there, and
+      // a wait before touching it either way.
+      expect(outcome.message).not.toContain(
+        "move it or delete it yourself, then run again",
+      );
+      expect(outcome.message).toMatch(/wait for (any run that is in progress|that run)/i);
     }
     // One working copy, one branch: the loser provisioned nothing.
     expect(await branches(repositoryPath)).toEqual(["awcli/triage/main", "main"]);
