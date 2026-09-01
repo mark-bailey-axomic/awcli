@@ -1,6 +1,6 @@
 # awcli — implementation tickets
 
-29 tickets, 72 points, twenty-five of them derived from the 17-unit work breakdown in
+30 tickets, 74 points, twenty-five of them derived from the 17-unit work breakdown in
 [`../design/agentic-workflow-cli-tdd.md`](../design/agentic-workflow-cli-tdd.md) and worth 65 of the
 points. Those twenty-five carry three of the ten extra points over the design's 62, and all three
 come from splits that did not go evenly. Five of the seven 5-point units were split
@@ -88,8 +88,11 @@ ticket that builds one.
 A fifth member has closed the same way, and it is the second where a rule would have been the wrong
 instrument. `ctx.git` is assigned by WB-8, which is AWCLI-13 and AWCLI-14 between them — AWCLI-13
 provisions a working copy and constructs no context around one, AWCLI-14 reattaches it, and neither
-named `GitApi`'s `log`, `diff` or `commit`, which AWCLI-19, AWCLI-23 and AWCLI-25 already carried
-criteria consuming. Nothing behavioural was missing and WB-8's Contracts column already named the
+named `GitApi`'s `log`, `diff` or `commit` — which, checked rather than assumed, no acceptance
+criterion on any ticket consumes at all. That argues for one ticket owning the whole member more
+strongly than a consumer would, and it is the correction to what this paragraph said: AWCLI-19,
+AWCLI-23 and AWCLI-25 carry criteria against `ctx.git.dir`, which AWCLI-13 does not build either.
+Nothing behavioural was missing and WB-8's Contracts column already named the
 member, so this too is a ticket-scope correction rather than a spec amendment: AWCLI-14 widened to
 own `ctx.git` end to end and re-estimated 2 → 3, no rule added and no scenario written. It reached
 the tickets by way of a source comment in `src/runtime/context.ts` that had recorded the gap
@@ -132,16 +135,17 @@ on AWCLI-13 until all three have landed.
 | [AWCLI-16](AWCLI-16-agent-silence-and-teardown.md) | Silence, lingering, degradation | 2 | WB-9 | 04, 15 |
 | [AWCLI-17](AWCLI-17-structured-output-and-reask.md) | Structured output and re-ask | 3 | WB-10 | 15 |
 | [AWCLI-18](AWCLI-18-dockerfile-and-build-cache.md) | Dockerfile and build cache | 3 | WB-11 | 00 |
-| [AWCLI-19](AWCLI-19-container-exec-target.md) | Sandbox scope and container target | 3 | WB-11 | 01, 03, 13, 18 |
+| [AWCLI-19](AWCLI-19-container-exec-target.md) | Sandbox scope and container target | 3 | WB-11 | 01, 03, 13, 14, 18 |
 | [AWCLI-20](AWCLI-20-resolution-scaffolding-args.md) | Resolution, scaffolding, args, `--live-checkout` | 3 | WB-12 | 05, 13 |
-| [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 15 |
+| [AWCLI-21](AWCLI-21-logging-isolation-spend.md) | Logging, isolation, spend | 3 | WB-13 | 07, 08, 13, 15 |
 | [AWCLI-22](AWCLI-22-runtime-layout-ignore-clean.md) | Runtime layout, ignore, clean | 3 | WB-14 | 07, 13, 14, 18 |
-| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | WB-15 | 01, 13, 25 |
+| [AWCLI-23](AWCLI-23-workspace-confined-filesystem.md) | Workspace-confined filesystem | 2 | WB-15 | 01, 13, 14, 25 |
 | [AWCLI-24](AWCLI-24-resolved-environment.md) | Resolved environment | 2 | WB-16 | 01, 19, 25, 26 |
-| [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | WB-17 | 01, 13 |
+| [AWCLI-25](AWCLI-25-host-exec-target.md) | Host execution target | 2 | WB-17 | 01, 13, 14 |
 | [AWCLI-26](AWCLI-26-land-frozen-surface.md) | Frozen surface's final shape | 2 | — | 01 |
 | [AWCLI-27](AWCLI-27-tracked-ignore-for-session-worktrees.md) | Tracked ignore for session worktrees | 1 | — | — |
 | [AWCLI-28](AWCLI-28-manifest-traceability.md) | Manifest traceability and coverage | 2 | — | — |
+| [AWCLI-29](AWCLI-29-shared-filesystem-guards.md) | Shared filesystem guards | 2 | — | — |
 
 ## Order
 
@@ -159,13 +163,26 @@ wave 0    00
 wave 1    01    03    18
 wave 2    02    04    05    07    26
 wave 3    06    08    09    13
-wave 4    11    14    15    19    20    25
-wave 5    10    12    16    17    21    22    23    24
+wave 4    11    14    15    20
+wave 5    12    16    17    19    21    22    25
+wave 6    10    23    24
 ```
 
-**AWCLI-27 and AWCLI-28 sit outside the waves.** Neither blocks nor is blocked by anything: one
-edits ignore files, the other reads a feature file and the test suite, and both are workable the
-moment someone picks them up. Placing them in a wave would imply a dependency neither has.
+The graph gained a level in run 3 of PR #15, and it is worth saying what moved it rather than
+leaving a reader to diff two pictures. AWCLI-19, AWCLI-23 and AWCLI-25 each carry an acceptance
+criterion against `ctx.git.dir`, and the 2026-08-28 `ctx.git` amendment gave that whole member to
+AWCLI-14 — so all three gained AWCLI-14 as a blocker, 19 and 25 moved from wave 4 to wave 5, and
+10, 23 and 24 followed into a wave 6. Their edges named AWCLI-13, which builds the `WorkspaceHandle`
+and constructs no context around one; the picture was a wave shallower than the dependencies were.
+The waves below are computed from the *Blocked by* column of the table above, and
+`verify-spec-invariants.sh` check 11 asserts that they still are.
+
+**AWCLI-27, AWCLI-28 and AWCLI-29 sit outside the waves.** None blocks or is blocked by anything:
+one edits ignore files, one reads a feature file and the test suite, one moves twelve lines shared
+by two modules that have already shipped, and all three are workable the moment someone picks them
+up. Placing them in a wave would imply a dependency none has, and check 11 of
+`verify-spec-invariants.sh` excludes exactly the tickets whose *Blocked by* cell is empty — so a
+fourth of them joins this sentence rather than silently joining wave 0.
 
 The multi-parent tickets, which the waves alone do not show:
 
@@ -176,18 +193,18 @@ The multi-parent tickets, which the waves alone do not show:
 | AWCLI-11 | 04, 09 |
 | AWCLI-13 | 03, 07 |
 | AWCLI-15 | 01, 02, 13 |
-| AWCLI-19 | 01, 03, 13, 18 |
+| AWCLI-19 | 01, 03, 13, 14, 18 |
 | AWCLI-20 | 05, 13 |
-| AWCLI-21 | 07, 08, 15 |
+| AWCLI-21 | 07, 08, 13, 15 |
 | AWCLI-22 | 07, 13, 14, 18 |
-| AWCLI-23 | 01, 13, 25 |
+| AWCLI-23 | 01, 13, 14, 25 |
 | AWCLI-24 | 01, 19, 25, 26 |
-| AWCLI-25 | 01, 13 |
+| AWCLI-25 | 01, 13, 14 |
 
-Longest chain is six deep — **00 → 03 → 07 → 13 → 14 → 22**, and equally
-**00 → 03 → 07 → 13 → 25 → 23**, **00 → 03 → 07 → 13 → 25 → 24**,
-**00 → 03 → 07 → 13 → 19 → 24** and **00 → 03 → 07 → 13 → 19 → 10**. Critical paths worth
-naming are **00 → 01 → 05 → 06** for refusals and **00 → 03 → 07 → 09 → 11 → 12** for the loop.
+Longest chain is seven deep — **00 → 03 → 07 → 13 → 14 → 25 → 23**, and equally
+**00 → 03 → 07 → 13 → 14 → 25 → 24**, **00 → 03 → 07 → 13 → 14 → 19 → 24** and
+**00 → 03 → 07 → 13 → 14 → 19 → 10**. Critical paths worth naming are **00 → 01 → 05 → 06** for
+refusals and **00 → 03 → 07 → 09 → 11 → 12** for the loop.
 
 The first genuinely useful milestone is 00 + 01 + 02 + 03 + 05 + 07 + 09 + 11 — about 21 points —
 a workflow that loops, carries state across passes, and rehearses against a fake agent with

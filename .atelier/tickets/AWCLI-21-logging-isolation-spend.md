@@ -73,5 +73,12 @@ an operator assumes containment they did not get.
 
 ## Dependencies
 
-**Blocked by:** AWCLI-07, AWCLI-08, AWCLI-15
+**Blocked by:** AWCLI-07, AWCLI-08, AWCLI-13, AWCLI-15
 **Blocks:** None
+
+AWCLI-13 is the edge this ticket gained with the requirement and criterion for stating the
+run's workspace choice: `WorkspaceIsolation` and the sentence it carries are AWCLI-13's, and a
+requirement to print them is not workable before they exist. Added by the 2026-08-28
+`--live-checkout` amendment, which gave AWCLI-20 all three of requirement, criterion and edge and
+this ticket only the first two — the same omission it was written to correct, one ticket over. No
+wave moves: this ticket is already wave 5 and AWCLI-13 is wave 3.

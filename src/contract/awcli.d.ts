@@ -151,7 +151,16 @@ interface SchemaApi {
  * fields with a three-member union, which is a change to the frozen surface rather than a comment.
  */
 interface Isolation {
-  /** worktree is the default; liveTree is the operator's own checkout, opt-in only (BR-014). */
+  /**
+   * worktree is the default; liveTree is the operator's own checkout, opt-in only (BR-014).
+   *
+   * One concept with three spellings across the three surfaces you meet it on, so the mapping is
+   * stated here where a workflow author reads the value back: the flag is `--live-checkout`, the
+   * value it selects is `liveTree`, and what awcli's own messages call the thing either gives you is
+   * a *working copy*. The flag was `--live`, which at least shared its token with the value; it was
+   * renamed to say what it is the operator is opting into, and this union is frozen, so the mapping
+   * is a comment rather than a rename (BR-033 admits only additive change).
+   */
   readonly workspace: "liveTree" | "worktree";
   /** Only container is a machine boundary. host reaches the filesystem and network. */
   readonly target: "host" | "container";

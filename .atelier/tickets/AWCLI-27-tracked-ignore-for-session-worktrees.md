@@ -1,6 +1,6 @@
 # AWCLI-27 — [AWCLI] Ignore the nested session worktrees in one tracked place
 
-**Points:** 1 · **Source:** new — review of PR #15 (S-004) · **Status:** Ready
+**Points:** 1 · **Source:** new — review of PR #15, run 1 (S-004 there: the `.claude/worktrees` ignore) · **Status:** Ready
 
 ## Problem / Goal
 

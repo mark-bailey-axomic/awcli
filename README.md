@@ -13,7 +13,7 @@ a Python or Go repository. One workflow file runs against all of them.
 
 > **Status: early.** `AWCLI-00` is complete — the project builds, tests, type-checks and
 > installs globally. No workflow commands exist yet. The design is finished and ticketed:
-> see [`.atelier/tickets/`](.atelier/tickets/) for the 23 tickets and their order.
+> see [`.atelier/tickets/`](.atelier/tickets/) for the tickets and their order.
 
 ## Install
 
@@ -58,8 +58,10 @@ proves nothing about whether a *global install* works, and that is this tool's e
 
 The rest prove that the suite is a suite. Each takes a claim the tests make, breaks the code the
 claim is about, and fails if the tests still pass — so a test that cannot fail is caught rather than
-counted. `npm run check:gates` runs all of them and takes a few minutes, which is why it is a job of
-its own rather than part of `npm run check`:
+counted. `npm run check:gates` runs all of them and takes long enough to be a job of its own rather than part
+of `npm run check` — the mutation gates dominate it, and each of those runs the whole suite once per
+mutation. No duration here for the same reason there are no counts below: it is a number that moves
+with the code and is quietly wrong the moment it does.
 
 | Gate | Breaks | Expects |
 |---|---|---|
@@ -69,8 +71,9 @@ its own rather than part of `npm run check`:
 | `verify:spec-invariants` | — | the rules, feature file, manifest and ticket README to agree |
 | `verify:disposal-gate` | each disposal guarantee, one at a time | the suite to go red for each |
 | `verify:lock-gate` | each run-lock guarantee, one at a time | the suite to go red for each |
+| `verify:workspace-gate` | each worktree-provisioning guarantee, one at a time | the suite to go red for each |
 | `verify:acquisition-returns` | the backoff timer, as a plain node process | the acquisition to stop returning |
-| `verify:mutation-gate` | the harness the two gates above share | its own self-test to catch it |
+| `verify:mutation-gate` | the harness the three gates above share | its own self-test to catch it |
 
 No counts here on purpose: the number of mutations changes with the code, and a number in prose is
 one more thing to be quietly wrong.
@@ -91,7 +94,7 @@ The design is complete and written down before the code:
 | [Business rules](.atelier/design/agentic-workflow-cli-rules.md) | 37 approved rules |
 | [BDD scenarios](.atelier/design/agentic-workflow-cli-bdd.feature) | 60 scenarios, every rule tagged |
 | [ADRs](docs/adr/) | Seven decisions and their rationale |
-| [Tickets](.atelier/tickets/) | 23 tickets, dependency-ordered |
+| [Tickets](.atelier/tickets/) | Dependency-ordered; [their README](.atelier/tickets/README.md) carries the totals |
 
 ## License
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Prove the specification's own numbers still agree with each other.
 #
-# The rules file, the feature file, the manifest and the ticket README each restate counts the
-# others imply — 40 rules, 75 scenarios, 26 tickets, 66 points — and every one of those numbers is
-# prose that a person maintains by hand. Three review rounds on PR #8 moved all four documents, and
+# The rules file, the feature file, the manifest and the ticket README each restate the counts the
+# others imply — rules, scenarios, tickets, points — and every one of those numbers is prose that a
+# person maintains by hand. The counts themselves are printed below rather than written here: the
+# figures this docblock used to carry were the corpus as it stood when the script was written, they
+# were four rounds out of date by the time anyone noticed, and a hand-maintained count inside the
+# gate written to stop hand-maintained counts drifting is the joke telling itself. Three review rounds on PR #8 moved all four documents, and
 # each time the drift was caught by a reader happening to notice, which does not scale and did not
 # reliably work: a scenario added to the feature file and to no ticket has no owner, a ticket
 # claiming a scenario nobody wrote has no criteria, and neither shows up as a broken build.
@@ -13,11 +16,15 @@
 # scenario is an acceptance criterion on exactly one ticket, and that every @BR tag names a rule
 # that exists.
 #
-# Two later checks reach past those four. Check 9 reads the DELIVERED_BY table in
+# Four later checks reach past those four documents. Check 9 reads the DELIVERED_BY table in
 # src/runtime/context.ts and the work breakdown in the TDD, because that table is the pointer saying
-# which unit delivers each unbuilt context member and it has shipped wrong; check 10 reads the
-# manifest's own freshness stamp against git. Both are still comparisons between things a person
-# maintains by hand, which is the only thing this script knows how to do.
+# which unit delivers each unbuilt context member and it has shipped wrong. Check 10 reads the
+# manifest's own freshness stamp against git. Check 11 recomputes the ticket README's wave picture
+# from the `Blocked by` column of the table above it — the picture was a wave shallower than the
+# edges for three tickets, and nothing said so. Check 12 asserts that every gate `check:gates` runs
+# has a row in the root README's gate table, which the ninth gate did not. All of them are still
+# comparisons between things a person maintains by hand, which is the only thing this script knows
+# how to do.
 #
 # Unlike the other gates here it perturbs nothing, so there is no backup to restore and no window
 # in which a Ctrl-C leaves a tracked file corrupted. Every check is a comparison, and all of them
@@ -361,6 +368,112 @@ else
     bad "10 manifest metadata.updated ($manifest_updated) is behind $touched_by ($manifest_touched)"
   else
     ok "10 manifest metadata.updated ($manifest_updated) is not behind $touched_by"
+  fi
+fi
+
+# ── 11. The waves are the dependency graph, not a picture of it ──────────────────────────────
+#
+# `.atelier/tickets/README.md` carries both the edges (the `Blocked by` column of its ticket table)
+# and a wave partition drawn from them. The two disagreed: AWCLI-19, AWCLI-23 and AWCLI-25 each
+# consume `ctx.git.dir` in an acceptance criterion, the member moved to AWCLI-14 by the 2026-08-28
+# `ctx.git` amendment, and their edges went on naming AWCLI-13 — so the drawing was a wave shallower
+# than the graph for three tickets and a level short overall. A partition anyone can recompute is
+# exactly the kind of prose this script exists to stop being prose.
+#
+# The level of a ticket is one more than the deepest ticket it names, which is the definition the
+# README states in words ("workable as soon as every ticket in an earlier wave that it names as a
+# blocker has landed"). Tickets naming nothing sit at level 0 — except that the README deliberately
+# places AWCLI-27 and AWCLI-28 *outside* the waves rather than in wave 0, because neither has an
+# edge in either direction and putting them in a wave would imply one. Those two are read off the
+# table and excluded by name, so adding a third such ticket fails here rather than silently joining
+# wave 0.
+waves_expected="$(awk '
+  /^\| \[AWCLI-/ {
+    # `| [AWCLI-13](...) | Title | 3 | WB-8 | 03, 07 |` — id from the link, blockers from the last cell.
+    match($0, /AWCLI-[0-9][0-9]/); id = substr($0, RSTART + 6, 2)
+    n = split($0, cell, /\|/); blockers = cell[n - 1]
+    gsub(/[^0-9,]/, "", blockers)
+    edges[id] = blockers
+    ids[id] = 1
+  }
+  END {
+    # Iterated to a fixed point rather than recursed: awk has no recursion worth using, and the graph
+    # is a DAG of thirty nodes, so repeating until nothing moves is both simple and obviously correct.
+    for (id in ids) level[id] = (edges[id] == "" ? 0 : -1)
+    moved = 1
+    while (moved) {
+      moved = 0
+      for (id in ids) {
+        if (level[id] >= 0) continue
+        k = split(edges[id], parent, /,/); deepest = -1; ready = 1
+        for (i = 1; i <= k; i++) {
+          if (parent[i] == "") continue
+          if (level[parent[i]] < 0) { ready = 0; break }
+          if (level[parent[i]] > deepest) deepest = level[parent[i]]
+        }
+        if (ready) { level[id] = deepest + 1; moved = 1 }
+      }
+    }
+    for (id in ids) {
+      if (level[id] < 0) { print "cycle-or-missing-blocker:" id; exit }
+      if (edges[id] == "") continue   # outside the waves by construction; see the note above
+      members[level[id]] = members[level[id]] " " id
+      if (level[id] > top) top = level[id]
+    }
+    # Sorted within a wave, because `for (id in ids)` has no order and the README lists them
+    # ascending. The sort is a plain insertion over at most a dozen two-character ids.
+    for (l = 1; l <= top; l++) {
+      k = split(substr(members[l], 2), member, / /)
+      for (i = 2; i <= k; i++) {
+        hold = member[i]
+        for (j = i - 1; j >= 1 && member[j] > hold; j--) member[j + 1] = member[j]
+        member[j + 1] = hold
+      }
+      line = member[1]
+      for (i = 2; i <= k; i++) line = line " " member[i]
+      printf "wave %d %s\n", l, line
+    }
+  }
+' "$README")"
+# Level 0 is skipped on both sides: AWCLI-00 is the only ticket in it, and the README states that in
+# a sentence of its own rather than relying on the diagram.
+waves_drawn="$(awk '/^wave [1-9]/ { line = $0; gsub(/[ \t]+/, " ", line); print line }' "$README")"
+if [ -z "$waves_drawn" ]; then
+  bad "11 the ticket README has no wave diagram to check"
+elif [ "$waves_expected" = "$waves_drawn" ]; then
+  ok "11 the wave diagram is the graph its own Blocked by column describes"
+else
+  bad "11 the wave diagram disagrees with the Blocked by column it is drawn from"
+  printf '      computed from the edges:\n%s\n      drawn in the README:\n%s\n' \
+    "$(printf '%s\n' "$waves_expected" | sed 's/^/        /')" \
+    "$(printf '%s\n' "$waves_drawn" | sed 's/^/        /')" >&2
+fi
+
+# ── 12. Every gate CI runs has a row in the README that says CI runs it ──────────────────────
+#
+# The root README's table introduces itself as "Every gate below, in order. This is what CI runs",
+# and it listed eight of nine: `verify:workspace-gate` — the newest and by a wide margin the most
+# expensive — was wired into `check:gates` and into CI and never given a row. A contributor reading
+# the README to find out what will run against their change was told about eight of them, and
+# nothing objected, because this script checks the *ticket* README and not the root one.
+ROOT_README="README.md"
+if [ ! -f "$ROOT_README" ]; then
+  bad "12 $ROOT_README is not on disk"
+else
+  gates_run="$(sed -n 's/.*"check:gates": "\(.*\)".*/\1/p' package.json |
+    tr ' ' '\n' | sed -n 's/^verify:/verify:/p' | sort -u)"
+  if [ -z "$gates_run" ]; then
+    bad "12 could not read the check:gates script out of package.json"
+  else
+    missing=""
+    for gate in $gates_run; do
+      grep -qF "\`$gate\`" "$ROOT_README" || missing="$missing $gate"
+    done
+    if [ -n "$missing" ]; then
+      bad "12 gates that check:gates runs but the README's table does not name:$missing"
+    else
+      ok "12 every gate check:gates runs has a row in $ROOT_README ($(printf '%s\n' "$gates_run" | wc -l | tr -d ' ') of them)"
+    fi
   fi
 fi
 

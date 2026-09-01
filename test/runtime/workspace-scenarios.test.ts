@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
-import { readdir, writeFile } from "node:fs/promises";
+import { lstat, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DisposalStack } from "../../src/runtime/disposal.js";
+import { DEFAULT_SLOT, worktreePath } from "../../src/runtime/run-identity.js";
+import { systemGitRunner, type GitRunner } from "../../src/runtime/git-process.js";
 import {
   LIVE_CHECKOUT_FLAG,
   WORKING_COPY_RESOURCE,
@@ -210,12 +212,19 @@ describe("provisioning a working copy", () => {
       return outcome.workspace;
     });
 
-    // Three directories, three branches, no overlap.
+    // Three directories, three branches, three slots, no overlap. The slot is asserted because
+    // `WorkspaceHandle.slot` is what the log and the run record say this agent was, and nothing read
+    // it: a handle that reported `DEFAULT_SLOT` for all three would have passed everything else here.
     expect(new Set(held.map((workspace) => workspace.dir)).size).toBe(3);
     expect(held.map((workspace) => workspace.branch).sort()).toEqual([
       "awcli/triage/docs",
       "awcli/triage/fixer",
       "awcli/triage/reviewer",
+    ]);
+    expect(held.map((workspace) => workspace.slot).sort()).toEqual([
+      "docs",
+      "fixer",
+      "reviewer",
     ]);
 
     // And nothing one agent writes is observable from another's.
@@ -243,5 +252,62 @@ describe("choosing the workspace axis", () => {
     // The flag is spelled once, here, so the CLI wiring in AWCLI-20/AWCLI-06 and every message
     // that names it cannot drift apart.
     expect(LIVE_CHECKOUT_FLAG).toBe("--live-checkout");
+  });
+});
+/**
+ * The non-functional requirement that nothing watched: a bounded cost for a repository of any size.
+ */
+describe("what provisioning costs", () => {
+  /**
+   * Asserted at the *shape* of the cost rather than at a duration.
+   *
+   * A wall-clock threshold would be a claim about the machine running the suite, and
+   * `GIT_TIMEOUT_MS` is a hang guard on one invocation rather than a bound on provisioning. What is
+   * checkable, and what the requirement actually rests on, is that the number of git invocations does
+   * not depend on what the repository holds — no walk of the history, no listing of the tree — and
+   * that provisioning adds one working *tree* rather than cloning a second repository.
+   *
+   * The number is asserted exactly rather than as a ceiling, so that a call added or removed has to
+   * be looked at here. Six for the worktree default: three preflight questions (`rev-parse
+   * --git-dir`, `rev-parse --show-toplevel`, `rev-parse --verify --quiet HEAD`), the branch listing
+   * the collision check reads, the branch claim, and the add. The first two answer one question
+   * between them and could be one call — deliberately not, because the combined form exits 128 in a
+   * bare repository and would report it as "not a git repository"; see `sharedPreflight`.
+   */
+  it("Provisioning asks git a fixed number of questions", async () => {
+    const small = await repository();
+    const large = await repository();
+    // Enough refs and commits that anything walking either would show up in the count. Eight
+    // rather than a hundred: the assertion is that the count does not move at all, so any difference
+    // between the two repositories is enough, and this file is on the gate's critical path.
+    for (let i = 0; i < 8; i += 1) {
+      await writeFile(join(large, `file-${i}.txt`), `${i}\n`, "utf8");
+      await git(large, "add", "-A");
+      await git(large, "commit", "-qm", `commit ${i}`);
+      await git(large, "branch", `topic-${i}`);
+    }
+
+    const count = async (repositoryPath: string): Promise<number> => {
+      let calls = 0;
+      const counting: GitRunner = async (args, cwd) => {
+        calls += 1;
+        return systemGitRunner(args, cwd);
+      };
+      const outcome = await acquireWorkspace(new DisposalStack(), {
+        repositoryPath,
+        runName: TRIAGE,
+        choice: resolveWorkspaceChoice({}),
+        git: counting,
+      });
+      expect(outcome.ok).toBe(true);
+      return calls;
+    };
+
+    expect(await count(small)).toBe(6);
+    expect(await count(large)).toBe(6);
+
+    // And one working tree, not a second repository: the worktree's `.git` is a pointer file.
+    const target = worktreePath(small, TRIAGE, DEFAULT_SLOT);
+    expect((await lstat(join(target, ".git"))).isFile()).toBe(true);
   });
 });

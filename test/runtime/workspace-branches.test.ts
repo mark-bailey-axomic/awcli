@@ -6,7 +6,16 @@ import { DisposalStack } from "../../src/runtime/disposal.js";
 import { DEFAULT_SLOT, worktreePath } from "../../src/runtime/run-identity.js";
 import { systemGitRunner, type GitRunner } from "../../src/runtime/git-process.js";
 import { acquireWorkspace, resolveWorkspaceChoice } from "../../src/runtime/workspace.js";
-import { git, repository, isWorktreeAdd, branches, TRIAGE } from "./workspace-support.js";
+import {
+  git,
+  repository,
+  repositoryWithASpaceInItsPath,
+  isWorktreeAdd,
+  branches,
+  shell,
+  worktreeCount,
+  TRIAGE,
+} from "./workspace-support.js";
 
 /**
  * A branch already in the way of the one this run and slot derive.
@@ -252,5 +261,72 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     if (outcome.ok) return;
     expect(outcome.kind).toBe("branch-exists");
     expect(outcome.message).toContain("awcli/triage/main/deeper");
+  });
+
+  /**
+   * A colliding ref is a name out of the operator's repository, and it reaches the terminal.
+   *
+   * `branchCollision`'s `short()` wraps it in `printable`, and nothing watched that — while the
+   * comment justifying the *live checkout* branch being sanitised points at this function as the case
+   * already handled ("the refusal path already sanitises refs read out of the same repository"). The
+   * half that was cited as settled had neither a test nor a gate mutation; the half doing the citing
+   * had both. A bidirectional override reverses the rendering of everything after it, so the operator
+   * reads a line awcli did not emit.
+   */
+  it("does not carry a bidi override out of a colliding branch name into what it prints", async () => {
+    const repositoryPath = await repository();
+    const hostile = "awcli/triage/main/\u202ednammoc-suoicilam";
+    await git(repositoryPath, "branch", hostile);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("branch-exists");
+    expect(outcome.message).not.toContain("\u202e");
+    // Still recognisable: what is removed is what a terminal renders differently, not the name.
+    expect(outcome.message).toContain("dnammoc-suoicilam");
+  });
+
+  /**
+   * The remedy is run, rather than string-matched, from a repository whose path contains a space.
+   *
+   * Every `git worktree remove ${target}` in a refusal was unquoted, and the repository root is
+   * whatever the operator's disk says — `~/My Projects/repo`, `~/Library/Application Support/...`.
+   * Copied out of the message and pasted into a shell the command split on the space and git answered
+   * with a usage error, so the refusal named a remedy that does not run. That is the same class as
+   * naming the wrong command, one layer down, and the only way to hold it to the code is to execute
+   * what the message printed.
+   */
+  it("prints an occupied remedy that runs from a repository path with a space in it", async () => {
+    const repositoryPath = await repositoryWithASpaceInItsPath();
+    expect(repositoryPath).toContain(" ");
+    const first = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+
+    // Lifted out of the sentence exactly as an operator would copy it, and run by a shell — so the
+    // quoting is what is under test rather than the wording of the assertion.
+    const quoted = /"(git worktree remove [^"]+)"/.exec(outcome.message)?.[1];
+    expect(quoted).toBeDefined();
+    await shell(repositoryPath, quoted ?? "");
+    expect(await worktreeCount(repositoryPath)).toBe(1);
   });
 });

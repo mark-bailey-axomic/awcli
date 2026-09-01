@@ -185,3 +185,39 @@ describe("what the operator's own repository is allowed to put in a message", ()
     expect(outcome.workspace.branch).toContain("main");
   });
 });
+/**
+ * What the handle's two questions inherit from the operator's own git configuration.
+ */
+describe("what the handle's answers do not inherit", () => {
+  /**
+   * `dirty()` under `status.showUntrackedFiles=no`, which is a common setting on a large repository.
+   *
+   * With it, `git status --porcelain` says nothing about untracked files at all — and `dirty()` is
+   * documented as "whether it has uncommitted changes, what a resumed run would inherit", which an
+   * untracked file certainly is. So on that operator's machine the answer was silently a different
+   * answer from the one CI gives, and the parallel-agents scenario's `expect(await first.dirty())` was
+   * asserting a property of the developer's `~/.gitconfig` as much as of the code. Pinned on the
+   * invocation the way `NO_HOOKS` pins `core.hooksPath`; everything else the operator's configuration
+   * says about `status` is still theirs to say.
+   *
+   * Set in the repository's own config rather than a global one, because that is the scope a worktree
+   * shares — and because the suite already neutralises the global one, which would make this test
+   * pass for the wrong reason.
+   */
+  it("reports an untracked file as dirty even when the repository has status.showUntrackedFiles off", async () => {
+    const repositoryPath = await repository();
+    await git(repositoryPath, "config", "status.showUntrackedFiles", "no");
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    expect(await outcome.workspace.dirty()).toBe(false);
+    await writeFile(join(outcome.workspace.dir, "new.txt"), "untracked\n", "utf8");
+    expect(await outcome.workspace.dirty()).toBe(true);
+  });
+});

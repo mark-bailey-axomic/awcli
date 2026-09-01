@@ -1,12 +1,12 @@
 # AWCLI-28 — [AWCLI] Link every scenario to the test that runs it, and let the link break loudly
 
-**Points:** 2 · **Source:** new — review of PR #15 (S-002) · **Status:** Ready
+**Points:** 2 · **Source:** new — review of PR #15, run 1 (S-002 there: the empty manifest traceability) · **Status:** Ready
 
 ## Problem / Goal
 
 `design/agentic-workflow-cli-spec-manifest.yaml` carries `traceability: []` and a `validation`
-block whose coverage counts are all zero, with `gaps` and `drift` empty — while four tickets are
-marked done and their tests exist and pass. The manifest therefore reports nothing about a
+block whose coverage counts are all zero, with `gaps` and `drift` empty — while every ticket marked
+done has tests that exist and pass. The manifest therefore reports nothing about a
 relationship that is real, and its empty `gaps` list reads as "no gaps found" rather than "never
 looked".
 
@@ -24,8 +24,9 @@ scenario → test, and the check that the pair still agree.
 
 This is debt that predates AWCLI-13 and is not caused by it; the review that surfaced it noted it
 as surrounding context rather than a defect in that PR. It is worth a ticket now because the cost
-grows with every ticket that lands: a manifest that has been empty across four completed tickets
-is a manifest nobody will trust to be populated at twenty.
+grows with every ticket that lands: a manifest that has stayed empty across every completed ticket
+is a manifest nobody will trust to be populated at twenty. No count of them here on purpose — the
+number this ticket was written with was already one behind by the time it was committed.
 
 Before building anything bespoke, check what `/atelier:spec` already does — if it can populate
 traceability and coverage from the feature file and the test names, this ticket is configuration

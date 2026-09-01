@@ -20,6 +20,14 @@ import { defaultExclude, defineConfig } from "vitest/config";
  * Spread from `defaultExclude` rather than spelled out, so these are added to vitest's own patterns
  * instead of silently replacing them (which is what keeps `node_modules` and `dist` out).
  *
+ * `testTimeout` is set to the same bound `verify-workspace-gate.sh` exports, and for the same reason
+ * it gives: the real-git suites stand up temp repositories and run `git worktree add` in them, and
+ * vitest's 5s default is a cold-transform margin sized for pure-computation suites. The repo stated
+ * that case in the gate and then left `npm run test` — and CI — on the default it had just argued
+ * against. Measured, the margin is not tight: the slowest test in the suite is ~1.2s. So this is
+ * about the two numbers agreeing rather than about headroom, and about a timeout red meaning the same
+ * thing wherever the suite is run from.
+ *
  * This is the third hand-maintained spelling of the first exclusion — `.git/info/exclude` and
  * `.prettierignore` are the other two, and the tracked `.gitignore` carries neither. vitest cannot
  * read `.gitignore`, so the line is not removable here; AWCLI-27 is the ticket for making one
@@ -29,5 +37,6 @@ import { defaultExclude, defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     exclude: [...defaultExclude, ".claude/worktrees/**", "**/.awcli/run/worktrees/**"],
+    testTimeout: 30_000,
   },
 });

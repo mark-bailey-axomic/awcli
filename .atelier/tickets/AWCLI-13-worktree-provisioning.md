@@ -29,7 +29,12 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 
 - Branch names are derived from run name and slot, and are stable across runs of the same name.
 - Provisioning a working copy costs a bounded amount of time and disk for a repository of
-  ordinary size.
+  ordinary size. Watched at the shape rather than at a duration: provisioning issues a fixed number
+  of git invocations whatever the repository holds (`Provisioning asks git a fixed number of
+  questions`), and adds one working *tree* rather than a second repository, so the disk cost is the
+  checkout and nothing else. A wall-clock threshold is deliberately not asserted — it would be a
+  claim about the machine running the suite — and `GIT_TIMEOUT_MS` is a hang guard on one invocation,
+  not a bound on the whole.
 - Nothing is written to the operator's checkout outside the single runtime path `.awcli/run/`
   when isolation is in effect: their tracked files, their branch and their uncommitted work are
   untouched (BR-030). Working copies live *inside* the checkout, at
@@ -45,7 +50,7 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 ## Acceptance Criteria
 
 - [x] Scenario: *The default protects my checkout*.
-- [ ] Scenario: *Working on the live checkout requires asking for it*. Three of its four steps are
+- [ ] Scenario: *Working on the live checkout requires asking for it*. Two of its four steps are
       here — the resolver gives a workflow no say, and provisioning puts the agent in the operator's
       checkout when the resolved choice is the live tree — and the scenario is not dischargeable
       from this ticket alone. The step that asks ("when I run it and ask for my live checkout
@@ -58,6 +63,15 @@ deterministic so a resumed run can find what it made, and so an operator can rec
       Tick it when AWCLI-20 and AWCLI-21 have landed and the whole scenario has been run.
 - [x] Scenario: *Parallel agents never share a working copy*.
 - [x] Branch names for the same run name and slot are identical across invocations.
+- [x] Provisioning asks git a fixed number of questions, whatever the repository holds, and adds one
+      working tree rather than a second repository. The bounded-cost requirement above had no
+      criterion and nothing watching it — no test, no benchmark, no gate mutation — so it would have
+      shipped on the strength of the sentence. Asserted as a count (six invocations, identical for a
+      one-commit repository and a nine-commit one with nine extra branches) and as the worktree's
+      `.git` being a pointer file. No gate mutation covers this one, and that is worth saying: the
+      wrong implementations it guards against are extra calls and a walk of the history, and a
+      substitution that adds a plausible extra invocation is not a wrong implementation of any line
+      that is there. The count is the guard.
 - [x] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
@@ -74,9 +88,14 @@ deterministic so a resumed run can find what it made, and so an operator can rec
   ships as never-written — the AWCLI-07 precedent.
 - **Writing the generated ignore line.** BR-030 allows working copies inside the checkout because
   one line covers them, and that line is unwritten: until it exists, `.awcli/` shows up untracked
-  in the operator's repository and a habit of `git add -A` would commit worktree directories into
-  it. **AWCLI-22** owns the runtime layout and the ignore entry. The test helper filters `.awcli`
-  out of both the entry list and `git status`, so this suite cannot observe the window.
+  in the operator's repository and `git add -A` stages each worktree as an *embedded git
+  repository* — one gitlink index entry for the whole tree, with git's own advice printed alongside —
+  so what a commit puts in the operator's history is an unusable pseudo-submodule rather than the
+  files under it, and the way out is `git rm --cached <path>`. **AWCLI-22** owns the runtime layout
+  and the ignore entry. The suite watches the window rather than hiding it: the test helper filters
+  only `.git`, and *The default protects my checkout* asserts `.awcli` and `?? .awcli/` positively as
+  the one new entry — so it goes red the day AWCLI-22's ignore line lands, which is the intended
+  handoff.
 - **The `--live-checkout` flag itself, and printing the isolation line.** BR-014 puts the opt-in on
   the command line and the scenario ends "and that choice is stated in the run's output"; this
   ticket delivers the resolver and the sentence, one layer below both. `src/cli.ts` parses only
@@ -105,4 +124,4 @@ an in-place rewrite. No rule and no scenario text changed for either.
 ## Dependencies
 
 **Blocked by:** AWCLI-03, AWCLI-07
-**Blocks:** AWCLI-14, AWCLI-15, AWCLI-19, AWCLI-20, AWCLI-22
+**Blocks:** AWCLI-14, AWCLI-15, AWCLI-19, AWCLI-20, AWCLI-21, AWCLI-22, AWCLI-23, AWCLI-25

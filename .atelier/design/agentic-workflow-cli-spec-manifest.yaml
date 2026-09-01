@@ -10,7 +10,7 @@ metadata:
   source_ticket: ""
   version: 1
   created: "2026-08-24T16:57:51Z"
-  updated: "2026-08-28T00:00:00Z"
+  updated: "2026-09-01T00:00:00Z"
   # The rules and scenarios this manifest describes were amended after their
   # 2026-08-24 approval, during PR #8 (AWCLI-01) review rounds 2, 3 and 4. See
   # the `## Amendments` section of design/agentic-workflow-cli-rules.md.
@@ -292,12 +292,14 @@ tickets:
     points: 3
     work_breakdown: WB-8
     depends_on: [AWCLI-03, AWCLI-07]
-    # in_progress: PR #15 is open with review rounds outstanding, the same state AWCLI-07 records
-    # above and for the same reason — tickets/README.md reserves done for merged-with-every-box-
-    # ticked, and this was marked done on an unmerged branch. Not every criterion is ticked either:
-    # *Working on the live checkout requires asking for it* was unticked in review round 3, because
-    # two of its four steps are unimplemented and belong to AWCLI-20 and AWCLI-21. A tick here is
-    # what a reviewer has confirmed; the status is what says the PR has not landed.
+    # in_progress: PR #15 is open with review rounds outstanding. Not "the same state AWCLI-07
+    # records above", which is what this said — AWCLI-07's status is done, its PR having merged; what
+    # it records above is the *failure*, having reached done by the wrong route, and it is that
+    # failure this repeats. tickets/README.md reserves done for merged-with-every-box-ticked, and
+    # this was marked done on an unmerged branch. Not every criterion is ticked either: *Working on
+    # the live checkout requires asking for it* was unticked in review round 2, because two of its
+    # four steps are unimplemented and belong to AWCLI-20 and AWCLI-21. A tick here is what a
+    # reviewer has confirmed; the status is what says the PR has not landed.
     status: in_progress
   - id: AWCLI-14
     path: tickets/AWCLI-14-worktree-reuse-and-resume.md
@@ -346,7 +348,7 @@ tickets:
     # the construction of the Scope it hands back owned by nothing. No rule or
     # scenario changed — BR-004/012/015/016/021/036 already govern it.
     work_breakdown: WB-11
-    depends_on: [AWCLI-01, AWCLI-03, AWCLI-13, AWCLI-18]
+    depends_on: [AWCLI-01, AWCLI-03, AWCLI-13, AWCLI-14, AWCLI-18]
     status: todo
   - id: AWCLI-20
     path: tickets/AWCLI-20-resolution-scaffolding-args.md
@@ -364,7 +366,7 @@ tickets:
     title: "[AWCLI] Per-agent logs, honest isolation reporting, and spend with a threshold"
     points: 3
     work_breakdown: WB-13
-    depends_on: [AWCLI-07, AWCLI-08, AWCLI-15]
+    depends_on: [AWCLI-07, AWCLI-08, AWCLI-13, AWCLI-15]
     status: todo
   - id: AWCLI-22
     path: tickets/AWCLI-22-runtime-layout-ignore-clean.md
@@ -378,7 +380,7 @@ tickets:
     title: "[AWCLI] Read and write within the working copy, refusing paths that leave it"
     points: 2
     work_breakdown: WB-15  # unit added in review round 4; ctx.fs, governed by BR-038
-    depends_on: [AWCLI-01, AWCLI-13, AWCLI-25]
+    depends_on: [AWCLI-01, AWCLI-13, AWCLI-14, AWCLI-25]
     status: todo
   - id: AWCLI-24
     path: tickets/AWCLI-24-resolved-environment.md
@@ -392,7 +394,7 @@ tickets:
     title: "[AWCLI] Run commands on the host target, saying plainly what they can reach"
     points: 2
     work_breakdown: WB-17  # unit added in review round 4; ctx.exec on the host, governed by BR-040
-    depends_on: [AWCLI-01, AWCLI-13]
+    depends_on: [AWCLI-01, AWCLI-13, AWCLI-14]
     status: todo
   - id: AWCLI-26
     path: tickets/AWCLI-26-land-frozen-surface.md
@@ -413,6 +415,13 @@ tickets:
     title: "[AWCLI] Link every scenario to the test that runs it, and let the link break loudly"
     points: 2
     work_breakdown: null  # no unit: this manifest's own empty traceability, raised as S-002
+    depends_on: []
+    status: todo
+  - id: AWCLI-29
+    path: tickets/AWCLI-29-shared-filesystem-guards.md
+    title: "[AWCLI] One copy of the filesystem guards the runtime modules share"
+    points: 2
+    work_breakdown: null  # no unit: duplication between two shipped modules, raised as run-3 F-029
     depends_on: []
     status: todo
 

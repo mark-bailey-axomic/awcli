@@ -17,6 +17,7 @@ import {
   notARepository,
   TRIAGE,
   consented,
+  bareRepository,
 } from "./workspace-support.js";
 
 /**
@@ -274,5 +275,36 @@ describe("what provisioning refuses rather than does: the repository itself", ()
     expect(outcome.kind).toBe("not-a-repository");
     expect(outcome.message).toContain(repositoryPath);
     expect(outcome.message).not.toContain(asked);
+  });
+  /**
+   * A bare repository, which is a `--repo` mistake and not a machine fault.
+   *
+   * `rev-parse --git-dir` succeeds in one, so the not-a-repository refusal above does not fire, and
+   * there is no working tree for `.awcli/run` to live in. It used to throw, defended by "there is no
+   * different flag to offer" — which is the wrong test: what settles the channel is whether the
+   * operator can fix it, and pointing awcli at a clone rather than at the bare one is exactly the
+   * remedy `not-a-repository` already gives. The gate chain prints a refusal as a remedy and a throw
+   * as a stack trace.
+   *
+   * It is also why the root lookup stays a second invocation rather than being folded into the first:
+   * `git rev-parse --git-dir --show-toplevel` exits 128 on *both* questions here (verified on git
+   * 2.55), so the combined form would report a bare repository as "that is not a git repository".
+   */
+  it("refuses a bare repository rather than throwing at it", async () => {
+    const repositoryPath = await bareRepository();
+    const stack = new DisposalStack();
+
+    const outcome = await acquireWorkspace(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("no-working-tree");
+    expect(outcome.message).toContain("working tree");
+    expect(outcome.message).toContain(repositoryPath);
+    expect(stack.held).toEqual([]);
   });
 });

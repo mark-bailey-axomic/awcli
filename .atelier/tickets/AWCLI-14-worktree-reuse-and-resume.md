@@ -77,4 +77,12 @@ specification states.
 ## Dependencies
 
 **Blocked by:** AWCLI-13
-**Blocks:** AWCLI-22
+**Blocks:** AWCLI-19, AWCLI-22, AWCLI-23, AWCLI-25
+
+The three added here consume `ctx.git.dir` in their acceptance criteria — `ctx.sandbox()` resolving
+to a scope whose `dir` differs from the body's (AWCLI-19), resolution against the directory `dir`
+reports (AWCLI-23), a command's working directory being that same one (AWCLI-25) — and `ctx.git` is
+this ticket's member end to end by the 2026-08-28 `ctx.git` amendment. They named AWCLI-13, which
+builds the `WorkspaceHandle` and constructs no context around one, so the edge pointed at the ticket
+that cannot discharge it. AWCLI-13 stays on their lists as well: it is where the provisioning they
+also rest on lives, and the edge is transitive rather than wrong.

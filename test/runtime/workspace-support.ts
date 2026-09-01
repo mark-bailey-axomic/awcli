@@ -113,6 +113,28 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
 }
 
 /**
+ * Runs a command through a shell, the way an operator pastes one out of a refusal.
+ *
+ * `sh -c` rather than `execFile` with an argument array, and that is the whole point: a remedy is
+ * printed as one string and the operator's shell is what splits it. A path with a space in it splits
+ * wrong unless awcli quoted it, and nothing but a shell can tell the two apart.
+ */
+export async function shell(cwd: string, command: string): Promise<string> {
+  const { stdout } = await execFileAsync("sh", ["-c", command], {
+    cwd,
+    encoding: "utf8",
+    env: GIT_ENV,
+  });
+  return stdout;
+}
+
+/** How many working copies git has registered, the main one included. */
+export async function worktreeCount(repositoryPath: string): Promise<number> {
+  const listed = await git(repositoryPath, "worktree", "list", "--porcelain");
+  return listed.split("\n").filter((line) => line.startsWith("worktree ")).length;
+}
+
+/**
  * An empty repository: initialised, no commit. There is no branch to cut from one of these.
  *
  * Canonicalised, because awcli asks git where the repository root is (`rev-parse --show-toplevel`)
@@ -159,6 +181,20 @@ export async function repositoryWithASpaceInItsPath(): Promise<string> {
   await writeFile(join(path, "file.txt"), "committed\n", "utf8");
   await git(path, "add", "-A");
   await git(path, "commit", "-qm", "first");
+  return path;
+}
+
+/**
+ * A bare repository: a git repository with no working tree.
+ *
+ * `rev-parse --git-dir` succeeds in one, so it passes the not-a-repository check and is refused one
+ * question later — the reachable case for a refusal that would otherwise look unreachable.
+ */
+export async function bareRepository(): Promise<string> {
+  const path = await realpath(
+    track(await mkdtemp(join(tmpdir(), "awcli-workspace-bare-"))),
+  );
+  await git(path, "init", "-q", "--bare", "-b", "main", ".");
   return path;
 }
 

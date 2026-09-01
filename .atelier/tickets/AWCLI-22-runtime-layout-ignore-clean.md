@@ -68,9 +68,14 @@ rather than assumed.
 - [ ] Clean run against a live run skips the locked run and reports it.
 - [ ] Naming a subdirectory of a repository puts the runtime path at the repository root, not
       beside the subdirectory — asserted by running against a real repository, not by inspection.
-- [ ] The suite can observe a run dirtying the operator's repository: the test helper no longer
-      filters the runtime path out of `git status` or directory listings, so the ignore entry is
-      what makes the assertion pass rather than the helper.
+- [ ] AWCLI-13's default-protects-my-checkout scenario asserts a clean `git status` for the
+      operator, and the ignore entry rather than the test helper is what makes it pass. That scenario
+      currently asserts `.awcli` and `?? .awcli/` positively as the one thing a run adds — the helper
+      filters only `.git`, so the window is watched rather than hidden — which means this ticket's
+      ignore entry turns that assertion red and it has to be flipped here. Flipping it is the
+      criterion; the assertion going red first is what proves the entry did the work. (Named without
+      italics on purpose: a scenario belongs to exactly one ticket, and check 4 of
+      `verify-spec-invariants.sh` reads an italicised scenario name as a claim of ownership.)
 - [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope

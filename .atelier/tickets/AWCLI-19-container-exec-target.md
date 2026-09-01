@@ -114,5 +114,5 @@ This is the second half of the container work; the image itself comes from AWCLI
 
 ## Dependencies
 
-**Blocked by:** AWCLI-01, AWCLI-03, AWCLI-13, AWCLI-18
+**Blocked by:** AWCLI-01, AWCLI-03, AWCLI-13, AWCLI-14, AWCLI-18
 **Blocks:** AWCLI-10, AWCLI-24

@@ -62,10 +62,45 @@ describe("the slot a working copy is provisioned for", () => {
     if (outcome.ok) return;
     expect(outcome.kind).toBe("invalid-slot");
     expect(outcome.message).toContain("..");
+    // The field, not only the sentence. `WorkspaceRefusal.slot` carries a docblock saying it is a
+    // plain string rather than a `SlotName` *because* this is the case where there is no valid slot
+    // to report, and no test read it — so the one field whose value is guaranteed to be something the
+    // rules refused was asserted nowhere.
+    expect(outcome.slot).toBe("../../../etc");
     expect(stack.held).toEqual([]);
     expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
     expect(await branches(repositoryPath)).toEqual(["main"]);
     expect(await checkout(repositoryPath)).toEqual(before);
+  });
+
+  /**
+   * The other half of that field's docblock: it is *sanitised*, because this is the case where the
+   * value is guaranteed to hold something the rules refused.
+   *
+   * A bidirectional override in a slot name reverses the rendering of everything after it, so an
+   * unfiltered echo lets a workflow write a line the operator reads as awcli's. The refusal message
+   * no longer restates the name (its two reasons state the rule instead, and `invalidSlot` quotes the
+   * name once around them), so the field is the channel that carries it — which is the reason to
+   * assert it here rather than only the sentence.
+   */
+  it("does not echo a refused slot's bidi override back on the refusal", async () => {
+    const repositoryPath = await repository();
+    const hostile = "review\u202eGNAHC";
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      slot: hostile,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("invalid-slot");
+    expect(outcome.slot).not.toContain("\u202e");
+    expect(outcome.message).not.toContain("\u202e");
+    // Still recognisable enough for the workflow author to find the call that named it.
+    expect(outcome.slot).toContain("review");
   });
 });
 

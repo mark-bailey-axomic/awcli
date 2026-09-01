@@ -46,7 +46,10 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * says. It then named AWCLI-11, which owns the iteration loop and no part of `ctx.git` — the TDD
  * assigns the member to WB-8, and AWCLI-11 is WB-7. It names AWCLI-14 now, the other half of WB-8,
  * and that ticket has been widened to own `ctx.git` end to end: `log`, `diff` and `commit` were owned
- * by no ticket at all while three tickets carried acceptance criteria consuming them. The widening is
+ * by no ticket at all — and, checked rather than assumed, consumed by no acceptance criterion either,
+ * which argues for giving one ticket the whole member more strongly than a consumer would. What
+ * AWCLI-19, AWCLI-23 and AWCLI-25 carry criteria against is `ctx.git.dir`, a member AWCLI-13 does not
+ * build either. The widening is
  * recorded where this project records such gaps — the 2026-08-28 `ctx.git` row of the
  * `## Amendments` section in `.atelier/design/agentic-workflow-cli-rules.md`, mirroring what the
  * row above it did for `ctx.sandbox` — rather than living here as a comment, which is what it was

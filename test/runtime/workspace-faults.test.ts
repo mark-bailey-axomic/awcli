@@ -1,10 +1,23 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DisposalStack } from "../../src/runtime/disposal.js";
-import { DEFAULT_SLOT, worktreePath } from "../../src/runtime/run-identity.js";
+import {
+  DEFAULT_SLOT,
+  worktreePath,
+  worktreesRoot,
+} from "../../src/runtime/run-identity.js";
 import {
   systemGitRunner,
   type GitOutcome,
@@ -362,5 +375,175 @@ describe("faults the operator cannot choose differently", () => {
     const message = thrown instanceof Error ? thrown.message : "";
     expect(message).toContain("outside");
     expect(message).toContain(target);
+  });
+  /**
+   * The same escape one level up, which the boundary check used to pass.
+   *
+   * `assertInsideRuntimeDirectory` resolved *both* sides — `realpath(worktrees)` and
+   * `realpath(target)` — after the working copy existed and through the same layout. So a link at or
+   * above `worktrees` moved the boundary along with the target and the comparison succeeded on the
+   * far side of the escape: reproduced against git 2.55 with `handle.dir` naming
+   * `.awcli/run/worktrees/<run>/<slot>` while the checkout and the agent's files sat outside the
+   * repository, and nothing thrown. Only a link at `worktrees/<run>` or at the leaf was caught, and
+   * the leaf is the only case the test above stages — so both of the plausible wrong boundaries (the
+   * repository root, and a prefix test with no trailing separator) passed the suite.
+   *
+   * Staged at `worktrees` rather than at `.awcli`, because `.awcli` and `.awcli/run` are caught
+   * earlier by `makeLayout`'s per-level check: this is the level that exists by the time the window
+   * opens, which is what makes it the one the last-word check has to answer for.
+   */
+  it("throws when the whole worktrees directory was moved out from under it", async () => {
+    const repositoryPath = await repository();
+    const elsewhere = await mkdtemp(join(tmpdir(), "awcli-workspace-outside-"));
+    track(elsewhere);
+    const worktrees = worktreesRoot(repositoryPath);
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const swapping: GitRunner = async (args, cwd) => {
+      if (isWorktreeAdd(args)) {
+        await rename(worktrees, join(elsewhere, "worktrees"));
+        await symlink(join(elsewhere, "worktrees"), worktrees);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: swapping,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("outside");
+    // Named by the path awcli believed it was using, which is the whole of the discrepancy.
+    expect(message).toContain(target);
+    // The working copy really did land out there — the fault is the only thing standing between that
+    // and a handle whose `dir` says otherwise.
+    expect(existsSync(join(elsewhere, "worktrees", "triage", "main", ".git"))).toBe(true);
+  });
+
+  /**
+   * Inside the repository, outside the runtime directory — the boundary a reviewer would widen to.
+   *
+   * Resolving only the repository root and comparing the spelling of the rest would accept this: git
+   * checks the whole tree out over `<repo>/somewhere-else` while `WorkspaceHandle.dir` and the BR-015
+   * sentence both name `.awcli/run/worktrees/<run>/<slot>`. "Inside the repository" is not the
+   * property this module promises; "inside the runtime directory" is.
+   */
+  it("throws when the working copy landed inside the repository but outside the runtime directory", async () => {
+    const repositoryPath = await repository();
+    const inside = join(repositoryPath, "somewhere-else");
+    await mkdir(inside);
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const redirecting: GitRunner = async (args, cwd) => {
+      if (isWorktreeAdd(args)) {
+        await rm(target, { recursive: true, force: true });
+        await symlink(inside, target);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: redirecting,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown instanceof Error ? thrown.message : "").toContain("outside");
+  });
+
+  /**
+   * A sibling of `worktrees` whose name starts with it, which is the classic prefix bug.
+   *
+   * `placed.startsWith(boundary)` without the trailing separator accepts
+   * `.awcli/run/worktrees-elsewhere/x`, and no other test in the suite distinguishes the two
+   * implementations. The separator is one character and the mutation that removes it is silent.
+   */
+  it("throws when the working copy landed in a sibling whose name starts with the boundary", async () => {
+    const repositoryPath = await repository();
+    const sibling = `${worktreesRoot(repositoryPath)}-elsewhere`;
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const redirecting: GitRunner = async (args, cwd) => {
+      if (isWorktreeAdd(args)) {
+        await mkdir(sibling, { recursive: true });
+        await rm(target, { recursive: true, force: true });
+        await symlink(sibling, target);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: redirecting,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown instanceof Error ? thrown.message : "").toContain("outside");
+    // Not a `realpath` that failed: the path resolves, it is simply not inside the boundary.
+    expect(await realpath(sibling)).toBeTruthy();
+  });
+
+  /**
+   * A `git worktree add` that fails the way real git fails, which nothing staged before this.
+   *
+   * Both failing-add tests returned a synthetic `{kind:"ran", code:128}` from the seam and created no
+   * branch — an outcome real git cannot produce, because it cuts the `-b` branch before it validates
+   * the target and so has *always* created it by the time it fails. So the suite exercised a path
+   * production could not reach, while the path production did reach (a late collision found on
+   * awcli's own branch) was reported as `branch-exists` about a branch awcli had just cut, and no
+   * mutation in the gate could see it: no test observed the leak.
+   *
+   * Staged by putting a file in the target inside the window, which is deterministic and needs no
+   * `chmod` — permissions do not fail for a test running as root, which is the reason the fs-fault
+   * suite mocks them. git answers `fatal: '<path>' already exists`, exit 128 (verified on git 2.55).
+   *
+   * Three things are asserted, and the third is the finding: the fault carries git's own complaint
+   * rather than a refusal awcli invented; no branch is left behind; and the *directory* is left
+   * exactly as it was found, because `rmdir` refuses a directory with anything in it and what is in
+   * this one is not awcli's.
+   */
+  it("throws with git's own complaint when a real worktree add fails, and leaks no branch", async () => {
+    const repositoryPath = await repository();
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const spoiling: GitRunner = async (args, cwd) => {
+      if (isWorktreeAdd(args)) {
+        await writeFile(join(target, "not-awcli's.txt"), "someone else's\n", "utf8");
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: spoiling,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("git worktree add exited 128");
+    expect(message).toContain("already exists");
+    // The branch awcli cut for this add is gone — it had no commits on it, and left behind it makes
+    // this run and slot unusable for good.
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+    // And the file that was not awcli's is still there.
+    expect(existsSync(join(target, "not-awcli's.txt"))).toBe(true);
   });
 });
