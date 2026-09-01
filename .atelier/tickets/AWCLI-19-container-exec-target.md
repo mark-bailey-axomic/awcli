@@ -63,6 +63,20 @@ This is the second half of the container work; the image itself comes from AWCLI
 - Report per call which isolation was actually in effect.
 - Dispose a scope by removing its container and releasing its working copy, leaving the working
   copy on disk and its branch undeleted — the commits are the deliverable (BR-021, BR-036).
+- Keep the shared git configuration out of the agent's reach. Every worktree of a run shares one
+  `.git/config` with the operator's checkout, and awcli executes what is in it *outside* the
+  container: `git worktree add` runs `filter.<driver>.smudge` for every path `.gitattributes`
+  assigns to a driver, and `git status` runs `core.fsmonitor`. Both are arbitrary shell strings, and
+  an agent reaches the file from inside its own worktree with a plain
+  `git config filter.x.smudge '<cmd>'` — no path knowledge needed, because its `.git` pointer
+  resolves to the common git dir. On the current build this costs nothing: an agent runs on the host
+  with the operator's identity already, so a planted filter buys it what it can do directly. It
+  becomes an escape the moment this ticket draws a boundary, and it escapes it *sideways* — through
+  a file the agent may write, executed by the next provisioning on the host. So the container may
+  not leave the shared config writable from inside a scope. AWCLI-13 closed the equivalent hook
+  vector (`core.hooksPath` is pinned for the add) and recorded this half as a residual rather than
+  neutralising the drivers, because neutralising them checks out git-lfs pointer files instead of
+  content — a defence that loses work.
 
 ### Non-Functional
 
@@ -97,6 +111,10 @@ This is the second half of the container work; the image itself comes from AWCLI
 - [ ] `scope.dispose()` removes the container and leaves the working copy and its branch on disk;
       a run that ends without calling it disposes the scope anyway.
 - [ ] A container refused after the working copy was obtained leaves no working copy behind.
+- [ ] An agent inside a scope cannot write the shared `.git/config`, and a `filter.*.smudge` or
+      `core.fsmonitor` planted there before the boundary existed is not executed by a later
+      provisioning as a consequence of this scope having run — asserted by planting one from inside
+      a scope and watching the next acquisition, not by inspecting a mount table.
 - [ ] `ctx.version.supports("sandbox")` returns true, and the member's entry in `DELIVERED_BY` is
       gone.
 - [ ] All tests pass, format check clean, type check clean.

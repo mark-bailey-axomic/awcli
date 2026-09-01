@@ -78,9 +78,12 @@ import {
  *     operator's identity, so anything it could reach by planting a filter it can reach by running
  *     the command itself. There is no boundary yet for a filter to escape.
  *
- * It stops being free the moment AWCLI-25 puts an execution boundary around an agent: from then on
- * the shared `.git/config` is inside the boundary and awcli executes it outside, which is an escape.
- * That is a requirement on AWCLI-25 rather than a note here, and it is written on that ticket.
+ * It stops being free the moment AWCLI-19 puts a container around an agent: from then on the shared
+ * `.git/config` is inside the boundary and awcli executes it outside, which is an escape. That is a
+ * requirement on AWCLI-19 rather than a note here, and it is written on that ticket — on AWCLI-19
+ * and not on AWCLI-25, which is where review suggested it: AWCLI-25 is the *host* target and has no
+ * boundary for a planted filter to cross, so a requirement about what a boundary must not permit
+ * belongs to the ticket that builds one.
  * `NO_HOOKS` stays regardless, because it costs nothing and it also stops an operator's own
  * `post-checkout` running an install on every provisioning.
  *
