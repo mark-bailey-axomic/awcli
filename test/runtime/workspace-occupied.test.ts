@@ -99,7 +99,9 @@ describe("what provisioning refuses rather than does: something at the target", 
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.kind).toBe("occupied");
-    expect(outcome.message).toContain(`git worktree remove ${target}`);
+    // Single-quoted, because the operator is meant to paste this and the repository root is whatever
+    // their disk says — `~/My Projects/repo` split on the space and git answered with a usage error.
+    expect(outcome.message).toContain(`git worktree remove '${target}'`);
     expect(outcome.message).toContain("git branch -D awcli/triage/main");
 
     await git(repositoryPath, "worktree", "remove", target);

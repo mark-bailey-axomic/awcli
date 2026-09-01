@@ -147,6 +147,37 @@ describe("running git", () => {
     expect(message).not.toMatch(/not installed|could not be run|did not finish within/);
   });
 
+  /**
+   * A git that hangs — the second of the three failures this module says it exists for.
+   *
+   * It was the one with neither a test nor a gate anchor, because `GIT_TIMEOUT_MS` is two minutes and
+   * nothing could wait for it. What that cost is not hypothetical: with the branch removed, a
+   * timed-out child has `code === null`, so the string-errno branch does not match either and the
+   * error falls all the way to the bare rethrow — `Command failed: sh -c sleep 5`, which is exactly
+   * the outcome the sibling signal branch above was added to prevent. `worktreeRegistration`'s
+   * `.catch(() => undefined)` in workspace.ts also exists to absorb this throw, so the behaviour it
+   * guards against was itself unproven.
+   *
+   * The bound is a parameter for this test and nothing else; the message is asserted to name the
+   * value passed rather than the constant, so a runner that timed out on its own default would fail
+   * here instead of quietly agreeing.
+   */
+  it("names the bound when git does not finish inside it", async () => {
+    const cwd = await directory();
+    const impatient = createGitRunner("sh", 50);
+
+    const thrown = await impatient(["-c", "sleep 5"], cwd).then(
+      (outcome) => outcome,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("did not finish within 50ms");
+    expect(message).not.toContain("Command failed");
+    expect(message).not.toMatch(/not installed|could not be run|was killed by/);
+  });
+
   /** A `cwd` that exists and is a file answers the same way: there is no directory to run in. */
   it("treats a file where a directory should be as no directory", async () => {
     const cwd = await directory();
@@ -175,13 +206,22 @@ const REDIRECTING = [
   "GIT_CEILING_DIRECTORIES",
   "GIT_DISCOVERY_ACROSS_FILESYSTEM",
   "GIT_CONFIG",
-  "GIT_CONFIG_GLOBAL",
-  "GIT_CONFIG_SYSTEM",
   "GIT_CONFIG_COUNT",
   "GIT_CONFIG_KEY_0",
   "GIT_CONFIG_VALUE_0",
   "GIT_CONFIG_PARAMETERS",
 ] as const;
+
+/**
+ * The two that were being stripped by the prefix rule and should not be.
+ *
+ * They point the other way from the injectors: `/dev/null` in either is how a caller runs git
+ * *without* the operator's or the machine's configuration, so removing them handed that
+ * configuration back — undoing a hardening the caller had asked for, and making this very suite
+ * non-hermetic about the code under test while looking hermetic. Asserted positively, because a
+ * decision to pass something through is only a decision if something watches it.
+ */
+const PASSED_THROUGH = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"] as const;
 
 /** Sets variables for the length of one call and puts the environment back however it ends. */
 async function withEnvironment<T>(
@@ -205,8 +245,10 @@ async function withEnvironment<T>(
 /**
  * What git is told about where the repository is, which `-C` and a `cwd` do not settle.
  *
- * git's discovery variables win over both: with `GIT_DIR` set, git operates on that repository from
- * any working directory at all, and `GIT_CONFIG_COUNT` injects configuration into every invocation.
+ * The strongest of them win over both: with `GIT_DIR` set, git operates on that repository from any
+ * working directory at all, and `GIT_CONFIG_COUNT` injects configuration into every invocation. The
+ * rest of the stripped list redirects storage or ref scoping rather than which repository — see
+ * `GIT_REDIRECTING_VARIABLES` for the union, which is wider than the `GIT_DIR` property alone.
  * awcli inherits its environment from whatever started it, and the things that start it include a
  * git hook, `git rebase --exec` and `git bisect run` — all of which set exactly these. So a run
  * launched from one repository would cut branches in another while every sentence awcli prints names
@@ -215,7 +257,9 @@ async function withEnvironment<T>(
 describe("the environment a git child gets", () => {
   it("hands git none of the variables that would redirect it", async () => {
     const cwd = await directory();
-    const planted = Object.fromEntries(REDIRECTING.map((name) => [name, "planted"]));
+    const planted = Object.fromEntries(
+      [...REDIRECTING, ...PASSED_THROUGH].map((name) => [name, "planted"]),
+    );
 
     const printed = await withEnvironment(planted, async () => {
       // `env` rather than git, because the assertion is about the child's environment itself: a
@@ -230,6 +274,7 @@ describe("the environment a git child gets", () => {
       .map((line) => line.slice(0, line.indexOf("=")))
       .filter((name) => name.length > 0);
     for (const name of REDIRECTING) expect(names).not.toContain(name);
+    for (const name of PASSED_THROUGH) expect(names).toContain(name);
     // And the rest of the environment is still there: stripping is a subtraction, not a clean slate.
     // git needs PATH to find its own subcommands and HOME to find the operator's configuration.
     expect(names).toContain("PATH");
@@ -301,8 +346,11 @@ describe("what git said went wrong", () => {
   /**
    * git failing silently, which every caller puts after a full stop.
    *
-   * The empty string here produced `... exited 128. ` in five thrown messages: a trailing space, no
-   * cause, and a sentence that reads as truncated. Silence is an answer, so it is said.
+   * The empty string here produced `... exited 128. ` wherever a caller interpolates this after a
+   * full stop: a trailing space, no cause, and a sentence that reads as truncated. Silence is an
+   * answer, so it is said. No count of the call sites, deliberately — the one written here was five
+   * and went stale within the same branch when the root lookup added more, which is the argument the
+   * docblock below already makes about hard-coded bounds.
    */
   it("says so when git printed nothing rather than answering with nothing", () => {
     expect(gitComplaint("   \n")).toBe(NO_COMPLAINT);

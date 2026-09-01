@@ -269,14 +269,20 @@ function slotSentences(slot: string, problem: NameProblem): [string, string] {
         `A slot name may not contain "..": it becomes a path under ${RUNTIME_DIRECTORY}/${RUN_DIRECTORY}/${WORKTREES_DIRECTORY}/ and must stay inside it.`,
         "Use a name without it.",
       ];
+    // These two state the rule rather than the name, unlike their run-name counterparts, and the
+    // asymmetry is the wrapper: `acquireWorkspace`'s `invalidSlot` opens `awcli will not use "<slot>"
+    // as a slot in the "<run>" run:` and then interpolates this, so a reason that also opens by
+    // quoting the name produced `... as a slot in the "nightly" run: "Reviewer" must be lowercase:`
+    // — the subject twice and two colons in one sentence. The run-name table has no wrapper and keeps
+    // its quoting. The other four slot reasons already state the rule.
     case "illegal-characters":
       return [
-        `"${printable(slot)}" is not usable as a slot name: it becomes a directory name and part of a git branch name, so it may hold only letters, digits, dots, dashes and underscores, and must start and end with a letter or digit.`,
+        "A slot name becomes a directory name and part of a git branch name, so it may hold only letters, digits, dots, dashes and underscores, and must start and end with a letter or digit.",
         "Name the slot within that.",
       ];
     case "not-lowercase":
       return [
-        `"${printable(slot)}" must be lowercase: a slot is both a directory (on a filesystem that may ignore case) and part of a git branch (on one that does not), and the two must agree.`,
+        "A slot name must be lowercase: a slot is both a directory (on a filesystem that may ignore case) and part of a git branch (on one that does not), and the two must agree.",
         `Try "${printable(slot.toLowerCase())}".`,
       ];
     case "git-reserved-suffix":

@@ -316,7 +316,11 @@ describe("a slot name is validated, never sanitised", () => {
     if (result.ok) return;
     expect(result.message).not.toContain("\u001b");
     expect(result.name).not.toContain("\u001b");
-    // Still recognisable enough to act on, minus what a terminal would act on.
-    expect(result.message).toContain("reviewer");
+    // Still recognisable enough to act on, minus what a terminal would act on — on `name` rather
+    // than on `message`, because the two slot reasons that used to open by quoting the name no
+    // longer do: their only caller (`acquireWorkspace`'s `invalidSlot`) already opens by quoting it,
+    // and the pair read `... as a slot in the "nightly" run: "Reviewer" must be lowercase:`. The
+    // sanitised name is the channel that carries it; the wrapper is what prints it.
+    expect(result.name).toContain("reviewer");
   });
 });

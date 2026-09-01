@@ -65,17 +65,21 @@ export type GitOutcome =
 export type GitRunner = (args: readonly string[], cwd: string) => Promise<GitOutcome>;
 
 /**
- * The variables that decide which repository git operates on, whatever it is told otherwise.
+ * The variables awcli removes from a git child's environment, and what they have in common.
  *
- * Every one of these wins over the working directory *and* over `-C`: with `GIT_DIR` set, git
- * operates on that repository from anywhere on the disk. They are not exotic — git itself exports
- * them, so anything running under a hook, `git rebase --exec`, `git bisect run` or a filter has them
- * set for every child it starts, awcli included.
+ * Not "every one of these wins over `-C`", which is what this said: that is true of `GIT_DIR`,
+ * `GIT_WORK_TREE` and `GIT_COMMON_DIR` and of nothing else here. The union is wider and weaker —
+ * each of these redirects *something* git resolves for itself, in one of three directions:
+ * which repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`), where its storage is
+ * (`GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`), and how refs and
+ * discovery are scoped (`GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`,
+ * `GIT_DISCOVERY_ACROSS_FILESYSTEM`). Stating the strong property of the first three as the rule for
+ * all nine invites the next maintainer to trim the six it does not describe.
  *
- * `GIT_CONFIG_COUNT` and its `KEY_n`/`VALUE_n` are stripped by the prefix rule below rather than
- * named here, along with `GIT_CONFIG`, `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and
- * `GIT_CONFIG_PARAMETERS`: configuration injected that way reaches every invocation, and
- * `core.hooksPath` set through it is arbitrary code run by a checkout.
+ * None of them are exotic: git itself exports them, so anything running under a hook,
+ * `git rebase --exec`, `git bisect run` or a filter has them set for every child it starts, awcli
+ * included. awcli has already decided which repository it means by the time it calls — it is the
+ * `cwd` argument — and nothing in the environment may overrule it.
  */
 const GIT_REDIRECTING_VARIABLES: readonly string[] = [
   "GIT_DIR",
@@ -90,14 +94,41 @@ const GIT_REDIRECTING_VARIABLES: readonly string[] = [
 ];
 
 /**
+ * Configuration injected through the environment, which is arbitrary code by another route.
+ *
+ * `core.hooksPath` set this way is a checkout running whatever it names, so these go the same way as
+ * the redirectors above. Named individually rather than caught by a `GIT_CONFIG` prefix, which is
+ * what this used to do and which swept up two variables pointing the *other* way — see below.
+ */
+const GIT_CONFIG_INJECTORS: readonly string[] = [
+  "GIT_CONFIG",
+  "GIT_CONFIG_PARAMETERS",
+  "GIT_CONFIG_COUNT",
+];
+
+/** `GIT_CONFIG_COUNT`'s numbered pairs, which have no fixed set of names. */
+const GIT_CONFIG_INJECTOR_PREFIXES: readonly string[] = [
+  "GIT_CONFIG_KEY_",
+  "GIT_CONFIG_VALUE_",
+];
+
+/**
  * The environment a git child is given: this process's, minus the variables above.
  *
  * A subtraction rather than an allowlist. git legitimately reads a great deal of the environment —
  * `PATH` to find its own subcommands, `HOME` for the operator's configuration, the proxy and
  * credential variables — and a list of what to keep would be a list that goes stale silently, in the
- * direction of a git that behaves differently under awcli than in the operator's own shell. What is
- * removed is the part that answers "which repository", which awcli has already decided by the time
- * it calls: it is the `cwd` argument, and nothing in the environment may overrule it.
+ * direction of a git that behaves differently under awcli than in the operator's own shell.
+ *
+ * `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are passed through, and that is a decision rather than
+ * an omission. A `name.startsWith("GIT_CONFIG")` rule removed them along with the injectors, which
+ * is the opposite of what either does: pointing them at `/dev/null` is the standard way to run git
+ * *without* the operator's and the machine's configuration, so awcli silently undid the hardening of
+ * any caller, CI job or test harness that had switched it off. Passing them through is the choice
+ * that keeps awcli's git the same git the operator has — which is what AWCLI-14 needs, since a
+ * commit reads `user.name` and `user.email` from exactly there — and it is what lets a suite make
+ * the code under test hermetic. The other direction (pinning both to `/dev/null`) would make
+ * provisioning reproducible and `ctx.git.commit()` authorless; this file picks the operator's git.
  *
  * Built per invocation rather than once, because `process.env` is mutable and a module-level copy
  * would answer a question about the moment this file was imported.
@@ -105,7 +136,11 @@ const GIT_REDIRECTING_VARIABLES: readonly string[] = [
 function gitEnvironment(): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = { ...process.env };
   for (const name of Object.keys(environment)) {
-    if (GIT_REDIRECTING_VARIABLES.includes(name) || name.startsWith("GIT_CONFIG")) {
+    if (
+      GIT_REDIRECTING_VARIABLES.includes(name) ||
+      GIT_CONFIG_INJECTORS.includes(name) ||
+      GIT_CONFIG_INJECTOR_PREFIXES.some((prefix) => name.startsWith(prefix))
+    ) {
       delete environment[name];
     }
   }
@@ -113,21 +148,27 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 }
 
 /**
- * A runner for a named binary.
+ * A runner for a named binary, and optionally a shorter bound than the real one.
  *
- * Exported for the one test that cannot be written any other way: proving that a machine with no git
- * is reported as a machine with no git means running something that is not there, and `systemGitRunner`
- * hard-codes the name — the same reason `process-probe.ts` exports `psIdentify`. It is not a
- * configuration point, and awcli never calls it with anything but `git`.
+ * Exported for the tests that cannot be written any other way, which is now two rather than one.
+ * Proving that a machine with no git is reported as a machine with no git means running something
+ * that is not there, and `systemGitRunner` hard-codes the name — the same reason `process-probe.ts`
+ * exports `psIdentify`. Proving that a git which *hangs* is reported as one means waiting for the
+ * bound, and `GIT_TIMEOUT_MS` is two minutes: the timeout branch below therefore had no test and no
+ * gate anchor at all, on a module whose stated reason for existing is the three failures a real
+ * repository cannot stage — and a hang is one of the three. `timeoutMs` is what makes it 50.
+ *
+ * Neither parameter is a configuration point, and awcli never calls this with anything but `git` and
+ * the default bound.
  */
-export function createGitRunner(binary: string): GitRunner {
+export function createGitRunner(binary: string, timeoutMs = GIT_TIMEOUT_MS): GitRunner {
   return async (args, cwd) => {
     try {
       const { stdout, stderr } = await execFileAsync(binary, [...args], {
         cwd,
         env: gitEnvironment(),
         encoding: "utf8",
-        timeout: GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
         maxBuffer: GIT_MAX_BUFFER,
       });
       return { kind: "ran", code: 0, stdout, stderr };
@@ -190,7 +231,7 @@ export function createGitRunner(binary: string): GitRunner {
       }
       if (failure.killed === true) {
         throw new Error(
-          `${printable(binary)} ${printable(args.join(" "))} did not finish within ${GIT_TIMEOUT_MS}ms in ${cwd}. Something is holding a git lock, or waiting for input awcli cannot give it.`,
+          `${printable(binary)} ${printable(args.join(" "))} did not finish within ${timeoutMs}ms in ${cwd}. Something is holding a git lock, or waiting for input awcli cannot give it.`,
           { cause: error },
         );
       }

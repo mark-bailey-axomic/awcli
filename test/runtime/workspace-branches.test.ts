@@ -71,7 +71,8 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     // Named as the operator spelled it, and named as the collision it is rather than as git's
     // `cannot lock ref`.
     expect(outcome.message).toContain("AWCLI");
-    expect(outcome.message).toContain("--name");
+    // And *not* offered a different --name, because a ref at the namespace root blocks every branch
+    // under `awcli/` whatever the run is called. See the sibling test below for the split.
     expect(await branches(repositoryPath)).toEqual(["AWCLI", "main"]);
   });
 
@@ -199,7 +200,7 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     // The command the refusal names does work, on a directory that has already gone — and then the
     // branch can go too. Run verbatim out of the message, so wording that drifts from git's own
     // vocabulary fails here rather than in someone's terminal.
-    expect(second.message).toContain(`git worktree remove ${target}`);
+    expect(second.message).toContain(`git worktree remove '${target}'`);
     await git(repositoryPath, "worktree", "remove", target);
     await git(repositoryPath, "branch", "-D", "awcli/triage/main");
     expect(await branches(repositoryPath)).toEqual(["main"]);
@@ -226,8 +227,13 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
       if (outcome.ok) return;
       expect(outcome.kind).toBe("branch-exists");
       expect(outcome.message).toContain(blocking);
-      // A next step, rather than git's own "cannot lock ref".
-      expect(outcome.message).toContain("--name");
+      // A next step, rather than git's own "cannot lock ref" — and only the next step that works.
+      // `refs/heads/awcli` blocks `awcli/<anything>`, so a different run name changes nothing and
+      // that half of the advice is withheld; `refs/heads/awcli/triage` blocks only the `triage` run,
+      // so there it is offered. Verified against git 2.55 before this was split: with `awcli`
+      // present, `worktree add -b awcli/other/main` fails exactly as `awcli/triage/main` did.
+      expect(outcome.message).toContain("rename or delete it");
+      expect(outcome.message.includes("--name")).toBe(blocking !== "awcli");
       expect(await branches(repositoryPath)).toEqual([blocking, "main"].sort());
     },
   );
