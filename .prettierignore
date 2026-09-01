@@ -14,6 +14,12 @@ test/fixtures
 # Git ignores this directory via .git/info/exclude, which prettier does not read.
 .claude/worktrees
 
+# And awcli's own runtime directory, which is the same trap one tool over: a run provisions a whole
+# checkout of this repository at .awcli/run/worktrees/<run>/<slot>, so `npm run format` would rewrite
+# the source files a live agent is working in — foreign uncommitted work, edited by a formatter nobody
+# asked. Git ignores it via the generated ignore line (BR-030), which prettier does not read.
+.awcli
+
 # Design artifacts are approved documents, not source. A code formatter must never
 # rewrite them — a whitespace diff on an approved manifest is noise at best and an
 # unreviewed change at worst.

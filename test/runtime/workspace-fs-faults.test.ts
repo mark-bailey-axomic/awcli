@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -197,6 +198,107 @@ describe("git that stops answering half way through an acquisition", () => {
     expect(message).toContain("no longer there");
     // Not the not-a-repository refusal, whose remedy is to check the path they typed.
     expect(message).not.toContain("Check the path");
+  });
+});
+
+/**
+ * The branch cut failing, which is the call `git worktree add -b` used to do as part of the add.
+ *
+ * Splitting it out (AWCLI-13 review round 3) put a second exit between `mkdir(target)` and the
+ * working copy, and gave it the same two failure shapes the add has: a non-zero exit, and a
+ * rejection out of the runner — a git that has gone missing, a `cwd` that has, the 120s timeout, an
+ * answer past `maxBuffer`, a child killed by a signal. Both leave `mkdir(target)`'s claim on disk,
+ * and awcli's own empty leftover is what the *next* invocation of this run and slot is refused
+ * `occupied` over. The add's pair of guards each had a test and a gate anchor; the cut's arrived with
+ * neither, so the guard could be deleted with the suite green at 126 of 126 — and the sentence that
+ * carries git's complaint could be emptied with it.
+ *
+ * Staged through the `git` seam rather than against a real repository, because a real `git branch`
+ * onto a name nothing holds does not fail: every way it does fail is a fault of the machine.
+ */
+describe("a branch cut that fails", () => {
+  /** Awcli's own `git branch <name> <sha>`, told apart from `undoOwnBranch`'s delete. */
+  const isTheCut = (args: readonly string[]): boolean =>
+    args.includes("branch") && !args.includes("-D") && !args.includes("-d");
+
+  it("carries git's own complaint when git refuses the branch", async () => {
+    const repositoryPath = await repository();
+    const refusing: GitRunner = async (args, cwd): Promise<GitOutcome> =>
+      isTheCut(args)
+        ? {
+            kind: "ran",
+            code: 128,
+            stdout: "",
+            stderr: "fatal: cannot lock ref: unable to create directory\n",
+          }
+        : systemGitRunner(args, cwd);
+
+    const message = await faultFrom(repositoryPath, refusing);
+
+    expect(message).toContain("could not cut the branch awcli/triage/main");
+    expect(message).toContain("git branch exited 128");
+    expect(message).toContain("fatal: cannot lock ref");
+    // And awcli's own claim on the path goes back, or the next invocation of this run and slot is
+    // refused `occupied` over an empty directory awcli made and abandoned.
+    expect(existsSync(worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT))).toBe(false);
+  });
+
+  /**
+   * The tidying after a failed add, which is a ref update like the cut it undoes.
+   *
+   * `undoOwnBranch` deletes awcli's own branch, so it runs `reference-transaction` out of the shared
+   * git dir without `NO_HOOKS` — on the *failure* path, where the operator is already being handed a
+   * fault and is least placed to account for a hook that fired. It is the third mutating call of a
+   * provisioning and it was the last one missing the argument.
+   *
+   * Staged with the add failing through the seam, so the only git call left that could run a hook is
+   * the tidying: the cut carries `NO_HOOKS`, and the add never really runs.
+   */
+  it("runs no hook while deleting the branch its own failed add left", async () => {
+    const repositoryPath = await repository();
+    // Inside the repository, which `afterEach` removes. A marker at a path shared between runs is a
+    // test that poisons every later one: the mutation that strips `NO_HOOKS` from this call makes the
+    // hook fire *correctly*, and a marker left behind then fails the unmutated tree for good.
+    const marker = join(repositoryPath, "the-hook-ran");
+    const hook = join(repositoryPath, ".git", "hooks", "reference-transaction");
+    await writeFile(hook, `#!/bin/sh\necho ran >> "${marker}"\n`, "utf8");
+    await chmod(hook, 0o755);
+    const refusing: GitRunner = async (args, cwd): Promise<GitOutcome> =>
+      args.includes("worktree") && args.includes("add")
+        ? { kind: "ran", code: 128, stdout: "", stderr: "fatal: no space left\n" }
+        : systemGitRunner(args, cwd);
+
+    const message = await faultFrom(repositoryPath, refusing);
+
+    expect(message).toContain("git worktree add exited 128");
+    expect(existsSync(marker)).toBe(false);
+    // And the tidying did happen: the branch and the directory are both gone.
+    expect(
+      (
+        await git(
+          repositoryPath,
+          "for-each-ref",
+          "--format=%(refname:short)",
+          "refs/heads",
+        )
+      )
+        .split("\n")
+        .filter((line) => line !== ""),
+    ).toEqual(["main"]);
+    expect(existsSync(worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT))).toBe(false);
+  });
+
+  it("puts the directory it claimed back when the runner throws rather than exits", async () => {
+    const repositoryPath = await repository();
+    const vanishing: GitRunner = async (args, cwd): Promise<GitOutcome> =>
+      isTheCut(args)
+        ? { kind: "unavailable", reason: "spawn git ENOENT" }
+        : systemGitRunner(args, cwd);
+
+    const message = await faultFrom(repositoryPath, vanishing);
+
+    expect(message).toContain("gone missing");
+    expect(existsSync(worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT))).toBe(false);
   });
 });
 

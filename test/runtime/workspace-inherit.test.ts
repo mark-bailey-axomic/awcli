@@ -87,36 +87,51 @@ describe("what provisioning does not inherit", () => {
   });
 
   /**
-   * `git worktree add` performs a checkout, and a checkout runs `post-checkout`.
+   * Every hook a provisioning could reach, one test per hook and one hook per mutating git call.
    *
-   * Hooks resolve through the *common* git dir, which every worktree of a repository shares, so this
-   * is not a file the run's own working copy controls: an agent in one slot can write
-   * `<repo>/.git/hooks/post-checkout` and the next acquisition — any run, any slot — executes it on
-   * the host, before AWCLI-25's execution boundary exists to contain anything. Provisioning is
-   * awcli's own step, so awcli says which hooks it runs: none.
+   * Hooks resolve through the *common* git dir, which every worktree of a repository shares, so
+   * these are not files the run's own working copy controls: an agent in one slot can write
+   * `<repo>/.git/hooks/<name>` and the next acquisition — any run, any slot — executes it on the
+   * host, before AWCLI-25's execution boundary exists to contain anything. Provisioning is awcli's
+   * own step, so awcli says which hooks it runs: none. `describe` says so to the operator, in those
+   * words, which is why this is a suite of hooks and not a suite of one.
+   *
+   * - `post-checkout` is the one this started as: `git worktree add` performs a checkout.
+   * - `reference-transaction` is the one that arrived with the split of `git worktree add -b` into
+   *   its own `git branch` (AWCLI-13 review round 3). Every ref update runs it, so it fires on the
+   *   *first* mutating call of a provisioning rather than the second — strictly earlier than the
+   *   checkout, and it was live for one commit because the split carried `NO_HOOKS` onto the add and
+   *   not onto the branch. Verified against git 2.55: `git branch <name> <sha>` runs it, and the
+   *   same call under awcli's `core.hooksPath` does not.
    */
-  it("does not run the repository's post-checkout hook while provisioning", async () => {
-    const repositoryPath = await repository();
-    const evidence = await mkdtemp(join(tmpdir(), "awcli-workspace-hook-"));
-    track(evidence);
-    const marker = join(evidence, "the-hook-ran");
-    const hook = join(repositoryPath, ".git", "hooks", "post-checkout");
-    await mkdir(dirname(hook), { recursive: true });
-    await writeFile(hook, `#!/bin/sh\necho ran > "${marker}"\n`, "utf8");
-    await chmod(hook, 0o755);
+  it.each([["post-checkout"], ["reference-transaction"]] as const)(
+    "does not run the repository's %s hook while provisioning",
+    async (name) => {
+      const repositoryPath = await repository();
+      const evidence = await mkdtemp(join(tmpdir(), "awcli-workspace-hook-"));
+      track(evidence);
+      const marker = join(evidence, `${name}-ran`);
+      const hook = join(repositoryPath, ".git", "hooks", name);
+      await mkdir(dirname(hook), { recursive: true });
+      await writeFile(hook, `#!/bin/sh\necho ran >> "${marker}"\n`, "utf8");
+      await chmod(hook, 0o755);
 
-    const outcome = await acquireWorkspace(new DisposalStack(), {
-      repositoryPath,
-      runName: TRIAGE,
-      choice: resolveWorkspaceChoice({}),
-    });
+      const outcome = await acquireWorkspace(new DisposalStack(), {
+        repositoryPath,
+        runName: TRIAGE,
+        choice: resolveWorkspaceChoice({}),
+      });
 
-    // The provisioning still succeeds — hooks are suppressed, not depended on.
-    expect(outcome.ok).toBe(true);
-    if (!outcome.ok) return;
-    expect(existsSync(join(outcome.workspace.dir, ".git"))).toBe(true);
-    expect(existsSync(marker)).toBe(false);
-  });
+      // The provisioning still succeeds — hooks are suppressed, not depended on.
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) return;
+      expect(existsSync(join(outcome.workspace.dir, ".git"))).toBe(true);
+      expect(existsSync(marker)).toBe(false);
+      // And the branch it says it cut is there: a hook suppressed by not making the ref at all
+      // would satisfy the line above.
+      expect(await branches(repositoryPath)).toEqual(["awcli/triage/main", "main"]);
+    },
+  );
 });
 
 describe("what the isolation awcli reports says, and what it leaves to others", () => {

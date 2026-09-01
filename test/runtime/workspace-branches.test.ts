@@ -158,9 +158,9 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
       ),
     ).rejects.toThrow(/is not a working tree/);
     expect(outcome.message).not.toContain("git worktree remove");
-    expect(outcome.message).toContain("git branch -D awcli/triage/main");
+    expect(outcome.message).toContain("git branch -d awcli/triage/main");
     // And what it does advise clears the way, run verbatim out of the message.
-    await git(repositoryPath, "branch", "-D", "awcli/triage/main");
+    await git(repositoryPath, "branch", "-d", "awcli/triage/main");
     const second = await acquireWorkspace(new DisposalStack(), {
       repositoryPath,
       runName: TRIAGE,
@@ -175,7 +175,7 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
    * Release is a no-op and collection is AWCLI-22's, so today the only way to clear a working copy is
    * by hand — and the obvious way, deleting the directory, leaves git's registration for it in
    * `.git/worktrees/`. That registration holds the branch: the next run of the same name and slot is
-   * refused for the branch, and `git branch -D` on it fails naming a path that is no longer there.
+   * refused for the branch, and a branch delete on it fails naming a path that is no longer there.
    * The refusal has to hand them the command that gets them out of it, so this asserts against git
    * itself rather than against the wording alone.
    */
@@ -202,17 +202,132 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(second.kind).toBe("branch-exists");
 
     // Deleting the branch is what they would try, and git refuses: the registration still holds it.
+    // git asks that question ahead of merged-ness, so this is the same refusal for `-d` and `-D`.
     await expect(
-      git(repositoryPath, "branch", "-D", "awcli/triage/main"),
+      git(repositoryPath, "branch", "-d", "awcli/triage/main"),
     ).rejects.toThrow(/used by worktree/);
 
     // The command the refusal names does work, on a directory that has already gone — and then the
     // branch can go too. Run verbatim out of the message, so wording that drifts from git's own
     // vocabulary fails here rather than in someone's terminal.
     expect(second.message).toContain(`git worktree remove '${target}'`);
+    // And the delete it names after that removal refuses rather than discards — see the sibling test
+    // above, which asserts that against a branch that has an agent's commit on it.
+    expect(second.message).toContain("git branch -d awcli/triage/main");
+    expect(second.message).not.toContain("git branch -D");
     await git(repositoryPath, "worktree", "remove", target);
-    await git(repositoryPath, "branch", "-D", "awcli/triage/main");
+    await git(repositoryPath, "branch", "-d", "awcli/triage/main");
     expect(await branches(repositoryPath)).toEqual(["main"]);
+  });
+
+  /**
+   * The branch remedy refusing rather than destroying, on a branch that has work on it.
+   *
+   * This is the state a finished run leaves: the working copy cleared (by hand today — release is a
+   * no-op and collection is AWCLI-22's) and the branch holding the commits, which this module's own
+   * docblock calls the deliverable. The next invocation of the same name is refused for the branch
+   * and handed a way to delete it — so which flag that sentence names decides whether an operator
+   * following awcli's advice loses an agent's work.
+   *
+   * `-D` is unconditional: it took the commits with no second question, unrecoverably as far as
+   * anyone reading a refusal is concerned. `-d` refuses an unmerged branch and prints git's own
+   * `-D` hint, so the operator who does mean it is one paste away and the operator who does not is
+   * stopped. Reproduced on git 2.55 both ways before this was written. Run verbatim out of the
+   * message, because the point is what happens in their terminal, not the wording.
+   */
+  it("advises a branch deletion that refuses rather than one that destroys the commits", async () => {
+    const repositoryPath = await repository();
+    const first = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    // The agent's work, which is the whole reason a run has a branch of its own.
+    await git(first.workspace.dir, "commit", "--allow-empty", "-qm", "the agent's work");
+    const delivered = (
+      await git(repositoryPath, "rev-parse", "awcli/triage/main")
+    ).trim();
+    // The operator clears the working copy, properly — registration and all.
+    await git(repositoryPath, "worktree", "remove", first.workspace.dir);
+
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.kind).toBe("branch-exists");
+    expect(second.message).toContain("git branch -d awcli/triage/main");
+    expect(second.message).not.toContain("git branch -D");
+
+    // git refuses, tells them why, and the commit is still there afterwards.
+    await expect(
+      git(repositoryPath, "branch", "-d", "awcli/triage/main"),
+    ).rejects.toThrow(/not fully merged/);
+    expect((await git(repositoryPath, "rev-parse", "awcli/triage/main")).trim()).toBe(
+      delivered,
+    );
+  });
+
+  /**
+   * The losing side of two acquisitions of one run and slot, discovered at the *branch* site.
+   *
+   * `occupiedMessage` learned this lesson and `collisionMessage` did not: a loser reaches whichever
+   * site the scheduling gives it, and cutting the branch in its own call (review round 3) moved the
+   * winner's ref creation to immediately after its `mkdir` — a much wider window than the old
+   * `worktree add -b`, which cut the branch and checked out in one call. So the loser's collision
+   * query now routinely sees a branch that a live run cut a moment ago, and the remedy it was handed
+   * was `git worktree remove '<the winner's working copy>'` followed by a delete of the winner's
+   * branch, with the confident wording of a settled world.
+   *
+   * The evidence that tells the two apart is awcli's own `lstat`: the loser reached this site
+   * *because* nothing was at the target when it looked, and a winner whose branch exists has already
+   * created that directory — `mkdir` precedes the cut. So something being there now, when the
+   * message is built, is another writer working right now, exactly as EEXIST from `mkdir` is on the
+   * occupied path. Staged rather than raced, on this suite's own precedent: the winner's `mkdir` and
+   * registration are made to land inside the loser's window, at the collision query, so the ordering
+   * this test asserts about is the ordering it gets on every machine.
+   */
+  it("does not send a working copy that is being provisioned right now to git worktree remove", async () => {
+    const repositoryPath = await repository();
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    // The winner has cut its branch; its checkout has not landed yet.
+    await git(repositoryPath, "branch", "awcli/triage/main");
+    let arrived = false;
+    const winnerArrives: GitRunner = async (args, cwd) => {
+      // The rest of the winner's provisioning, inside the loser's window: after the `lstat` that
+      // found the path free, before the loser asks what is in the way.
+      if (!arrived && args.includes("for-each-ref")) {
+        arrived = true;
+        await git(repositoryPath, "worktree", "add", target, "awcli/triage/main");
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: winnerArrives,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("branch-exists");
+    expect(arrived).toBe(true);
+    // Neither of the two commands that would take the winner's working copy or its branch away.
+    expect(outcome.message).not.toContain("git worktree remove");
+    expect(outcome.message).not.toContain("git branch -d");
+    expect(outcome.message).not.toContain("git branch -D");
+    // And it says what it actually knows: something arrived under it while it was looking.
+    expect(outcome.message).toContain("free when awcli looked");
+    expect(outcome.message).toContain("Wait");
+    // The winner is untouched — refusing is the whole of what the loser did.
+    expect(existsSync(join(target, ".git"))).toBe(true);
+    expect(await branches(repositoryPath)).toEqual(["awcli/triage/main", "main"]);
   });
 
   /**

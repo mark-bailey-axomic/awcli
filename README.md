@@ -91,8 +91,8 @@ The design is complete and written down before the code:
 | Document | What it holds |
 |---|---|
 | [Technical design](.atelier/design/agentic-workflow-cli-tdd.md) | Architecture, contracts, work breakdown |
-| [Business rules](.atelier/design/agentic-workflow-cli-rules.md) | 37 approved rules |
-| [BDD scenarios](.atelier/design/agentic-workflow-cli-bdd.feature) | 60 scenarios, every rule tagged |
+| [Business rules](.atelier/design/agentic-workflow-cli-rules.md) | 40 approved rules |
+| [BDD scenarios](.atelier/design/agentic-workflow-cli-bdd.feature) | 78 scenarios, every rule tagged |
 | [ADRs](docs/adr/) | Seven decisions and their rationale |
 | [Tickets](.atelier/tickets/) | Dependency-ordered; [their README](.atelier/tickets/README.md) carries the totals |
 

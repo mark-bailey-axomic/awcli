@@ -117,10 +117,15 @@ describe("what provisioning refuses rather than does: something at the target", 
     // Single-quoted, because the operator is meant to paste this and the repository root is whatever
     // their disk says — `~/My Projects/repo` split on the space and git answered with a usage error.
     expect(outcome.message).toContain(`git worktree remove '${target}'`);
-    expect(outcome.message).toContain("git branch -D awcli/triage/main");
+    // `-d` and not `-D`: this run's branch is the deliverable, and the operator reading this has
+    // not been told whether anything is on it. `-d` refuses an unmerged branch and prints git's own
+    // `-D` hint for insisting; `-D` throws the commits away with no second question. Verified on
+    // git 2.55, and asserted in workspace-branches.test.ts against a branch that has work on it.
+    expect(outcome.message).toContain("git branch -d awcli/triage/main");
+    expect(outcome.message).not.toContain("git branch -D");
 
     await git(repositoryPath, "worktree", "remove", target);
-    await git(repositoryPath, "branch", "-D", "awcli/triage/main");
+    await git(repositoryPath, "branch", "-d", "awcli/triage/main");
     const third = await acquireWorkspace(new DisposalStack(), {
       repositoryPath,
       runName: TRIAGE,
@@ -316,7 +321,7 @@ describe("what provisioning refuses rather than does: something at the target", 
    *
    * Both `collisionMessage` endings finish "Or run this under a different --name" and
    * `occupiedMessage` did not — on the one branch that instead leads with `git worktree remove` and
-   * `git branch -D`, and whose `unregistered` arm offers "move it or delete it yourself" as the only
+   * `git branch -d`, and whose `unregistered` arm offers "move it or delete it yourself" as the only
    * route. A different run name touches nothing that is already on disk; two sibling refusals with
    * the same root cause (this run and slot are taken) should not disagree about whether it exists.
    */

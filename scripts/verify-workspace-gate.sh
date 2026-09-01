@@ -31,11 +31,13 @@ export MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-30000}"
 # shellcheck source=scripts/lib/mutation-gate.sh
 source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 
-# The workspace suite is seven files rather than one, and that is what makes this gate affordable:
+# The workspace suite is eight files rather than one, and that is what makes this gate affordable:
 # vitest parallelises across files and not within one, so a single 1800-line suite meant every
 # mutation below paid 24 seconds serially — a 20-minute gate, against which two otherwise-wanted
 # mutations were already being declined on cost. Named in full rather than by glob so that a new
 # file has to be added here deliberately: a suite this gate does not run is a mutation it cannot see.
+# Ten suites are listed: the eight workspace files, plus run-identity and git-process, which this gate
+# also mutates and so has to run.
 mutation_gate_init \
   "test/runtime/workspace-scenarios.test.ts test/runtime/workspace-slots.test.ts test/runtime/workspace-occupied.test.ts test/runtime/workspace-branches.test.ts test/runtime/workspace-preflight.test.ts test/runtime/workspace-faults.test.ts test/runtime/workspace-inherit.test.ts test/runtime/workspace-fs-faults.test.ts test/runtime/run-identity.test.ts test/runtime/git-process.test.ts" \
   src/runtime/workspace.ts src/runtime/run-identity.ts src/runtime/git-process.ts \
@@ -140,10 +142,10 @@ expect_red "provisioning never removes or writes over what it finds" src/runtime
   's/  const existing = await lstatOrMissing\(target\);/  const existing = undefined;\n  await (await import("node:fs\/promises")).rm(target, { recursive: true, force: true });/'
 
 # The check before the add is gone, so the ordinary case — a branch an earlier run of this name and
-# slot left behind (BR-036) — reaches `git worktree add -b` instead of being answered without it.
-# The point is not that awcli would otherwise take the branch over: it cannot, `-b` makes sure of
-# that, and the re-check after a failed add now turns the same collision into the same refusal, so
-# the message alone cannot tell whether awcli asked first. What asking first buys is that nothing is
+# slot left behind (BR-036) — reaches the `git branch` cut instead of being answered without it.
+# The point is not that awcli would otherwise take the branch over: it cannot, `git branch` refuses a
+# name that exists, and the re-check after that non-zero exit turns the same collision into the same
+# refusal, so the message alone cannot tell whether awcli asked first. What asking first buys is that nothing is
 # attempted and nothing is made — no doomed subprocess, and no directory created and removed inside
 # the operator's repository for a run that was never going to start. The test records the git calls
 # and looks for the directory, which is what makes this a red rather than an identical sentence.
@@ -157,10 +159,10 @@ expect_red "an existing branch is refused before anything is attempted" src/runt
 expect_red "a failed collision query is a fault, not an empty answer" src/runtime/workspace.ts \
   's/    return \{ ok: false, code: listed\.code, stderr: listed\.stderr \};/    void listed;/'
 
-# The second look dropped, so a branch that appears between the check and the add comes back as the
-# thrown fault reserved for what awcli has no sentence for. It has one — `-b` is the second line of
-# defence that catches it, and the check before the add cannot be the guarantee because a mkdir and a
-# subprocess sit inside that window.
+# The second look dropped, so a branch that appears between the check and the cut comes back as the
+# thrown fault reserved for what awcli has no sentence for. It has one — `git branch` refuses a name
+# that exists, which is the second line of defence that catches it, and the check before the cut
+# cannot be the guarantee because a mkdir and a subprocess sit inside that window.
 expect_red "a branch that appears in the window is refused, not thrown on" src/runtime/workspace.ts \
   's/    const late = await lateCollision\(git, repositoryPath, runName, branch\);/    void lateCollision;\n    const late = undefined;/'
 
@@ -206,7 +208,7 @@ expect_red "an ordinary directory is not sent to git worktree remove" src/runtim
 
 # And the other way round: a working copy git *does* have registered, told to move or delete the
 # directory. That leaves the registration behind, the registration goes on holding this run's branch,
-# and `git branch -D` then fails naming a path that is no longer there — the run name is unusable
+# and the branch delete then fails naming a path that is no longer there — the run name is unusable
 # until the operator finds `git worktree prune` for themselves.
 expect_red "a registered working copy is sent to git worktree remove" src/runtime/workspace.ts \
   's/  const registration = await worktreeRegistration\(git, repositoryPath, target\);/  const registration: WorktreeRegistration = "unregistered";/'
@@ -214,7 +216,7 @@ expect_red "a registered working copy is sent to git worktree remove" src/runtim
 # The branch refusal drops what to do about the working copy still holding the branch, which is the
 # same journey one step further along.
 expect_red "the branch refusal says what to do about the working copy holding it" src/runtime/workspace.ts \
-  's/`If it is finished with, remove the working copy that holds it first with "git worktree remove \$\{shellPath\(target\)\}" \(which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once\), then "git branch -D \$\{branch\}"\.`/`Delete it yourself if it is finished with.`/'
+  's/`If it is finished with, remove the working copy that holds it first with "git worktree remove \$\{shellPath\(target\)\}" \(which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once\), then "git branch -d \$\{branch\}"\.`/`Delete it yourself if it is finished with.`/'
 
 # ── The path awcli checked and the path git uses are the same path ──────────────────────────
 # `mkdir` with `recursive`, which is what anyone writes by habit — and which *follows* a final
@@ -231,7 +233,7 @@ expect_red "the target directory is created without following a symlink" src/run
 # a run name blocked by awcli's own leftover — the self-inflicted window, arrived at through the fix
 # for a different one.
 expect_red "a failed add leaves no directory of awcli's own behind" src/runtime/workspace.ts \
-  's/  await rmdir\(target\)\.catch\(ignoreCleanupFailure\);\n  await git\(\["branch", "-D", branch\], repositoryPath\)/  await git(["branch", "-D", branch], repositoryPath)/'
+  's/  await rmdir\(target\)\.catch\(ignoreCleanupFailure\);\n  \/\/ `NO_HOOKS`/  \/\/ `NO_HOOKS`/'
 
 # A symlink in the layout is followed. `mkdir` with `recursive` follows one at any level, so a
 # repository carrying a committed symlink at `.awcli` puts the working copy — and everything an
@@ -446,6 +448,32 @@ expect_red "a branch no working copy holds is not sent to git worktree remove" s
 expect_red "a branch a registered working copy still holds names the removal" src/runtime/workspace.ts \
   's/    const held = await worktreeRegistration\(git, repositoryPath, target\);/    const held: WorktreeRegistration = "unregistered";/'
 
+# ── A refusal never names a command that discards commits ───────────────────────────────────
+# `-D` restored, which is what every branch remedy said. It force-deletes the branch the same sentence
+# calls the deliverable, and today it is the *only* cleanup path a run has — release is inert and
+# collection is AWCLI-22's — so an operator following awcli's own advice after a run that committed
+# lost the work with no second question. `-d` refuses an unmerged branch and prints git's `-D` hint
+# itself, so insisting stays one paste away. Reproduced both ways on git 2.55.
+expect_red "the branch remedy refuses rather than discards, on the arm that names the removal" src/runtime/workspace.ts \
+  's/clears every stale registration at once\), then "git branch -d \$\{branch\}"\./clears every stale registration at once), then "git branch -D \$\{branch\}"./'
+
+expect_red "the branch remedy refuses rather than discards, on the arm with nothing to remove first" src/runtime/workspace.ts \
+  's/"git branch -d \$\{branch\}" deletes it — git has no working copy registered at/"git branch -D \$\{branch\}" deletes it — git has no working copy registered at/'
+
+expect_red "the occupied remedy refuses rather than discards" src/runtime/workspace.ts \
+  's/and then "git branch -d \$\{branch\}" if the branch is finished with too\./and then "git branch -D \$\{branch\}" if the branch is finished with too./'
+
+# ── A branch another run is provisioning onto right now is not cleanup advice ────────────────
+# The second look dropped, which is how this shipped. Cutting the branch in its own call put the
+# winner's ref immediately after its own `mkdir`, so a loser's collision query routinely finds a branch
+# a live run cut a moment ago — and all three remedies below then read as a settled world: remove the
+# working copy at that path, delete that branch. `held === "registered"` is *true* in that state,
+# because the winner has just registered it. Reaching this site means the target was free when awcli
+# looked, and a winner whose branch exists has already created the directory, so something being there
+# now is the evidence — the same class as EEXIST from `mkdir` on the occupied path.
+expect_red "a branch a run is provisioning onto right now is not sent to git worktree remove" src/runtime/workspace.ts \
+  's/    if \(arrived !== undefined\) \{/    if (false) \{/'
+
 # And the question dropped altogether: `worktreeRegistration` asks git through the raw runner, which
 # throws for a timeout and for an answer larger than awcli reads. Unguarded, that rejection escapes
 # the refusal it was building and an occupied target comes back as a fault.
@@ -558,14 +586,42 @@ expect_red "a sibling whose name starts with the boundary is still outside it" s
 # has just thrown away — and the commits on a branch are, by this module's own docblock, the
 # deliverable. Nothing here may move a ref that is not awcli's.
 expect_red "the branch is claimed, never taken over" src/runtime/workspace.ts \
-  's/  const cut = await run\(git, \["branch", branch, head\], repositoryPath\)/  const cut = await run(git, ["branch", "-f", branch, head], repositoryPath)/'
+  's/\[\.\.\.NO_HOOKS, "branch", branch, head\]/[...NO_HOOKS, "branch", "-f", branch, head]/'
 
-# The branch left behind when the add then fails. git cuts the `-b` branch before it validates the
-# target, which is why the branch is claimed separately here — but a claim that is never undone is the
+# The hooks left on for the *cut*, which is where they arrived: splitting `git worktree add -b` into a
+# `git branch` of its own added a mutating git call and put `NO_HOOKS` on the add's argv only. A ref
+# update runs `reference-transaction` — same shared git dir, same shared `core.hooksPath`, one call
+# earlier than `post-checkout` — so for a commit this was the first thing a provisioning did with the
+# operator's identity, and `describe` told the operator no hook had run. The add's mutation cannot see
+# this: it only ever mutated the add's arm.
+expect_red "provisioning runs no hook for the branch it cuts either" src/runtime/workspace.ts \
+  's/\[\.\.\.NO_HOOKS, "branch", branch, head\]/["branch", branch, head]/'
+
+# And on the tidying after a failed add, which is the third mutating call and the one that runs when
+# the operator is already being handed a fault.
+expect_red "the branch awcli deletes after a failed add runs no hook either" src/runtime/workspace.ts \
+  's/await git\(\[\.\.\.NO_HOOKS, "branch", "-D", branch\], repositoryPath\)/await git(["branch", "-D", branch], repositoryPath)/'
+
+# The cut's own two guards, which arrived with neither a test nor an anchor while the add's identical
+# pair had both. Deleting either left the suite green at 126 of 126 and leaked awcli's own empty
+# directory — which is what the *next* invocation of this run and slot is refused `occupied` over.
+expect_red "a branch cut that git refuses leaves no directory of awcli's own behind" src/runtime/workspace.ts \
+  's/  if \(cut\.code !== 0\) \{\n    await rmdir\(target\)\.catch\(ignoreCleanupFailure\);/  if (cut.code !== 0) \{/'
+
+expect_red "a branch cut the runner threw out of leaves no directory of awcli's own behind" src/runtime/workspace.ts \
+  's/\.catch\(\n    async \(error: unknown\) => \{\n      await rmdir\(target\)\.catch\(ignoreCleanupFailure\);\n      throw error;\n    \},\n  \);/;/'
+
+# And the sentence that carries git's own complaint about the cut, which could be emptied with the
+# suite green: the same class as the messages `workspace-fs-faults.test.ts` exists for.
+expect_red "a branch cut awcli has no sentence for carries what git said" src/runtime/workspace.ts \
+  's/      `awcli could not cut the branch \$\{branch\} for the "\$\{runName\}" run: git branch exited \$\{cut\.code\}\. \$\{gitComplaint\(cut\.stderr\)\}`,/      "awcli could not cut the branch.",/'
+
+# The branch left behind when the add then fails. Cutting it in its own call is what makes a failed
+# add's leftover knowably awcli's — but a claim that is never undone is the
 # same leak by another route: a commitless branch, at the name this run and slot derive, making the
 # run name unusable on every later invocation until the operator deletes it by hand.
 expect_red "a failed add leaves no branch of awcli's own behind" src/runtime/workspace.ts \
-  's/  await git\(\["branch", "-D", branch\], repositoryPath\)\.catch\(\(\) => undefined\);/  void branch;/'
+  's/  await git\(\[\.\.\.NO_HOOKS, "branch", "-D", branch\], repositoryPath\)\.catch\(\(\) => undefined\);/  void branch;/'
 
 # And the tidying skipped on the throw rather than the non-zero exit. `run` throws for a git that has
 # gone missing and for a `cwd` that has; the raw runner throws for the timeout, for `maxBuffer`, and
@@ -584,7 +640,7 @@ expect_red "a different run name is offered only where a different run name help
 
 # And withheld from the occupied refusal, which is where it is cheapest and safest: it touches nothing
 # that is already on disk, on the one branch whose other remedies are `git worktree remove`,
-# `git branch -D` and "move it or delete it yourself".
+# `git branch -d` and "move it or delete it yourself".
 expect_red "an occupied target offers a different run name too" src/runtime/workspace.ts \
   's/ \$\{remedy\} Or run this under a different --name\.`;/ \${remedy}`;/'
 
