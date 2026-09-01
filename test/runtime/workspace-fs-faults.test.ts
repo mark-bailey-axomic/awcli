@@ -19,7 +19,7 @@ import {
 import { acquireWorkspace, resolveWorkspaceChoice } from "../../src/runtime/workspace.js";
 
 /**
- * The failures `workspace.test.ts` cannot stage against a real repository.
+ * The failures the real-git workspace suites cannot stage against a real repository.
  *
  * The companion to it on the `run-lock-fs-faults.test.ts` precedent, and for the same reason: a
  * read-only checkout, a git that stops answering half way through an acquisition, a repository that
@@ -82,7 +82,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return stdout;
 }
 
-/** A repository with one commit — canonicalised, as `workspace.test.ts` explains. */
+/** A repository with one commit — canonicalised, as `workspace-support.ts` explains. */
 async function repository(): Promise<string> {
   const made = await mkdtemp(join(tmpdir(), "awcli-workspace-faults-"));
   repositories.push(made);

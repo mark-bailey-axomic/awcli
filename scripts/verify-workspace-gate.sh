@@ -31,8 +31,13 @@ export MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-30000}"
 # shellcheck source=scripts/lib/mutation-gate.sh
 source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 
+# The workspace suite is seven files rather than one, and that is what makes this gate affordable:
+# vitest parallelises across files and not within one, so a single 1800-line suite meant every
+# mutation below paid 24 seconds serially — a 20-minute gate, against which two otherwise-wanted
+# mutations were already being declined on cost. Named in full rather than by glob so that a new
+# file has to be added here deliberately: a suite this gate does not run is a mutation it cannot see.
 mutation_gate_init \
-  "test/runtime/workspace.test.ts test/runtime/workspace-fs-faults.test.ts test/runtime/run-identity.test.ts test/runtime/git-process.test.ts" \
+  "test/runtime/workspace-scenarios.test.ts test/runtime/workspace-slots.test.ts test/runtime/workspace-occupied.test.ts test/runtime/workspace-branches.test.ts test/runtime/workspace-preflight.test.ts test/runtime/workspace-faults.test.ts test/runtime/workspace-inherit.test.ts test/runtime/workspace-fs-faults.test.ts test/runtime/run-identity.test.ts test/runtime/git-process.test.ts" \
   src/runtime/workspace.ts src/runtime/run-identity.ts src/runtime/git-process.ts \
   src/contract/awcli.d.ts
 

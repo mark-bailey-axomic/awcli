@@ -237,12 +237,17 @@ describe("where a run's files live", () => {
 /**
  * The slot rules and the names they derive, beside the module that owns them.
  *
- * These assertions were written in `workspace.test.ts`, which is where the slot's *consequences*
+ * These assertions were written in the workspace suite, which is where the slot's *consequences*
  * live — a working copy per slot, a branch per slot. The rules themselves are this module's, and
- * every other module in `src/runtime/` pairs one to one with a test file of its own name. Left
- * there, `verify-workspace-gate.sh` mutated `run-identity.ts` and was killed only by the workspace
- * suite: AWCLI-14 reworking that file for reuse would have taken the slot rules' only coverage with
- * it, without a line of `run-identity.ts` changing and with the gate still green.
+ * the reason to move them is coverage rather than tidiness: left there,
+ * `verify-workspace-gate.sh` mutated `run-identity.ts` and was killed only by the workspace suite,
+ * so AWCLI-14 reworking that file for reuse would have taken the slot rules' only coverage with it,
+ * without a line of `run-identity.ts` changing and with the gate still green.
+ *
+ * Not "every module pairs with a test file of its own name", which is what this said: `context.ts`
+ * has no `context.test.ts` (it is covered by `frozen-context.test.ts` and
+ * `test/contract/unbuilt-disclosure.test.ts`), and `process-probe.ts` and `workspace.ts` each have
+ * several. The gate argument stands on its own and does not need the convention.
  */
 describe("the branch and the path a run and slot imply", () => {
   /**
