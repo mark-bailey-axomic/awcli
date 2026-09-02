@@ -134,7 +134,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         failLockRead = undefined;
         throw faulted(failure.code);
       }
-      return real.readFile(file, options);
+      return options === undefined
+        ? real.readFile(file)
+        : real.readFile(file, options);
     },
     unlink: async (target: Parameters<typeof real.unlink>[0]) => {
       if (plantOnAsideUnlink.length > 0 && String(target).includes(".stale.")) {
