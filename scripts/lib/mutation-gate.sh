@@ -403,11 +403,32 @@ mg_mutate() {
 #
 # A few mutations have nothing but a hang to show — removing the acquisition loop's bound, removing
 # the bounded wait a release gets — and those say so at the call site with `expect_red_by_timeout`.
+#
+# Both of vitest's spellings are counted, and the second one is the whole point: a *hook* that runs
+# past its bound reports `Error: Hook timed out in <n>ms.`, not `Test timed out`, while the run
+# summary counts it among the failing tests exactly as an assertion failure would. Measured on this
+# repo's pinned vitest 4.1.11 with `--hookTimeout=300`: a hanging `afterEach` on a passing test gives
+# `× passes, then teardown hangs` and `Tests  1 failed (1)`, and `beforeEach` gives the same shape.
+# So while this counted only `Test timed out`, a red made of nothing but a teardown hang had one
+# failure and zero timeouts, `failures <= timeouts` was false, and the mutation was scored `ok` on
+# the strength of a clock in a hook — the precise red this function exists to refuse, arriving by the
+# one route it could not see. The gate is where that matters most: the workspace suites do their real
+# filesystem work in `afterEach`, and a gate is the slowest context that teardown ever runs in, which
+# is why `mg_run_suite` passes `--hookTimeout` at all. The bound this PR added reduces how often the
+# hang happens; it did nothing for the guard meant to reject it when it does.
+#
+# The two spellings are the whole set, enumerated rather than assumed: `beforeAll` and `afterAll` time
+# out with the same `Hook timed out` wording, and vitest emits no third phrasing for a clock. What
+# those two do differently is where they land — a `beforeAll` or `afterAll` timeout is reported under
+# `Failed Suites` and is *not* in the `Tests ... failed` count, so a log can hold more timeout lines
+# than failures. That direction is deliberately left alone: over-counting can only refuse a red, never
+# accept one, and a refused red stops the gate loudly with the suite tail attached, where the missed
+# hook timeout passed silently.
 mg_suite_only_timed_out() {
   local plain failures timeouts
   plain="$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$1")"
   failures="$(printf '%s' "$plain" | sed -nE 's/^[[:space:]]*Tests[[:space:]]+.*[^0-9]([0-9]+) failed.*/\1/p' | head -1)"
-  timeouts="$(printf '%s' "$plain" | grep -cE 'Test timed out in [0-9]+ms' || true)"
+  timeouts="$(printf '%s' "$plain" | grep -cE '(Test|Hook) timed out in [0-9]+ms' || true)"
   # No failing count in the summary means the suite did not get as far as running tests, which is a
   # different complaint and `mg_suite_reported_failures` makes it. Otherwise the arithmetic answers
   # both questions at once: with no timeouts at all, no positive failure count is <= 0.
@@ -422,7 +443,7 @@ expect_red() {
 
 # expect_red_by_timeout <criterion> <subject-file> <perl-substitution>...
 #
-# For a mutation whose red *is* a hang. See mg_suite_timed_out.
+# For a mutation whose red *is* a hang. See mg_suite_only_timed_out.
 expect_red_by_timeout() {
   mg_expect_red_inner "yes" "$@"
 }
