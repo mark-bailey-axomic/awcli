@@ -51,7 +51,7 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 156 `expect_red` below plus that final run come to ~29 minutes by that
+# — so ~11.5s each. The 157 `expect_red` below plus that final run come to ~29 minutes by that
 # product, and the whole chain has since been timed at **40m33s end-to-end** — measured by review
 # run 8, not here. The per-mutation figure reproduces; the product is the thing that is wrong, and it
 # is ~45% low because parallel efficiency decays over the run — from 223% early to 139% late — as the
@@ -1072,13 +1072,28 @@ expect_red "a cut that never reached git names no branch it might have left" src
 expect_red "a cut that could not start git names no branch it might have left" src/runtime/workspace.ts \
   's/  if \(outcome\.kind === "not-started"\) \{\n    throw new GitDidNotRunError\(/  if (outcome.kind === "not-started") \{\n    throw new Error(/'
 
-# And the same claim on the add's own handler, which is where the sentence is worse hidden: the two
-# tests that stage a vanishing git at the add never see this clause at all, because the tidying
+# And the same claim on the add's own handler, which is where the sentence is worse hidden: the tests
+# that stage a vanishing git at the add — on the `unavailable`, `not-started` and `no-such-directory`
+# shapes — never see this clause at all, because the tidying
 # succeeds against real git and the residual is empty, so the raw error is rethrown. It appears only
 # when the tidying fails too — a machine with no git — which is precisely the shape where no add
 # process ran and no checkout stopped part-way. One arm, collapsed into the confident one.
 expect_red "an add that never reached git does not claim a checkout stopped part-way" src/runtime/workspace.ts \
   's/        \? "and git never started the checkout"/        ? "and git stopped part-way through the checkout"/'
+
+# And the same criterion from the side that mutation cannot reach: the add's handler telling the
+# no-git shapes apart by the *prose* of the message instead of by the class, which is the wrong
+# version `GitDidNotRunError` exists to replace and which `run`'s own docblock says shipped once
+# already. `unavailable` says "git has gone missing" and `no-such-directory` says "no longer there",
+# so a prose test on those two fragments reads correct on both — and `not-started` says neither:
+# "git is still on the machine". It was split out of `unavailable` with a row in the cut's table and
+# none in the add's, so this substitution left all ten suites green: 165 passed. With the third row
+# it fails exactly one test — `claims neither a checkout nor a refused delete when the add throws
+# 'not-started'` — on `toContain("and git never started the checkout")`. Anchored on the whole
+# statement with its leading whitespace: `error instanceof GitDidNotRunError` appears twice in the
+# file and is a bare expression the comments around both sites quote.
+expect_red "an add that never reached git tells the shapes apart by class, not by prose" src/runtime/workspace.ts \
+  's/    const how =\n      error instanceof GitDidNotRunError\n        \? "and git never started the checkout"\n        : "and git stopped part-way through the checkout";/    const how =\n      String(error).includes("gone missing") || String(error).includes("no longer there")\n        \? "and git never started the checkout"\n        : "and git stopped part-way through the checkout";/'
 
 # And the sentence that carries git's own complaint about the cut, which could be emptied with the
 # suite green: the same class as the messages `workspace-fs-faults.test.ts` exists for.
