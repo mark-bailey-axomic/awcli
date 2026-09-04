@@ -37,6 +37,24 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * an audit that lists three discrepancies while a fourth stands is worse than one that lists
  * none.
  *
+ * git is the fifth, and it is the one this table got wrong rather than merely disagreed about — twice
+ * over, which is why the id here has moved twice. It named AWCLI-13, which provisions the working
+ * copy and hands back a handle carrying dir, branch, head and dirty and constructs no context around
+ * one: the id pointed at a unit that delivers the handle and no context member, so the member was
+ * unbuilt whatever became of the ticket. That is a fact about the code and not about a lifecycle —
+ * AWCLI-13's PR is in review and has not merged, which is what the manifest's in_progress status
+ * says. It then named AWCLI-11, which owns the iteration loop and no part of `ctx.git` — the TDD
+ * assigns the member to WB-8, and AWCLI-11 is WB-7. It names AWCLI-14 now, the other half of WB-8,
+ * and that ticket has been widened to own `ctx.git` end to end: `log`, `diff` and `commit` were owned
+ * by no ticket at all — and, checked rather than assumed, consumed by no acceptance criterion either,
+ * which argues for giving one ticket the whole member more strongly than a consumer would. What
+ * AWCLI-19, AWCLI-23 and AWCLI-25 carry criteria against is `ctx.git.dir`, a member AWCLI-13 does not
+ * build either. The widening is
+ * recorded where this project records such gaps — the 2026-08-28 `ctx.git` row of the
+ * `## Amendments` section in `.atelier/design/agentic-workflow-cli-rules.md`, mirroring what the
+ * row above it did for `ctx.sandbox` — rather than living here as a comment, which is what it was
+ * and which no ticket reads.
+ *
  * The `satisfies` clause makes this exhaustive in both directions, and the second one is the
  * one that surprises people. A member added to the declaration and to CONTEXT_SURFACE fails to
  * compile here until someone says who builds it: Exclude<ContextMember, "version"> gains the
@@ -63,7 +81,10 @@ import { NotYetImplementedError } from "./not-implemented.js";
  * any of those three errors go away is how the exhaustiveness gets lost.
  *
  * What it does not check is that a value names anything: every key carries a string, so a
- * placeholder like "unassigned" compiles. not-implemented.test.ts is what rejects one. What it
+ * placeholder like "unassigned" compiles. not-implemented.test.ts is what rejects one, and
+ * check 9 of scripts/verify-spec-invariants.sh is what rejects an id that names a ticket which
+ * exists but sits outside the work-breakdown unit the TDD assigns the member to — the shape the
+ * AWCLI-11 value above had, and the reason that value reached a commit unchallenged. What it
  * also does not check is that the declaration admits to any of this: every key here is a member
  * a workflow author will find declared and cannot call, and
  * test/contract/unbuilt-disclosure.test.ts is what holds this table and the declaration's own
@@ -75,7 +96,7 @@ const DELIVERED_BY = {
   state: "AWCLI-09",
   args: "AWCLI-20",
   project: "AWCLI-06",
-  git: "AWCLI-13",
+  git: "AWCLI-14",
   exec: "AWCLI-25",
   fs: "AWCLI-23",
   log: "AWCLI-21",

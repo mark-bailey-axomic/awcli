@@ -109,18 +109,31 @@ expect_red "the derived run name is deterministic" src/runtime/run-identity.ts \
   's/  if \(slug\.length === 0\) \{/  slug = (slug + "-" + process.hrtime.bigint()).slice(0, 60);\n  if (slug.length === 0) {/'
 
 # ── A run name may not collide with the layout's own paths, or with git's ref rules ─────────
+# The four mutations below — reserved, `.lock`, case, and the unfiltered echo — are anchored inside
+# `firstProblem` and its message table, since the run name's ladder and a slot's became one ladder
+# with two message tables: AWCLI-13 needs the same rules for a slot, and a second hand-written copy
+# would have been a weaker copy. Two consequences, and the second is the one worth writing down.
+#
+# Each still proves the run name's criterion: run-identity.test.ts asserts the problem discriminant
+# for each of these rungs against a run name, so breaking the rung turns it red on that evidence
+# alone. What none of them proves is anything about a *slot* — that file now asserts the slot half
+# too, beside the module that owns both, so a red here says one of the two failed and not which.
+# The mirror of the note at the same section of verify-workspace-gate.sh, which cannot prove the
+# run-name half. Neither gate is short a check; that one file is where both halves are asserted.
+# What would be wrong is reading either set of mutations as covering both kinds of name because the
+# code they break is shared.
 expect_red "a reserved run name is refused" src/runtime/run-identity.ts \
-  's/  if \(RESERVED_RUN_NAMES\.includes\(name\)\) \{/  if (false) {/'
+  's/  if \(reserved\.includes\(name\)\) return "reserved";/  if (false) return "reserved";/'
 
 # `.lock` passes the edge-character rule because `k` is a letter, so it needs its own check — git
 # refuses the branch at creation time, after the run has taken its lock and started work.
 expect_red "a name git will refuse as a branch is refused here" src/runtime/run-identity.ts \
-  's/  if \(name\.endsWith\("\.lock"\)\) \{/  if (false) {/'
+  's/  if \(name\.endsWith\("\.lock"\)\) return "git-reserved-suffix";/  if (false) return "git-reserved-suffix";/'
 
 # A directory on a case-insensitive filesystem and a branch on a case-sensitive one must agree, or
 # `Triage` and `triage` are one lock file and two branches.
 expect_red "a run name that only differs by case is refused" src/runtime/run-identity.ts \
-  's/  if \(name !== name\.toLowerCase\(\)\) \{/  if (false) {/'
+  's/  if \(name !== name\.toLowerCase\(\)\) return "not-lowercase";/  if (false) return "not-lowercase";/'
 
 # ── Defects in the lock's own reasoning ─────────────────────────────────────────────────────
 #
@@ -261,7 +274,23 @@ expect_red "a lock file's bytes are not printed to the terminal unfiltered" src/
 # characters make two different values render identically. Each was added after the ranges already
 # there turned out not to cover the next thing tried, which is the argument for the mutation.
 expect_red "the sanitizer covers more than the control characters" src/runtime/printable.ts \
-  's/\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff//'
+  's/\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\u3164\\ufe00-\\ufe0e\\ufeff\\uffa0//'
+
+# And the classes that render as blank or as nothing while belonging to none of the groups above:
+# the soft hyphen and the combining grapheme joiner, the Hangul and Khmer fillers, and the variation
+# selectors. Measured one class at a time against the previous pattern, which let every one of them
+# through — and all of them are legal in a filename and legal in a git refname, so both channels this
+# module exists for can carry them.
+expect_red "the sanitizer covers the characters that render as blank, not only as reversed" src/runtime/printable.ts \
+  's/\\u00ad\\u034f//'
+
+# The tags block, which is the one worth its own mutation. Its 128 code points render as nothing at
+# all and U+E0020-U+E007F are a shadow ASCII alphabet, so an arbitrary sentence rides inside a value
+# that displays as `main`. It was out of reach of the earlier pattern twice over — by range, and by
+# shape, because it is non-BMP and the pattern had no `u` flag. Dropping the flag is the faithful
+# regression: the range then cannot be written as a range at all.
+expect_red "the sanitizer reaches the invisible characters above the BMP" src/runtime/printable.ts \
+  's/\\u\{e0000\}-\\u\{e007f\}\]\/gu;/]\/g;/'
 
 # A refusal throws while formatting itself, because `acquiredAt` came off disk.
 expect_red "a lock's unreadable acquisition time is reported, not thrown on" src/runtime/run-lock.ts \
@@ -376,7 +405,7 @@ expect_red "a leftover is named without what a terminal would act on" src/runtim
 # The name a run was refused for, echoed back with its control characters — in the branch that
 # refuses a name *for* holding one.
 expect_red "a refused run name is not echoed back unfiltered" src/runtime/run-identity.ts \
-  's/      `"\$\{printable\(name\)\}" is not usable as a run name/      `"\${name}" is not usable as a run name/'
+  's/        `"\$\{printable\(name\)\}" is not usable as a run name/        `"\${name}" is not usable as a run name/'
 
 # The derived-name refusal forwarding the remedy from the validator as well as its reason, so the
 # operator is told to choose another name for a name they never chose.

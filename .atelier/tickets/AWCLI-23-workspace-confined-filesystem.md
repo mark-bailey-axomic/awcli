@@ -105,5 +105,5 @@ construction. The two must not be allowed to drift.
 
 ## Dependencies
 
-**Blocked by:** AWCLI-01, AWCLI-13, AWCLI-25
+**Blocked by:** AWCLI-01, AWCLI-13, AWCLI-14, AWCLI-25
 **Blocks:** None — no other ticket names `ctx.fs` in its requirements.

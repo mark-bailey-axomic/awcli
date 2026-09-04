@@ -31,6 +31,10 @@ MG_WORKDIR=""
 MG_EXIT_HOOKS=()
 MG_SUITE_LOG=""
 MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-5000}"
+# The hook bound is derived rather than defaulted here, in `mg_run_suite`, because a gate may set
+# `MG_TEST_TIMEOUT_MS` after sourcing this file and because it must never fall below what vitest
+# would have used unprompted. Set this to override it. See `mg_run_suite`.
+MG_HOOK_TIMEOUT_MS="${MG_HOOK_TIMEOUT_MS:-}"
 
 # Where a subject's pristine copy lives, as a path mirroring the subject's own.
 #
@@ -247,8 +251,31 @@ mg_run_suite() {
     echo "      this gate runs instead of vitest." >&2
     exit 1
   fi
+  # `--hookTimeout` as well as `--testTimeout`, which this passed only the latter of. A gate's suites
+  # do their real filesystem work in *hooks* — the workspace suites' `afterEach` removes a git
+  # repository plus a checked-out worktree per test, and their `afterAll` a scratch `HOME` — and a
+  # gate is the slowest context that teardown ever runs in: ten vitest workers contending, once per
+  # mutation. With only the test bound raised to 30s the hook stayed on vitest's 10s default, a third
+  # of it, so the first thing to time out under load would have been the cleanup — a red that fails
+  # the mutation for a reason that says nothing about the criterion, which is exactly what
+  # `MG_TEST_TIMEOUT_MS` exists to prevent. vitest.config.ts sets both for the same reason, so a
+  # timeout means the same thing wherever the suite is run from.
+  #
+  # Never *below* what vitest would have used unprompted, which is the trap in "set them to the same
+  # value": two gates here lower the test bound deliberately — 1500ms for the disposal gate, so an
+  # unbounded-wait mutation is caught quickly rather than sitting on the default — and equalising
+  # would have cut their hook bound from 10s to 1.5s, a tightening no finding asked for and a flake
+  # nobody would attribute to this line. So the hook bound is the larger of the two, computed here
+  # rather than at source time because a gate may set `MG_TEST_TIMEOUT_MS` after sourcing this file
+  # (the disposal gate does).
+  local hook_timeout="${MG_HOOK_TIMEOUT_MS:-}"
+  if [[ -z "$hook_timeout" ]]; then
+    hook_timeout=$((MG_TEST_TIMEOUT_MS > 10000 ? MG_TEST_TIMEOUT_MS : 10000))
+  fi
   # shellcheck disable=SC2086 # MG_SUITE is deliberately word-split: it is a list of spec paths.
-  "$vitest" run $MG_SUITE --testTimeout="$MG_TEST_TIMEOUT_MS" >"$MG_SUITE_LOG" 2>&1
+  "$vitest" run $MG_SUITE \
+    --testTimeout="$MG_TEST_TIMEOUT_MS" \
+    --hookTimeout="$hook_timeout" >"$MG_SUITE_LOG" 2>&1
 }
 
 # Did the suite actually run and report failing tests, or did it fail to run at all?
