@@ -590,9 +590,13 @@ export async function acquireWorkspace(
       // answered "worktree" to the consent check and "liveTree" to the dispatch, which put an agent
       // in the operator's checkout without a consent token being forged at all. The token's identity
       // check is sound; it was simply not the value the dispatch consulted. One read, one decision.
-      // One destructure, which reads each property exactly once. A narrowing `&&` cannot do it:
-      // `choice.workspace === "liveTree" && choice.consent !== OPERATOR_CONSENT` is two reads by
-      // construction, and the union makes `consent` unreachable without narrowing — so the read is
+      // One destructure, which reads each property exactly once. A narrowing `&&` cannot do it: it
+      // has to test the axis field before the union will let it reach the consent field, so it takes
+      // one read of each per decision and there are two decisions. (Spelled in prose rather than
+      // quoted as code on purpose — the version of this comment that quoted the old expression
+      // verbatim captured `verify-workspace-gate.sh`'s identity mutation, which then landed on the
+      // comment instead of the check and left the gate reporting a criterion it was not testing.)
+      // The union makes `consent` unreachable without narrowing — so the read is
       // taken through a widened view of the same object, which is the only shape that reads both
       // fields once. Holding a reference instead (`const c = choice`) would not help: a getter
       // re-evaluates on every property access, and the reference is the same object.

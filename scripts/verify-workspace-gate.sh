@@ -125,8 +125,16 @@ expect_red "the live checkout requires the operator's consent" src/runtime/works
 # Consent checked by truthiness rather than by identity — which is what a `boolean` or a
 # structurally-typed marker degrades to. `{}` cast to the consent type is truthy, so a workflow or a
 # cast can forge one, and the type system reports nothing wrong.
+#
+# Re-cut in run 7, and the reason is worth keeping: this matched the bare expression
+# `choice.consent !== OPERATOR_CONSENT`, and when the consent read was made single the live code
+# stopped spelling it that way while a *comment* three lines up quoted the old form verbatim. The
+# substitution still matched exactly once, so the anchor sweep saw nothing wrong — it landed on the
+# comment, the suite stayed green, and the gate correctly reported the criterion as unchecked. Now
+# anchored on the whole `if` line, which no prose in the file repeats. A mutation whose pattern is a
+# substring of something a comment can say is a mutation that can go quietly inert.
 expect_red "consent is checked by identity, not by shape" src/runtime/workspace.ts \
-  's/choice\.consent !== OPERATOR_CONSENT/!choice.consent/'
+  's/      if \(wantsLiveTree && consent !== OPERATOR_CONSENT\) \{/      if (wantsLiveTree && !consent) {/'
 
 # The flag's name is gone from the sentence the operator reads. Not the *statement* of the choice —
 # the substituted text still says the checkout was asked for, which is what the earlier version of
