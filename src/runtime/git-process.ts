@@ -96,6 +96,18 @@ export type GitOutcome =
     }
   /** git could not be started: not installed, or not on the PATH awcli was given. */
   | { readonly kind: "unavailable"; readonly reason: string }
+  /**
+   * git is *there* and could not be started for this call. The errno says why.
+   *
+   * Split out of `unavailable`, which every non-ENOENT spawn error used to fall into: a repository
+   * directory at mode 000 fails `EACCES`, and the operator was told to install git and put it on the
+   * PATH — advice that cannot work, about a machine where git is present and working. `EAGAIN` and
+   * `EMFILE` from a loaded machine arrived the same way. Widening the `isDirectory` probe is not the
+   * fix and cannot be: `stat` on a mode-000 directory succeeds, so the probe cannot tell this from a
+   * directory that is simply there. The errno is the only thing that can, so it is carried out rather
+   * than folded into a sentence.
+   */
+  | { readonly kind: "not-started"; readonly reason: string; readonly code: string }
   /** The directory git was to run in does not exist. Nothing was asked of git at all. */
   | { readonly kind: "no-such-directory"; readonly path: string };
 
@@ -227,6 +239,24 @@ function gitEnvironment(): NodeJS.ProcessEnv {
       delete environment[name];
     }
   }
+  // git's diagnostics are localised and this module *parses* them — `gitComplaint` picks the line
+  // beginning `fatal:` or `error:`, and those prefixes are translated. Under `LC_ALL=de_DE.UTF-8`
+  // git says `schwerwiegend:`, so the complaint quoted to the operator became the last line of
+  // whatever git printed instead of the line that says what went wrong. The porcelain formats awcli
+  // parses are stable by design; the prose beside them is not, and it is read too.
+  //
+  // Pinned on the child rather than asserted in the suite, because it is the *product* that reads
+  // these strings — a suite pinned alone would go green on a machine where awcli was wrong. It also
+  // fixes the gate's worst failure mode: with the suite already red for a locale, all 146
+  // `expect_red` steps report `ok` for the wrong reason and the run only fails ~28 minutes later
+  // with "it was already broken".
+  //
+  // `LC_ALL` because it wins over `LC_MESSAGES` and `LANG` both, and `LANGUAGE` because GNU gettext
+  // consults it ahead of either — it is ignored while the locale is `C`, and cleared anyway so that
+  // this does not rest on that. The operator still reads git's own words; they are just the
+  // untranslated ones.
+  environment.LC_ALL = "C";
+  environment.LANGUAGE = "";
   return environment;
 }
 
@@ -318,12 +348,16 @@ export function createGitRunner(binary: string, timeoutMs = GIT_TIMEOUT_MS): Git
           { cause: error },
         );
       }
-      // EACCES on the binary, EAGAIN from fork on a loaded machine: git could not be started, and
-      // that is not this repository's fault. Reported as unavailable so a refusal names the machine.
+      // Every other spawn errno. `ENOENT` is the missing binary and was answered above; what is
+      // left is a git that exists and could not be started for this call — `EACCES` on a repository
+      // directory the operator cannot enter, `EAGAIN` or `EMFILE` on a machine out of processes or
+      // descriptors. All of these used to return `unavailable`, which `workspace.ts` renders as
+      // "install git, or put it on the PATH": true for exactly one errno and misleading for the rest.
       if (typeof failure.code === "string") {
         return {
-          kind: "unavailable",
-          reason: `${printable(binary)} could not be run (${printable(failure.code)})`,
+          kind: "not-started",
+          code: failure.code,
+          reason: `${printable(binary)} could not be started in ${printable(cwd, CWD_LIMIT)} (${printable(failure.code)})`,
         };
       }
       throw error;

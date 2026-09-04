@@ -1,9 +1,17 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+// The pins, imported for their side effect and for no export.
+//
+// This was the one suite running real git that never took them, which is precisely the defect the
+// module was extracted to fix: it asserts on git's own diagnostics, so an operator's
+// `core.excludesFile`, a global `[core] fsmonitor`, or a locale set in their shell reached the git
+// under test. `workspace-support.ts` imports it too, so every other real-git suite got the pins by
+// importing the fixtures; this file builds its own directories and imported neither.
+import "./git-hermetic.js";
 import {
   GIT_COMPLAINT_LIMIT,
   GIT_MAX_BUFFER,
@@ -216,6 +224,73 @@ describe("running git", () => {
       expect(message).not.toContain("\u001b");
       expect(message).not.toContain("\u202e");
       expect(message).toContain("?");
+    }
+  });
+
+  /**
+   * A directory git cannot be started in is not a machine without git.
+   *
+   * `EACCES` from `spawn` used to fall through the generic string-errno branch to `unavailable`, and
+   * `workspace.ts` renders that as "Install git, or put it on the PATH awcli is run with" — advice
+   * that cannot work, given to an operator whose git is present and working, about a directory whose
+   * permissions are the actual problem. `EAGAIN` and `EMFILE` from a loaded machine arrived the same
+   * way. Widening `isDirectory` cannot fix it: `stat` on a mode-000 directory succeeds, so the probe
+   * cannot tell this from an ordinary directory. Only the errno can, so `not-started` carries it.
+   *
+   * Skipped for root, which is not subject to the mode bits — a container running as uid 0 would see
+   * git start successfully and the assertion would be about nothing.
+   */
+  it("tells a directory it cannot start git in from a machine without git", async () => {
+    if (process.getuid?.() === 0) return;
+    const parent = await directory();
+    const forbidden = join(parent, "no-entry");
+    await mkdir(forbidden);
+    await chmod(forbidden, 0o000);
+    try {
+      const outcome = await systemGitRunner(["status", "--porcelain"], forbidden);
+
+      expect(outcome.kind).toBe("not-started");
+      if (outcome.kind !== "not-started") return;
+      expect(outcome.code).toBe("EACCES");
+      // And the reason names the directory, which is the thing the operator has to fix.
+      expect(outcome.reason).toContain("no-entry");
+      // The old answer, which sent them to install a git they already have.
+      expect(outcome.reason).not.toContain("not installed");
+    } finally {
+      await chmod(forbidden, 0o755);
+    }
+  });
+
+  /**
+   * The child's locale, pinned, because this module reads git's prose.
+   *
+   * `gitComplaint` picks the line beginning `fatal:` or `error:` and those prefixes are translated —
+   * under `LC_ALL=de_DE.UTF-8` git says `schwerwiegend:`, so the complaint quoted to the operator
+   * silently became the last line of whatever git printed instead of the line saying what went wrong.
+   * Around fifteen assertions in this repository match English git besides.
+   *
+   * Asserted on the product rather than on a suite-level pin, which is the point: a suite that pinned
+   * its own locale would stay green on a machine where awcli was wrong. The parent is given a
+   * conflicting locale here so that the assertion is about the override and not about the machine
+   * happening to be C already.
+   */
+  it("gives git a fixed locale, whatever the operator's shell had", async () => {
+    const cwd = await directory();
+    const previous = { LC_ALL: process.env.LC_ALL, LANGUAGE: process.env.LANGUAGE };
+    process.env.LC_ALL = "de_DE.UTF-8";
+    process.env.LANGUAGE = "de";
+    try {
+      const shown = createGitRunner("sh");
+      const outcome = await shown(["-c", 'printf %s.%s. "$LC_ALL" "$LANGUAGE"'], cwd);
+
+      expect(outcome.kind).toBe("ran");
+      if (outcome.kind !== "ran") return;
+      expect(outcome.stdout).toBe("C..");
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 

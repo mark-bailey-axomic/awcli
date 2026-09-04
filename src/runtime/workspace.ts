@@ -112,7 +112,10 @@ import {
  *     worktree add -q <t> -b <b>` wrote `RAN-smudge`, and
  *     `git -c core.hooksPath=/dev/null/... -c status.showUntrackedFiles=normal status --porcelain`
  *     wrote `RAN-clean` — run both from the repository and from inside the worktree, on git 2.55.
- *     `core.fsmonitor` ran in the same status invocation and is named here for completeness.
+ *     `core.fsmonitor` ran in the same status invocation, and that route is now *closed*: `NO_HOOKS`
+ *     pins `core.fsmonitor=` alongside the hooks path. It is the one of the three that closes for
+ *     free — an fsmonitor is a performance cache and git falls back to scanning — so it is not part
+ *     of the residual below, which is about the filters and them only.
  *
  * `NO_HOOKS` does not touch any of them: `core.hooksPath` governs hooks and says nothing about
  * filters, verified by the same run. Both are left open deliberately, and the reasoning is recorded
@@ -321,6 +324,25 @@ export type WorkspaceRefusalKind =
   | "live-checkout-not-consented"
   /** git could not be run at all — not installed, or not on the PATH awcli was given. */
   | "git-unavailable"
+  /**
+   * git is on the machine and could not be started for this call — the errno says why.
+   *
+   * Its own kind rather than `git-unavailable`, because the remedy is disjoint: `git-unavailable`
+   * says "install git, or put it on the PATH", and for an `EACCES` on a repository directory the
+   * operator cannot enter, that advice cannot work on a machine where git is already working.
+   */
+  | "git-not-started"
+  /**
+   * A second concurrent working copy was asked for on the live checkout, which has only one.
+   *
+   * BR-013 says concurrently-running agents each get their own working copy on their own branch, and
+   * records "Exceptions. None." The worktree axis satisfies it by construction — path and branch are
+   * both pure functions of run and slot — but the live checkout has one directory and one branch
+   * whatever the slot is called, so nothing but a refusal can hold the rule there. Without it,
+   * `--live-checkout` plus two slots handed two agents the same tree and the same branch, silently,
+   * which is the exact sharing BR-013 exists to forbid.
+   */
+  | "live-checkout-already-held"
   /** The path awcli was pointed at is not a git repository. */
   | "not-a-repository"
   /** The repository has no commit, so there is no branch to cut a working copy from. */
@@ -521,6 +543,10 @@ export async function acquireWorkspace(
   const slot: SlotName =
     validated === undefined || !validated.ok ? DEFAULT_SLOT : validated.slot;
 
+  // The live checkout this acquisition claimed, if it claimed one — read by `release` and by nothing
+  // else. `undefined` for every worktree acquisition, which claims nothing here.
+  let held: string | undefined;
+
   // The refusal travels on the error and nowhere else. `open` either returns a handle or throws,
   // there is no third channel through the stack, and `DisposalStack.acquire` rethrows what `open`
   // threw unchanged — so the catch below reads the refusal off the error it caught. A copy held in a
@@ -555,21 +581,62 @@ export async function acquireWorkspace(
       // without the operator's own consent is refused outright: quietly giving a worktree would
       // answer a request with something else, and quietly proceeding would put an agent in their
       // checkout on the strength of a value a workflow could have written.
-      if (choice.workspace === "liveTree" && choice.consent !== OPERATOR_CONSENT) {
+      // Read once, before any `await`, and everything below uses the locals.
+      //
+      // `choice` is a caller-supplied object and these two fields were read twice each, either side
+      // of `sharedPreflight`'s awaits: the check below, then the dispatch after it. A `choice` whose
+      // `workspace` is a getter — or any object mutated by a concurrent turn between the two reads —
+      // answered "worktree" to the consent check and "liveTree" to the dispatch, which put an agent
+      // in the operator's checkout without a consent token being forged at all. The token's identity
+      // check is sound; it was simply not the value the dispatch consulted. One read, one decision.
+      // One destructure, which reads each property exactly once. A narrowing `&&` cannot do it:
+      // `choice.workspace === "liveTree" && choice.consent !== OPERATOR_CONSENT` is two reads by
+      // construction, and the union makes `consent` unreachable without narrowing — so the read is
+      // taken through a widened view of the same object, which is the only shape that reads both
+      // fields once. Holding a reference instead (`const c = choice`) would not help: a getter
+      // re-evaluates on every property access, and the reference is the same object.
+      const { workspace, consent } = choice as {
+        readonly workspace: WorkspaceChoice["workspace"];
+        readonly consent?: LiveCheckoutConsent | undefined;
+      };
+      const wantsLiveTree = workspace === "liveTree";
+      if (wantsLiveTree && consent !== OPERATOR_CONSENT) {
         refuse(
           "live-checkout-not-consented",
           `awcli will not work in your checkout at ${printable(repositoryPath, PATH_LIMIT)} for the "${runName}" run: working there is the operator's decision and this run has no ${LIVE_CHECKOUT_FLAG} from one. Nothing was provisioned, and awcli has not silently used a worktree instead — run it again with ${LIVE_CHECKOUT_FLAG} to work in your checkout, or without it to have awcli provision a worktree.`,
         );
       }
       const { root, head } = await sharedPreflight(git, repositoryPath, refuse);
-      return choice.workspace === "liveTree"
-        ? await openLiveTree(git, root, slot, refuse)
-        : await openWorktree(git, root, runName, slot, head, refuse);
+      if (!wantsLiveTree) {
+        return await openWorktree(git, root, runName, slot, head, refuse);
+      }
+      // BR-013, which the live checkout cannot satisfy by construction the way the worktree axis
+      // does. Claimed after the preflight because `root` is what the key is built from, and before
+      // `openLiveTree` so that a refused second slot reads no branch and touches nothing.
+      const key = `${root}\u0000${runName}`;
+      if (liveCheckoutsHeld.has(key)) {
+        refuse(
+          "live-checkout-already-held",
+          `awcli will not give the "${slot}" slot your checkout at ${printable(root, PATH_LIMIT)} for the "${runName}" run: this run already has it, and a checkout is one working copy on one branch however many slots ask for it. Two agents in there would overwrite each other's work with no record of which result is which, so awcli refuses rather than sharing it. Nothing was provisioned and your checkout is untouched. Run the agents that need their own working copy without ${LIVE_CHECKOUT_FLAG} — awcli provisions each a worktree of its own — or run them one after another.`,
+        );
+      }
+      liveCheckoutsHeld.add(key);
+      held = key;
+      return await openLiveTree(git, root, slot, refuse);
     },
-    // Nothing. A working copy is preserved, so there is nothing to undo — and for a live checkout
-    // this is the whole point: releasing it must not touch the operator's tree in any way at all.
-    // The registration exists for the report, not for an effect. See the docblock above.
-    release: () => {},
+    // Nothing *on disk*. A working copy is preserved, so there is nothing to undo — and for a live
+    // checkout this is the whole point: releasing it must not touch the operator's tree in any way at
+    // all. The registration exists for the report, not for an effect. See the docblock above.
+    //
+    // The one thing it does release is awcli's own in-memory claim on the live checkout, which is
+    // not the tree and not on disk: holding it past release would make BR-013's rule about
+    // *concurrent* agents into a rule about the whole life of a process.
+    release: () => {
+      if (held !== undefined) {
+        liveCheckoutsHeld.delete(held);
+        held = undefined;
+      }
+    },
   };
 
   try {
@@ -691,6 +758,19 @@ export const NO_HOOKS_PATH = "/dev/null/awcli-runs-no-hooks";
  * reach, so this sentence does not need editing when a third mutating call is added; the rule below
  * is what has to be applied to it.
  *
+ * `core.fsmonitor=` is the second half, and it is not a hook path: `core.hooksPath` does not govern
+ * it. Measured on git 2.55 with `core.hooksPath` pinned to exactly the value above, a
+ * `core.fsmonitor` pointing at a marker script ran *twice* during
+ * `-c status.showUntrackedFiles=normal status --porcelain` and twice again during `worktree add`; set
+ * to the empty string on the same argv it ran neither time. The config lands in the shared
+ * `.git/config`, which an agent reaches from inside any slot with a plain `git config
+ * core.fsmonitor '<cmd>'` — so without this, one command from one slot bought host execution under
+ * the operator's identity on every later `dirty()` and every later provisioning, of any run. That is
+ * the direction BR-015 says must never happen: a command planted *inside* the boundary, executed
+ * outside it, after the boundary is built. Unlike the content filters below it, closing this costs
+ * nothing — an fsmonitor is a performance cache, and git falls back to scanning the working tree —
+ * which is why it is closed here and they are deferred to AWCLI-19.
+ *
  * Every git invocation that *can run a hook* takes it. That is the rule to apply when a call is
  * added here, and it is deliberately wider than the two narrower rules that stood here before, each
  * of which excused a real call. "The add takes it" was overtaken by the split of `git worktree add
@@ -700,7 +780,26 @@ export const NO_HOOKS_PATH = "/dev/null/awcli-runs-no-hooks";
  * repeatedly, for the whole life of the run. The module docblock records both misses; scoping the
  * rule to what can run a hook is what makes it hold for the call nobody has thought of yet.
  */
-const NO_HOOKS: readonly string[] = ["-c", `core.hooksPath=${NO_HOOKS_PATH}`];
+const NO_HOOKS: readonly string[] = [
+  "-c",
+  `core.hooksPath=${NO_HOOKS_PATH}`,
+  "-c",
+  "core.fsmonitor=",
+];
+
+/**
+ * The live checkouts held right now, keyed by repository root and run.
+ *
+ * Module scope because that is the scope of the thing it protects: `ctx.sandbox` hands a workflow
+ * several slots inside one run in one process, so two `sandbox()` calls under `--live-checkout` are
+ * two acquisitions in *this* process and a set here sees both. It is not a lock and does not pretend
+ * to be one — a second awcli process on the same checkout is AWCLI-07's run lock, not this.
+ *
+ * Keyed on the root git reported rather than on the path the caller passed, so two spellings of one
+ * checkout are one entry. Released on `release`, which keeps the rule about *concurrent* agents and
+ * lets a run that has finished with the checkout take it again.
+ */
+const liveCheckoutsHeld = new Set<string>();
 
 /** Thrown out of the acquisition so an operator-fixable condition becomes a refusal, not a throw. */
 class WorkspaceRefusedError extends Error {
@@ -735,6 +834,15 @@ async function sharedPreflight(
   refuse: Refuse,
 ): Promise<{ readonly root: string; readonly head: string }> {
   const inside = await git(["rev-parse", "--git-dir"], repositoryPath);
+  if (inside.kind === "not-started") {
+    refuse(
+      "git-not-started",
+      // Named without a remedy of awcli's own beyond the errno, because the errno is the remedy:
+      // EACCES is a directory the operator cannot enter, EAGAIN and EMFILE a machine out of
+      // processes or descriptors, and awcli cannot tell which of those the operator can fix.
+      `awcli cannot provision a working copy: ${inside.reason}. git is on this machine — it could not be started for this call, and the code in brackets is the reason the operating system gave. A permissions error names a directory awcli cannot enter; EAGAIN or EMFILE names a machine out of processes or file descriptors.`,
+    );
+  }
   if (inside.kind === "unavailable") {
     refuse(
       "git-unavailable",
@@ -1969,7 +2077,12 @@ async function collisionMessage(
     // the target when awcli looked; a winner whose branch exists has already created that directory,
     // because `mkdir` precedes the cut. So something being there *now* is another writer working right
     // now — the same class of evidence EEXIST from `mkdir` is on the occupied path, and unlike the
-    // three answers below it is not about a settled world. Only where awcli has not itself claimed
+    // *settled* answers below it is not about a settled world. Not "the three answers below": there
+    // are five, and `initializing` is itself an unsettled one, which is the whole correction
+    // `occupiedRefusal` records at the top of its own arm list — the sentence that called git's
+    // answer settled was "false, and false in git's favour", and it is what made the registered arm
+    // dangerous. A maintainer who followed this copy would drop the hedging that stops a losing
+    // racer being told to clear a live winner's worktree. Only where awcli has not itself claimed
     // and released the path (`TargetClaim`), or its own leftover would be read as a racing writer.
     //
     // Guarded, for `worktreeRegistration`'s reason: this builds a *refusal*, so it must not throw.
@@ -1977,6 +2090,7 @@ async function collisionMessage(
     // that stopped being readable — and an escape from here would replace the refusal and its
     // remedies with a raw errno. Falling back to the three settled answers is the pre-existing
     // behaviour, which is the safe direction for a question this one only ever *adds* caution to.
+    // "The settled answers" again, and for the same reason: `initializing` is not one of them.
     const arrived =
       claim === "untouched"
         ? await lstatOrMissing(target).catch(() => undefined)
@@ -2196,6 +2310,16 @@ async function run(
   if (outcome.kind === "unavailable") {
     throw new GitDidNotRunError(
       `awcli could not run git in ${printable(cwd, PATH_LIMIT)} (${printable(outcome.reason)}), having already run it once in this repository. git has gone missing while the run was starting.`,
+    );
+  }
+  // Distinct from the above for the same reason the outcome is: the preflight already started git in
+  // this repository, so "git has gone missing" is the wrong sentence for a spawn that failed on
+  // permissions or on a machine at its process limit. Both are faults here — the preflight proved
+  // this repository was startable — but they are different faults and an operator acts on them
+  // differently.
+  if (outcome.kind === "not-started") {
+    throw new GitDidNotRunError(
+      `awcli could not start git in ${printable(cwd, PATH_LIMIT)} (${printable(outcome.reason)}), having already started it once in this repository. git is still on the machine; something about this call or this moment stopped it running — a directory that stopped being enterable, or a machine that has run out of processes or file descriptors.`,
     );
   }
   if (outcome.kind === "no-such-directory") {
