@@ -25,10 +25,12 @@ import { gitEnvironment } from "./git-hermetic.js";
  *
  * The companion to it on the `run-lock-fs-faults.test.ts` precedent, and for the same reason: a
  * read-only checkout, a git that stops answering half way through an acquisition, a repository that
- * is removed underneath a run. Each one of those is a hand-written operator-facing sentence in
- * `workspace.ts` — five of them — and until this file existed the body of every one could be
- * deleted with the suite and the gate both staying green. They are the sentences an operator meets
- * on their worst day, so they are the ones least able to afford being unchecked.
+ * is removed underneath a run. Each of those is a hand-written operator-facing sentence in
+ * `workspace.ts`, and more than one wherever a class splits — `unavailable` gained `not-started`
+ * beside it once a spawn that failed on permissions stopped being reported as a git that has gone
+ * missing. Until this file existed the body of every one could be deleted with the suite and the
+ * gate both staying green. They are the sentences an operator meets on their worst day, so they are
+ * the ones least able to afford being unchecked.
  *
  * The filesystem calls are substituted rather than staged with `chmod`, following the lock's own
  * fault suite: permissions do not fail for a test running as root, and EROFS cannot be produced at
@@ -162,10 +164,14 @@ describe("a repository awcli cannot write to", () => {
 /**
  * A machine that changes under a run.
  *
- * `run` exists to turn the two answers that are not answers into faults: the preflight established
- * that git can be run and that the directory is there, so a later call that says otherwise is the
- * machine changing, not a choice the operator can make differently. Both sentences say which of the
- * two it was, and both said it to nobody until this file.
+ * `run` exists to turn the answers that are not answers into faults: the preflight established that
+ * git can be run and that the directory is there, so a later call that says otherwise is the machine
+ * changing, not a choice the operator can make differently. Each of its sentences says which shape it
+ * was, and every one of them said it to nobody until this file.
+ *
+ * `unavailable` and `no-such-directory` are staged here. `not-started` — git still on the machine and
+ * the spawn refused anyway — is staged at the branch cut below instead, because what makes that arm
+ * worth a test is the sentence it must *not* carry rather than the one it does.
  */
 describe("git that stops answering half way through an acquisition", () => {
   it("says git has gone missing rather than reporting it as a missing git", async () => {
@@ -200,7 +206,7 @@ describe("git that stops answering half way through an acquisition", () => {
   });
 
   /**
-   * The add's own fault, on the two shapes where neither the add nor the tidying's delete ran.
+   * The add's own fault, on the shapes where neither the add nor the tidying's delete ran.
    *
    * The two tests above reach this handler and never see its enriched sentence: the tidying succeeds
    * against real git, `undoneResidual` says nothing, and the raw error is rethrown. So the clause
@@ -421,19 +427,28 @@ describe("a branch cut that fails", () => {
   });
 
   /**
-   * The two shapes where git never ran, which must not be told a branch "may exist".
+   * The shapes where git never ran, which must not be told a branch "may exist".
    *
-   * Five rejections reach the cut's handler, and `run` raises two of them itself: `unavailable` — git
-   * could not be started — and `no-such-directory` — the repository directory has gone. No git
-   * process ran in either, so no ref can exist, and the residual the handler appends for the other
-   * three ("that branch may exist even though the working copy does not") is a confident sentence
-   * about a state awcli never established. Worse on the second shape: it told the operator to run
-   * `git branch --list` in a directory the same sentence had just said was no longer there.
+   * `run` raises three of the rejections that reach the cut's handler itself: `unavailable` — git has
+   * gone from the machine — `not-started` — git is still there and the spawn failed anyway, on
+   * permissions or on a machine out of processes or descriptors — and `no-such-directory` — the
+   * repository directory has gone. No git process ran in any of the three, so no ref can exist, and
+   * the residual the handler appends for the shapes where git *did* run ("that branch may exist even
+   * though the working copy does not") is a confident sentence about a state awcli never established.
+   * Worse on `no-such-directory`: it told the operator to run `git branch --list` in a directory the
+   * same sentence had just said was no longer there.
    *
    * The suite was green over it because this file's own test asserted `toContain("gone missing")` and
    * nothing about what followed — the class this whole file exists for, one message along. So the
    * assertion is the negative one, and it is the only kind that can catch an addition: what makes
-   * these two shapes different is not what the fault says but what it does *not*.
+   * these shapes different is not what the fault says but what it does *not*.
+   *
+   * A row per shape and not per pair, because that is exactly how the hole opened: `not-started` was
+   * split out of `unavailable` without a row, and replacing its `GitDidNotRunError` with a plain
+   * `Error` — which restores the very residual this table exists to forbid — left all ten gate suites
+   * green. `quoting` therefore carries a fragment long enough to be that arm's own sentence and no
+   * other's: `run`'s three messages differ by a clause rather than by a word, and the errno is inside
+   * the fragment because a `run` that dropped the reason would still read like a sentence.
    */
   it.each([
     {
@@ -443,6 +458,16 @@ describe("a branch cut that fails", () => {
         reason: "spawn git ENOENT",
       }),
       quoting: "gone missing",
+    },
+    {
+      shape: "not-started",
+      answer: (_cwd: string): GitOutcome => ({
+        kind: "not-started",
+        reason: "spawn git EACCES",
+        code: "EACCES",
+      }),
+      quoting:
+        "(spawn git EACCES), having already started it once in this repository. git is still on the machine",
     },
     {
       shape: "no-such-directory",
@@ -463,7 +488,7 @@ describe("a branch cut that fails", () => {
       // would answer it are all claims about a transaction that never started.
       expect(message).not.toContain("may exist");
       expect(message).not.toContain("git branch --list");
-      // And awcli's own claim on the path goes back, whichever of the two shapes it was.
+      // And awcli's own claim on the path goes back, whichever of the shapes it was.
       expect(existsSync(worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT))).toBe(false);
       // No branch either, which is what makes the silence above true rather than convenient.
       expect(
@@ -484,11 +509,12 @@ describe("a branch cut that fails", () => {
   /**
    * The branch the rejection may have left, which awcli can neither put back nor prove is its own.
    *
-   * `{kind: "unavailable"}` — what the test above stages — is the one shape where no ref can exist,
-   * because git never ran. Three of the five that reach this handler are a git that *did* run and may
-   * well have finished its ref transaction before the runner gave up on it: the 120s timeout, an
-   * answer past the read bound, a child killed by a signal. `undoOwnBranch` cannot tidy those, since
-   * its ownership proof is the zero exit that never arrived — so the residual is the operator's to
+   * The three shapes the table above stages — `unavailable`, `not-started` and `no-such-directory` —
+   * are the ones where no ref can exist, because git never ran. The rest of what reaches this handler
+   * is a git that *did* run and may well have finished its ref transaction before the runner gave up
+   * on it: the 120s timeout, an answer past the read bound, a child killed by a signal. Those are the
+   * shapes this test is about, and `undoOwnBranch` cannot tidy any of them, since its ownership proof
+   * is the zero exit that never arrived — so the residual is the operator's to
    * resolve, and the fault has to hand them the one command that answers it. Silently, the cost lands
    * on the *next* invocation of this run and slot: refused `branch-exists`, and told the commits on a
    * branch are the deliverable, about a commitless branch awcli abandoned.

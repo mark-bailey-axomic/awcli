@@ -41,7 +41,12 @@ import { afterAll, beforeAll } from "vitest";
  * `use…()` call each file has to remember is a call a new file will not make, and the failure is
  * silent in both directions — a suite reading the developer's configuration still passes, and the
  * gate mutation it was covering still reports `ok`. Importing this module is how a file gets
- * `gitEnvironment()`, so it cannot get an environment for git without also getting the pins.
+ * `gitEnvironment()`, so it cannot get an environment for git without also getting the four pins
+ * above: they go into `process.env`, which is the channel that reaches the code under test and is
+ * also what `gitEnvironment()` spreads. That is the whole of what importing guarantees. The identity
+ * and the locale below are added to the object `gitEnvironment()` returns rather than to
+ * `process.env`, so they reach a suite's own `git()` and not the code under test — which pins its
+ * own locale, in `gitEnvironment()` in git-process.ts, because it is the side that parses the prose.
  */
 let scratchHome: string | undefined;
 const inherited = new Map<string, string | undefined>();
@@ -73,7 +78,7 @@ afterAll(async () => {
 });
 
 /**
- * The environment a suite's own `git()` helper runs under: the pins above, plus an identity.
+ * The environment a suite's own `git()` helper runs under: the pins above, an identity, a locale.
  *
  * Read at call time rather than copied at import, because the pins are installed in `beforeAll` and
  * a module-level spread of `process.env` would answer a question about the moment this file was
@@ -82,6 +87,18 @@ afterAll(async () => {
  *
  * The identity is here rather than in the pins because it is not a neutralisation: a commit needs an
  * author, and a developer's own name in a fixture's history is noise rather than a hazard.
+ *
+ * The locale is here because the suites read git's diagnostics too, and those are translated. Eleven
+ * assertions across `workspace-branches.test.ts` and `workspace-occupied.test.ts` match on git's own
+ * prose — `cannot remove a locked working tree`, and the rest — and under `LC_ALL=de_DE.UTF-8` git
+ * answers `Kann kein gesperrtes Arbeitsverzeichnis löschen`, so all eleven failed on a developer's
+ * machine with a German locale while the product was correct. `gitEnvironment()` in git-process.ts
+ * pins the same two on the child it spawns and says why; the reason holds identically here, because
+ * a suite that reads a translated string is red for the operator's locale rather than for awcli.
+ *
+ * `LC_ALL` because it wins over `LC_MESSAGES` and `LANG` both, and `LANGUAGE` because GNU gettext
+ * consults it ahead of either — it is ignored while the locale is `C`, and cleared anyway so that
+ * this does not rest on that.
  */
 export function gitEnvironment(): NodeJS.ProcessEnv {
   return {
@@ -90,5 +107,7 @@ export function gitEnvironment(): NodeJS.ProcessEnv {
     GIT_AUTHOR_EMAIL: "test@example.invalid",
     GIT_COMMITTER_NAME: "awcli test",
     GIT_COMMITTER_EMAIL: "test@example.invalid",
+    LC_ALL: "C",
+    LANGUAGE: "",
   };
 }
