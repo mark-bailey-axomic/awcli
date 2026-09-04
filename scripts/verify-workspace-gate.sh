@@ -51,7 +51,7 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 153 `expect_red` below plus that final run come to ~29 minutes by that
+# — so ~11.5s each. The 156 `expect_red` below plus that final run come to ~29 minutes by that
 # product, and the whole chain has since been timed at **40m33s end-to-end** — measured by review
 # run 8, not here. The per-mutation figure reproduces; the product is the thing that is wrong, and it
 # is ~45% low because parallel efficiency decays over the run — from 223% early to 139% late — as the
@@ -82,7 +82,11 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 # the axis dispatch, whose ternary stopped existing when the read was made single. Run 8's sustain
 # added two more, both on criteria an existing anchor touched from a side that could not reach them:
 # the `not-started` arm carrying `GitDidNotRunError` rather than the guard being forced false, and
-# what the live-checkout claim is *keyed* on rather than merely that it is checked. The total grows
+# what the live-checkout claim is *keyed* on rather than merely that it is checked. Run 9 added three
+# on the git subprocess itself: that a call awcli's own bound ended is a fault however `execFile`
+# settled — the resolve path, which had no anchor because the promisified form gives it nothing to
+# read a kill from — that the giving-up is bounded apart from the call it gives up on, and that no
+# PATH entry resolving out of the working directory reaches the child. The total grows
 # with every mutation added, which is the right trade and is why the per-mutation figure is quoted.
 #
 # Named in full rather than by glob so that a new file has to be added here deliberately: a suite this
@@ -1357,5 +1361,45 @@ expect_red "git is given a fixed locale rather than the operator's" src/runtime/
 # ENOENT arm to swallow every errno, which is the shape the defect actually had.
 expect_red "a git that could not be started here is not reported as a git that is missing" src/runtime/git-process.ts \
   's/      if \(failure\.code === "ENOENT"\) \{/      if (typeof failure.code === "string") \{/'
+
+# ── A bound awcli enforced is a fault, whichever way execFile settles ───────────────────────
+# The bound was there and the *answer* was still wrong, which is the correction to an earlier reading
+# of this branch: the call was bounded, so liveness was never the defect. `promisify(execFile)`
+# resolves with `{ stdout, stderr }` and nothing else, and the resolve path is reachable after a kill
+# — measured on node 22.21 with a child that prints one line, leaves a descendant holding stdout and
+# exits: the promise resolved *successfully* at 2019ms under `timeout: 2000`, with `stdout:
+# "PARTIAL\n"` and the later write lost. node destroys the pipes, the exited child reports code 0 and
+# signal null, and execFile's own `killed` flag is not consulted once the code is 0. So a truncated
+# answer was taken as git's answer, at the 120s default, from the module whose stated job is telling
+# its failures apart — a wrong decision rather than an error, which is the worse of the two.
+#
+# The flag is awcli's own because nothing else knows: measured on the same case,
+# `child.kill("SIGTERM")` returned false and `child.killed` stayed false, the signal having landed on
+# a process that had already exited. Removed, the settlement is trusted and a call awcli gave up on
+# comes back as a success.
+expect_red "a call awcli's own bound ended is a fault however execFile settled" src/runtime/git-process.ts \
+  's/      expired = true;\n//'
+
+# And the giving-up on its own bound, which is the other half of the same fix. A descendant that
+# never releases the pipe is a settlement that never arrives, so waiting for it inside the call's
+# bound turns a bounded call into an unbounded one — the defect the bound exists to prevent, one
+# level up. Mutated by handing the cleanup the *call's* bound instead of its own, which is precisely
+# the "bound it separately" the fix is about: with a runner built at 50ms for a test, 120s of grace
+# means awcli waits out the descendant rather than the descendant waiting out awcli.
+expect_red "the cleanup after a timeout is bounded separately from the call" src/runtime/git-process.ts \
+  's/      \}, GIT_CLEANUP_TIMEOUT_MS\);/      }, GIT_TIMEOUT_MS);/'
+
+# ── git is not resolved out of a directory an agent owns ────────────────────────────────────
+# The bare name `git` with the operator's PATH passed through, which is how it shipped. `execvp` does
+# the resolving and it searches PATH *relative to the process's working directory*: an empty entry
+# and a relative one both mean "here", and awcli's `cwd` is an agent's own worktree for `dirty()` and
+# `head()`. Reproduced: with a `git` script of mine in that directory, `PATH=""`, `PATH=":/usr/bin"`
+# and `PATH="."` each ran my script instead of git, and `PATH=".."` ran the one a directory up — on
+# the host, under the operator's identity, from a file written inside the boundary. A sweep of 18
+# config-exec keys found this the one residual outside the `filter.<driver>` pair AWCLI-19 owns, on a
+# module whose design premise is that a repository cannot make awcli run code. The filter dropped, the
+# split and the rejoin are the identity and the operator's PATH reaches the child whole.
+expect_red "no PATH entry that resolves out of the working directory reaches the git child" src/runtime/git-process.ts \
+  's/  const absolute = value\.split\(":"\)\.filter\(\(entry\) => entry\.startsWith\("\/"\)\);/  const absolute = value.split(":");/'
 
 mutation_gate_finish "each workspace criterion has a test that fails when it is broken"

@@ -32,10 +32,12 @@ const execFileAsync = promisify(execFile);
  * exercised through a provisioning, which is how a mapping that reported a mistyped `--repo` as "git
  * is not installed" stayed green.
  *
- * The timeout is tested here too, which it was not while proving it fired meant waiting out
- * GIT_TIMEOUT_MS: `createGitRunner` takes the bound as a defaulted parameter, so the test below
- * builds one with 50ms and a `sh` that sleeps. The configuration point that trade was declining is a
- * default argument, and it bought the branch a test and a gate anchor.
+ * The bound is tested here too, which it was not while proving it fired meant waiting out
+ * GIT_TIMEOUT_MS: `createGitRunner` takes it as a defaulted parameter, so the tests below build
+ * runners at 50ms. The configuration point that trade was declining is a default argument, and what
+ * it bought is every claim awcli makes about giving up on a git — that a git which hangs is named as
+ * one, that a call awcli's bound ended is a fault however `execFile` settles, and that the giving-up
+ * is itself bounded when a descendant is still holding git's stdout.
  */
 const directories: string[] = [];
 
@@ -43,6 +45,18 @@ async function directory(): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), "awcli-git-process-"));
   directories.push(path);
   return path;
+}
+
+/**
+ * A child that prints part of its answer, hands stdout to something that outlives it, and exits.
+ *
+ * `sh` stands in for git for the same reason `head` and `env` do elsewhere here: the runner is what
+ * is under test. The subshell inherits the pipe and is not awcli's child, so nothing awcli can signal
+ * will close it — which is the point. `printf` after the sleep so that the late write is there to be
+ * lost, and `exit 0` so the child is genuinely gone by the time the bound expires.
+ */
+function holdingStdoutPast(seconds: number): string {
+  return `printf 'PARTIAL\\n'; (sleep ${seconds}; printf 'LATE\\n') & exit 0`;
 }
 
 afterEach(async () => {
@@ -185,6 +199,81 @@ describe("running git", () => {
     expect(message).toContain("did not finish within 50ms");
     expect(message).not.toContain("Command failed");
     expect(message).not.toMatch(/not installed|could not be run|was killed by/);
+  });
+
+  /**
+   * A child that leaves its stdout open behind it, which is where the bound stopped being an answer.
+   *
+   * The shape: git prints part of what it has to say, starts something that inherits the pipe — a
+   * pager, a credential helper, a `core.fsmonitor` daemon, anything that outlives the command — and
+   * exits. The pipe stays open, so `execFile` has nothing to report yet, and the bound expires with
+   * the child already gone.
+   *
+   * What used to happen then is the finding. Measured on node 22.21 with `promisify(execFile)` and
+   * `timeout: 2000`: the promise **resolved successfully** at 2019ms with `stdout: "PARTIAL\n"`, the
+   * descendant's later write lost. node's own timeout destroys the pipes; the exited child then
+   * reports code 0 and signal null; the `killed` flag execFile keeps for itself is never consulted
+   * once the code is 0. So awcli read a truncated answer as git's answer — at `GIT_TIMEOUT_MS`, after
+   * two minutes of waiting — from the module whose whole stated purpose is telling its failures
+   * apart. A wrong decision, not an error, which is the worse of the two outcomes.
+   *
+   * Two shapes, because the fix has two parts and one of them is a bound of its own. Here the
+   * descendant lets go while awcli is still waiting for it, so the settlement arrives *after* awcli
+   * gave up and arrives as a success: what makes this a fault is awcli's own record that the bound
+   * expired, since neither the settlement nor the `ChildProcess` carries one (measured: `kill`
+   * returned false and `child.killed` stayed false, the signal having landed on a process that had
+   * already exited).
+   *
+   * The sentence asserted is the one the reject path has always produced, and it names the bound that
+   * was passed rather than the constant — one subject, one sentence, so a second wording could not
+   * pass here.
+   */
+  it("treats a bound it had to enforce as a fault even when execFile reports success", async () => {
+    const cwd = await directory();
+    const impatient = createGitRunner("sh", 50);
+
+    const thrown = await impatient(["-c", holdingStdoutPast(0.25)], cwd).then(
+      (outcome) => outcome,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("did not finish within 50ms");
+    expect(message).not.toContain("Command failed");
+    expect(message).not.toMatch(/not installed|could not be run|was killed by/);
+  });
+
+  /**
+   * The same shape with a descendant that does not let go, which is the case the reviewer measured.
+   *
+   * Nothing is going to close that pipe inside any bound awcli would pick, so waiting for it is how
+   * a bounded call becomes an unbounded one — a worse version of the defect the bound is there to
+   * prevent. `GIT_CLEANUP_TIMEOUT_MS` is the answer: giving up gets a bound separate from the call it
+   * is giving up on, and after it the pipes are destroyed and the fault is raised regardless.
+   *
+   * So the elapsed time is asserted as well as the sentence, and it is the assertion that makes this
+   * about the cleanup rather than about the flag: the descendant here holds the pipe for six seconds,
+   * and awcli has to be finished long before that. The margin is wide on purpose — the honest answer
+   * is 50ms plus the grace period, and the threshold is several times that — because a bound and a
+   * loaded machine are the two things a tight one cannot tell apart.
+   */
+  it("does not wait on a descendant that will not let go of git's stdout", async () => {
+    const cwd = await directory();
+    const impatient = createGitRunner("sh", 50);
+
+    const started = Date.now();
+    const thrown = await impatient(["-c", holdingStdoutPast(6)], cwd).then(
+      (outcome) => outcome,
+      (error: unknown) => error,
+    );
+    const elapsed = Date.now() - started;
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("did not finish within 50ms");
+    expect(message).not.toContain("Command failed");
+    expect(elapsed).toBeLessThan(3500);
   });
 
   /**
@@ -436,6 +525,62 @@ describe("the environment a git child gets", () => {
     expect(outcome.stdout).not.toContain(repository);
   });
 
+  /**
+   * The entries of PATH itself, which is the one variable here that is edited rather than kept or
+   * dropped.
+   *
+   * git is asked for by the bare name, so `execvp` resolves it — and `execvp` searches PATH relative
+   * to the process's working directory. An empty entry and a relative one both mean "the directory
+   * this process is in", and awcli's is not a neutral one: `dirty()` and `head()` run with `cwd` set
+   * to an agent's own worktree. Asserted on the child's environment as well as on the behaviour
+   * below, because the two assertions fail differently — this one says which entries survived, and
+   * that is what a fix reaching for `delete environment.PATH` would get wrong.
+   *
+   * The absolute entries are asserted present, in order, for that reason: a runner that emptied PATH
+   * would pass a negative assertion on its own while making awcli unable to find the operator's git.
+   */
+  it("hands git no PATH entry that resolves out of the directory it runs in", async () => {
+    const cwd = await directory();
+
+    const printed = await withEnvironment(
+      { PATH: `.:/usr/bin::${cwd}:..:relative/bin:/bin` },
+      async () => {
+        const outcome = await createGitRunner("env")([], cwd);
+        expect(outcome.kind).toBe("ran");
+        return outcome.kind === "ran" ? outcome.stdout : "";
+      },
+    );
+
+    const line = printed.split("\n").find((entry) => entry.startsWith("PATH="));
+    expect(line).toBe(`PATH=/usr/bin:${cwd}:/bin`);
+  });
+
+  /**
+   * And when nothing absolute survives, the variable goes rather than going empty.
+   *
+   * Which is not a tidiness point. Measured on this machine: `PATH=""` is a PATH of one empty entry,
+   * and that entry is the working directory — so a sanitiser that wrote the empty string back would
+   * hand the whole attack back with it. Absent, `execvp` falls back to the platform's own confstr
+   * default, which is absolute throughout and found the real git; `env` here is resolved that way.
+   */
+  it("removes PATH rather than emptying it when no entry survives", async () => {
+    const cwd = await directory();
+
+    const printed = await withEnvironment({ PATH: ".:..:" }, async () => {
+      const outcome = await createGitRunner("env")([], cwd);
+      expect(outcome.kind).toBe("ran");
+      return outcome.kind === "ran" ? outcome.stdout : "";
+    });
+
+    const names = printed
+      .split("\n")
+      .map((line) => line.slice(0, line.indexOf("=")))
+      .filter((name) => name.length > 0);
+    expect(names).not.toContain("PATH");
+    // The rest of the subtraction is untouched: this removes one variable, not the environment.
+    expect(names).toContain("HOME");
+  });
+
   it("does not let an inherited GIT_CONFIG_COUNT configure the git it runs", async () => {
     const repository = await directory();
     await execFileAsync("git", ["init", "-q", "-b", "main", "."], { cwd: repository });
@@ -454,6 +599,54 @@ describe("the environment a git child gets", () => {
     expect(outcome.stdout.trim()).toBe("");
     expect(outcome.code).not.toBe(0);
   });
+
+  /**
+   * Every spelling of "the working directory" a PATH can carry, against a planted `git`.
+   *
+   * Reproduced before it was fixed, each of these: with a `git` of my own in the directory the runner
+   * was given, `git --version` printed my script rather than git's version. The empty entry needs to
+   * be ahead of a directory that actually holds a git to win, so the rows that put it late point the
+   * earlier entries at directories that do not exist — which is the same precondition seen from the
+   * other side, and it is the shape a PATH assembled by string concatenation actually has.
+   *
+   * The planted binary is in both the directory the runner is given and the one above it, so that the
+   * `.` and `..` rows are each about the entry they name. That directory stands in for an agent's own
+   * worktree, which is what `dirty()` and `head()` are called with — so this is a file an agent
+   * writes inside the boundary executing on the host outside it, under the operator's identity, which
+   * is the thing this module's design premise says a repository cannot make happen.
+   *
+   * The assertion is over the whole outcome rather than over `stdout`, because the planted script
+   * could equally have arrived in a `reason`, and because the outcome awcli *should* produce differs
+   * by row: real git on the rows where the fallback finds it, `unavailable` on the rows where nothing
+   * absolute is left to find it with. Neither of those is a defect, and neither contains the marker.
+   */
+  it.each([
+    { shape: "an empty PATH", value: "" },
+    { shape: "an empty entry ahead of the real ones", value: ":/usr/bin:/bin" },
+    { shape: "a trailing empty entry", value: "/awcli-nowhere:" },
+    { shape: "a doubled colon", value: "/awcli-nowhere::/awcli-elsewhere" },
+    { shape: "the working directory named outright", value: "." },
+    { shape: "the directory above it", value: ".." },
+    { shape: "a relative entry ahead of the real ones", value: ".:/usr/bin:/bin" },
+  ])(
+    "runs no git planted in a directory an agent owns, through $shape",
+    async ({ value }) => {
+      const parent = await directory();
+      const worktree = join(parent, "worktree");
+      await mkdir(worktree);
+      for (const where of [parent, worktree]) {
+        const planted = join(where, "git");
+        await writeFile(planted, "#!/bin/sh\nprintf 'PLANTED\\n'\n", "utf8");
+        await chmod(planted, 0o755);
+      }
+
+      const outcome = await withEnvironment({ PATH: value }, async () =>
+        systemGitRunner(["--version"], worktree),
+      );
+
+      expect(JSON.stringify(outcome)).not.toContain("PLANTED");
+    },
+  );
 });
 
 describe("what git said went wrong", () => {

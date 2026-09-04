@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
-import { promisify } from "node:util";
 import { printable } from "./printable.js";
 
 /**
@@ -20,8 +19,6 @@ import { printable } from "./printable.js";
  * the caller's question, and `workspace.ts` answers it.
  */
 
-const execFileAsync = promisify(execFile);
-
 /**
  * How long any one git invocation may take.
  *
@@ -30,8 +27,11 @@ const execFileAsync = promisify(execFile);
  * that hangs for ever on a git waiting for credentials or on a lock nothing is going to release, not
  * a slow checkout.
  *
- * One bound for all of them, and that is a decision that has been asked about twice, so here is the
- * measurement it turns on. The objection is that five of awcli's six invocations are metadata calls
+ * One bound for every invocation — the same bound whatever the argv, which is a different question
+ * from the separate bound `GIT_CLEANUP_TIMEOUT_MS` puts on giving up once this one has expired. It is
+ * a decision that has been asked about twice, so here is the measurement it turns on.
+ *
+ * The objection is that five of awcli's six invocations are metadata calls
  * costing tens of milliseconds, and that an operator meeting a stuck repository therefore waits two
  * minutes in silence at the *first* of them — the scenario named being a held `index.lock`. That
  * scenario does not occur. Measured on git 2.55 with `.git/index.lock` present and held:
@@ -44,13 +44,39 @@ const execFileAsync = promisify(execFile);
  * --porcelain` is one of the calls the objection classes as metadata, and it walks the whole working
  * tree — on a large repository it is legitimately among the slowest things awcli runs, and it is the
  * one call `dirty()` makes for the life of the run. Giving it a few seconds would turn a big
- * repository into a fault. So a second bound would have to be a per-argv policy table, which is more
+ * repository into a fault. So a second bound of this kind would have to be a per-argv policy table,
+ * which is more
  * surface than the residual justifies: what is actually left is that a git hung for some *other*
  * reason is noticed after two minutes rather than after ten seconds, and the operator seeing nothing
  * while it happens is a reporting question — AWCLI-21's — rather than a question about the bound.
  * Recorded rather than left to be re-raised a third time.
  */
 export const GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * How long awcli waits for a git it has just given up on to let go of its pipes.
+ *
+ * A second bound, because the first one cannot clean up after itself. Once `GIT_TIMEOUT_MS` expires
+ * awcli sends SIGTERM and then still has to see the child's stdout and stderr close before
+ * `execFile` will say anything at all — and the case this was added for is the one where they never
+ * do: git has exited and a descendant it left behind is holding them open. Waiting for that inside
+ * the call's own bound makes the bound unbounded, which is a worse version of the defect the bound
+ * exists to prevent. So the giving-up gets a bound of its own: SIGTERM, this long for a child that
+ * means to honour it, and then the pipes are destroyed, SIGKILL is sent and the fault is raised
+ * whether or not anything ever answered.
+ *
+ * What that buys is a ceiling on the *invocation* — `timeoutMs` plus this, and nothing beyond it —
+ * rather than a ceiling on the part of the invocation awcli can see the end of. Provisioning is
+ * required to cost a bounded amount of time, and one bound that another wait hangs off the end of is
+ * not a bound.
+ *
+ * A grace period rather than a working allowance, so it is short: a git that will die on SIGTERM
+ * dies in milliseconds, and anything still holding the pipes after a second is not something awcli
+ * is going to wait out. It is deliberately not derived from `timeoutMs` — the cleanup is not
+ * proportional to the work, and a runner built with a short bound for a test needs the same grace as
+ * the real one.
+ */
+const GIT_CLEANUP_TIMEOUT_MS = 1_000;
 
 /**
  * Enough for `git status --porcelain` in a large tree; the answer is only read for emptiness.
@@ -97,7 +123,13 @@ export type GitOutcome =
       readonly stdout: string;
       readonly stderr: string;
     }
-  /** git could not be started: not installed, or not on the PATH awcli was given. */
+  /**
+   * git could not be started: not installed, or not on the PATH awcli runs git with.
+   *
+   * Which is the PATH awcli was given minus the entries that would have resolved a binary out of
+   * whatever directory git was being run in — see `gitSearchPath`, and the note there on why a git
+   * findable only through one of those is reported as a git that is not there.
+   */
   | { readonly kind: "unavailable"; readonly reason: string }
   /**
    * git is *there* and could not be started for this call. The errno says why.
@@ -186,7 +218,62 @@ const GIT_CONFIG_INJECTOR_PREFIXES: readonly string[] = [
 ];
 
 /**
+ * The PATH a git child is given: the operator's, minus every entry that resolves out of `cwd`.
+ *
+ * Beside the strip-list rather than instead of it, because it is the same claim about the same
+ * mechanism — the environment may not decide which code awcli runs — and it was the one residual
+ * outside the documented `filter.<driver>` pair that AWCLI-19 owns. `execvp` is what resolves the
+ * bare name `git`, and it searches PATH *relative to the process's working directory*: an empty
+ * entry and a relative one both mean "here". awcli's `cwd` is not a neutral directory. `dirty()` and
+ * `head()` run with `cwd` set to an agent's own worktree, so a `git` an agent had written there ran
+ * on the host under the operator's identity, before any execution boundary exists — the same shape
+ * as the `GIT_EXEC_PATH` hole above, one resolver along. Reproduced on this machine: with
+ * `PATH=""`, `PATH=":/usr/bin:/bin"` or `PATH="."` and a `git` of mine in the working directory,
+ * `execFile("git", ["--version"])` printed my script; with `PATH=".."` it printed the one a directory
+ * up. A trailing or doubled colon does it too whenever nothing earlier on the path holds a git.
+ *
+ * Precondition-gated on a degenerate PATH, which is why it is repaired here rather than treated as
+ * an incident: nobody's shell is configured this way on purpose, and that is exactly what makes it a
+ * thing awcli should not depend on being true.
+ *
+ * Sanitising the entries rather than resolving `git` to an absolute path once, and that is a choice
+ * with a seam behind it. `createGitRunner(binary)` is deliberately called with a name that is not
+ * there — that is how "a machine with no git is reported as a machine with no git" is provable at all
+ * — so resolving a binary at module load would either break that test or need a second code path for
+ * it. Doing it in the environment leaves the resolution where it was and takes away only the entries
+ * that could resolve it out of a directory an agent owns.
+ *
+ * When nothing absolute survives, PATH is *removed* rather than set to the empty string, and the
+ * difference is the whole point: measured here, `PATH=""` is one empty entry, which is the working
+ * directory, so emptying it hands the attack back. With the variable absent, `execvp` falls back to
+ * the platform's own confstr default — `/usr/bin:/bin:/usr/sbin:/sbin` on this Darwin, absolute
+ * throughout — which found the real git. So a git reachable only through a dropped entry comes back
+ * as `unavailable`, and that is the right answer rather than a regression: a PATH whose git depends
+ * on which directory the process happens to be in resolves to a different binary per call, which is
+ * not a working configuration for a tool that changes `cwd` per invocation. `workspace.ts` renders
+ * that outcome as "install git, or put it on the PATH awcli is run with", and any absolute directory
+ * satisfies it, so the remedy an operator is given stays correct.
+ *
+ * A leading `/` rather than `isAbsolute`, and `":"` rather than `delimiter`: the question is what
+ * `execvp` does with a PATH entry, which is a POSIX question, and this module is already POSIX-only
+ * further down — `workspace.ts` pins git's hooks path to `/dev/null/awcli-runs-no-hooks`. A
+ * Windows port would have to revisit both together, and one of them silently agreeing with Windows
+ * while the other does not is worse than neither.
+ */
+function gitSearchPath(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const absolute = value.split(":").filter((entry) => entry.startsWith("/"));
+  return absolute.length === 0 ? undefined : absolute.join(":");
+}
+
+/**
  * The environment a git child is given: this process's, minus the variables above.
+ *
+ * A subtraction with one edit in it. The subtraction is the lists above; the edit is `PATH`, which
+ * is kept and narrowed to its absolute entries rather than removed — see `gitSearchPath` for why a
+ * relative or empty entry in it is a way for a directory an agent owns to decide which code awcli
+ * runs. It is the one variable here that is neither passed through nor deleted, so it is stated
+ * separately rather than left for a reader to find in the body.
  *
  * A subtraction rather than an allowlist. git legitimately reads a great deal of the environment —
  * `PATH` to find its own subcommands, `HOME` for the operator's configuration, the proxy and
@@ -242,6 +329,12 @@ function gitEnvironment(): NodeJS.ProcessEnv {
       delete environment[name];
     }
   }
+  // The one variable that is edited rather than kept or dropped. Removed outright when no absolute
+  // entry survives, because the empty string is a PATH of one empty entry and that entry is the
+  // working directory — see `gitSearchPath`.
+  const searchPath = gitSearchPath(environment.PATH);
+  if (searchPath === undefined) delete environment.PATH;
+  else environment.PATH = searchPath;
   // git's diagnostics are localised and this module *parses* them — `gitComplaint` picks the line
   // beginning `fatal:` or `error:`, and those prefixes are translated. Under `LC_ALL=de_DE.UTF-8`
   // git says `schwerwiegend:`, so the complaint quoted to the operator became the last line of
@@ -264,15 +357,134 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 }
 
 /**
+ * awcli's own bound expiring, shaped like the error `execFile` raises when its bound expires.
+ *
+ * So that there is one timeout arm and one timeout sentence. The classification in `createGitRunner`
+ * decides a timeout by reading `killed`, and this is what carries that answer up from the settlements
+ * where `execFile` reports no kill at all. A second sentence saying the same thing in different words
+ * would be a second subject for a reader to reconcile, on the one module whose job is telling its
+ * failures apart.
+ *
+ * The message here is a marker rather than prose for anybody: it reaches an operator only as the
+ * `cause` of the sentence that arm writes.
+ */
+class GitBoundExpired extends Error {
+  readonly killed = true;
+
+  constructor(cause: unknown) {
+    super("awcli's bound on this git invocation expired", { cause });
+  }
+}
+
+/**
+ * One git invocation, bounded by a clock of awcli's own rather than by `execFile`'s.
+ *
+ * Why the promisified form could not answer the question this exists to ask. `promisify(execFile)`
+ * resolves with `{ stdout, stderr }` and discards the `ChildProcess`, so on the *resolve* path there
+ * is no `killed` and no `signal` to read — and the resolve path is reachable after a kill. Measured
+ * on node 22.21 with a child that prints one line, leaves a descendant holding stdout and exits:
+ * `execFileAsync("sh", …, { timeout: 2000 })` **resolved successfully** at 2019ms with
+ * `stdout: "PARTIAL\n"` and the descendant's later write lost. node's own timeout destroys the pipes,
+ * the already-exited child then reports code 0 and signal null, and execFile's internal `killed` flag
+ * is never consulted once the code is 0. So a partial answer came back as git's answer: at the
+ * `GIT_TIMEOUT_MS` default that is minutes of waiting ending in a *wrong decision* rather than in an
+ * error, which is the one outcome this module is here to prevent. The `catch` arm below was already
+ * correct and was simply not reached.
+ *
+ * Nor can the `ChildProcess` answer it, which is why the flag below is awcli's own rather than the
+ * child's. Measured on the same case: at the bound, `child.kill("SIGTERM")` returned false and
+ * `child.killed` stayed false, because the signal lands on a process that has already exited and
+ * gets ESRCH for it. Nothing in the operating system's answer distinguishes "awcli gave up on this"
+ * from "this finished"; only awcli knows, so only awcli can record it.
+ *
+ * Hence: no `timeout` option, a timer of awcli's own, that flag read before either settlement is
+ * trusted, and the cleanup after it on a bound of its own (`GIT_CLEANUP_TIMEOUT_MS`).
+ */
+function runGitBounded(
+  binary: string,
+  args: readonly string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  return new Promise((resolve, reject) => {
+    // Whether awcli's bound is what ended this call. See above: neither settlement of `execFile` nor
+    // the `ChildProcess` carries that answer, so it is kept here.
+    let expired = false;
+    let settled = false;
+    let bound: NodeJS.Timeout | undefined;
+    let grace: NodeJS.Timeout | undefined;
+
+    // Both timers and the callback can be first, and the two that are not must do nothing at all:
+    // destroying the pipes to give up on a child makes `execFile` call back immediately, so the
+    // losing path is not hypothetical.
+    const finish = (settle: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(bound);
+      clearTimeout(grace);
+      settle();
+    };
+
+    const child = execFile(
+      binary,
+      [...args],
+      {
+        cwd,
+        env: gitEnvironment(),
+        encoding: "utf8",
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+      (error, stdout, stderr) => {
+        finish(() => {
+          // The flag before the settlement, which is the whole of it: this callback arrives with
+          // `error === null` and a truncated `stdout` for a child awcli killed, whenever the child
+          // had exited and something it left behind was holding the pipes.
+          if (expired) reject(new GitBoundExpired(error));
+          // What git printed, put on the error, because a non-zero exit is an *answer* here and its
+          // stdout and stderr are that answer — the classification below reads them straight off it.
+          // node's callback hands them beside the error rather than on it, and this is the one thing
+          // `promisify(execFile)` was doing that had to be kept: without it every refusal decided
+          // from git's own complaint lost the complaint, which is how the first draft of this turned
+          // the not-a-repository test green-to-red.
+          else if (error !== null) reject(Object.assign(error, { stdout, stderr }));
+          else resolve({ stdout, stderr });
+        });
+      },
+    );
+
+    bound = setTimeout(() => {
+      expired = true;
+      child.kill("SIGTERM");
+      grace = setTimeout(() => {
+        finish(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.kill("SIGKILL");
+          reject(new GitBoundExpired(undefined));
+        });
+      }, GIT_CLEANUP_TIMEOUT_MS);
+    }, timeoutMs);
+  });
+}
+
+/**
  * A runner for a named binary, and optionally a shorter bound than the real one.
  *
- * Exported for the tests that cannot be written any other way, which is now two rather than one.
- * Proving that a machine with no git is reported as a machine with no git means running something
- * that is not there, and `systemGitRunner` hard-codes the name — the same reason `process-probe.ts`
- * exports `psIdentify`. Proving that a git which *hangs* is reported as one means waiting for the
- * bound, and `GIT_TIMEOUT_MS` is two minutes: the timeout branch below therefore had no test and no
- * gate anchor at all, on a module whose stated reason for existing is the three failures a real
- * repository cannot stage — and a hang is one of the three. `timeoutMs` is what makes it 50.
+ * Exported for the tests that cannot be written any other way, on two axes rather than one — stated
+ * by axis rather than counted, because the tests standing on each of them have since multiplied.
+ *
+ * The binary, because proving that a machine with no git is reported as a machine with no git means
+ * running something that is not there, and `systemGitRunner` hard-codes the name — the same reason
+ * `process-probe.ts` exports `psIdentify`. It is also what lets `head`, `sh` and `env` stand in for
+ * git where the point is the runner and not git: an answer past `maxBuffer`, a child killed from
+ * outside, the environment the child is handed.
+ *
+ * The bound, because proving that a git which *hangs* is reported as one means waiting for it, and
+ * `GIT_TIMEOUT_MS` is two minutes: the timeout branch below therefore had no test and no gate anchor
+ * at all, on a module whose stated reason for existing is the three failures a real repository cannot
+ * stage — and a hang is one of the three. `timeoutMs` is what makes it 50, and it is also what makes
+ * the descendant-holds-stdout case in `runGitBounded` testable at all, since that one needs the bound
+ * to expire while a pipe is still open.
  *
  * Neither parameter is a configuration point, and awcli never calls this with anything but `git` and
  * the default bound.
@@ -280,13 +492,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 export function createGitRunner(binary: string, timeoutMs = GIT_TIMEOUT_MS): GitRunner {
   return async (args, cwd) => {
     try {
-      const { stdout, stderr } = await execFileAsync(binary, [...args], {
-        cwd,
-        env: gitEnvironment(),
-        encoding: "utf8",
-        timeout: timeoutMs,
-        maxBuffer: GIT_MAX_BUFFER,
-      });
+      const { stdout, stderr } = await runGitBounded(binary, args, cwd, timeoutMs);
       return { kind: "ran", code: 0, stdout, stderr };
     } catch (error) {
       const failure = error as {
@@ -345,6 +551,11 @@ export function createGitRunner(binary: string, timeoutMs = GIT_TIMEOUT_MS): Git
           { cause: error },
         );
       }
+      // The one timeout arm, and the only place the sentence for it is written. It is reached from
+      // both of the ways a bounded call can end: a child that `execFile` reports as killed, and a
+      // `GitBoundExpired` from `runGitBounded` for the calls where `execFile` reports no kill at all
+      // — which is a settlement it also *resolves* on, so this is the arm the resolve path was
+      // bypassing rather than a second one to write for it.
       if (failure.killed === true) {
         throw new Error(
           `${printable(binary)} ${printable(args.join(" "))} did not finish within ${timeoutMs}ms in ${printable(cwd, CWD_LIMIT)}. Something is holding a git lock, or waiting for input awcli cannot give it.`,

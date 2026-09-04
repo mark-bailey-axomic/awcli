@@ -323,7 +323,15 @@ export type WorkspaceRefusalKind =
   | "invalid-slot"
   /** `liveTree` was asked for without the operator's own consent. Never downgraded, never silent. */
   | "live-checkout-not-consented"
-  /** git could not be run at all — not installed, or not on the PATH awcli was given. */
+  /**
+   * git could not be run at all — not installed, or not on the PATH awcli runs git with.
+   *
+   * Which is the PATH awcli was given minus the entries that would resolve a binary out of the
+   * directory git is being run in, an agent's own worktree among them: see `gitSearchPath` in
+   * `git-process.ts`, and the note there on why a git findable only through one of those is the same
+   * answer as a git that is not there. The remedy this refusal gives — install git, or put it on the
+   * PATH — is satisfied by any absolute directory, so it stays correct for that case too.
+   */
   | "git-unavailable"
   /**
    * git is on the machine and could not be started for this call — the errno says why.
