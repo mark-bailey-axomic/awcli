@@ -273,9 +273,13 @@ expect_red "a ps that refuses the question does not read as 'no such process'" s
   's/    if \(failure\.code === 1 && failure\.killed !== true && complaint\.length === 0\) \{/    if (failure.code === 1 \&\& failure.killed !== true) {/'
 
 # The locale pin. Anchored on a mutation the mocked adapter suite catches on every platform: the
-# real-locale test can only run where the C library has fr_FR, which is not most of CI.
+# real-locale test can only run where the C library has fr_FR, which is not most of CI. Re-cut when
+# the pin moved out of the `execFile` options and into `psEnvironment`, which is now where both of
+# the environment's decisions — which locale prints the answer, and which binary prints it — are
+# made; the anchor is the whole statement rather than the `LC_ALL: "C"` in it, so that prose about
+# the pin cannot capture it.
 expect_red "the locale of the question is pinned" src/runtime/process-probe.ts \
-  's/      env: \{ \.\.\.process\.env, LC_ALL: "C" \},/      env: { ...process.env },/'
+  's/  const environment: NodeJS\.ProcessEnv = \{ \.\.\.process\.env, LC_ALL: "C" \};/  const environment: NodeJS.ProcessEnv = { ...process.env };/'
 
 # An id no operating system can assign is asked about anyway, and `ps` complaining about it now
 # comes back as "could not decide" — a refusal no operator can clear.
@@ -420,5 +424,59 @@ expect_red "tidying up cannot turn a reclamation that happened into a failure" s
 # spawn each, on the startup path, for files that will never stop being inert.
 expect_red "an inert leftover is judged once per acquisition" src/runtime/run-lock.ts \
   's/    if \(inert\.has\(entry\)\) continue;/    if (false) continue;/'
+
+# ── A bound awcli enforced is a fault, whichever way execFile settles ───────────────────────
+# The bound was there and the *answer* was still wrong. `promisify(execFile)` resolves with
+# `{ stdout, stderr }` and nothing else, and the resolve path is reachable after a kill — measured on
+# node 22.21.1 with a child that leaves a descendant holding stdout and exits: under `timeout: 2000`
+# the promise resolved *successfully* at 2015ms with `stdout: ""`, the later write lost. node
+# destroys the pipes, the exited child reports code 0 and signal null, and execFile's own `killed`
+# flag is not consulted once the code is 0.
+#
+# Empty stdout is what makes that the worst available kind of wrong on this module: it is
+# `not-found` in `psIdentify`, `gone` in `livenessOf`, and `gone` evicts a live run's lock. So the
+# bound written so a slow machine costs a refusal and never a reclamation was producing a
+# reclamation, on exactly the loaded machine it was written for.
+#
+# The flag is awcli's own because nothing else knows: measured on the same case,
+# `child.kill("SIGTERM")` returned false and `child.killed` stayed false, the signal having landed on
+# a process that had already exited. Removed, the settlement is trusted and a call awcli gave up on
+# comes back as "nothing holds that id".
+expect_red "a bound awcli's own clock ended is a fault however execFile settled" src/runtime/process-probe.ts \
+  's/      expired = true;\n//'
+
+# And the giving-up on a bound of its own, which is the other half of the same fix. node's `timeout`
+# option was what destroyed the pipes; awcli taking the clock over means awcli has to, or a held pipe
+# is a settlement that never arrives and the bounded question becomes an unbounded wait on the
+# startup path. Mutated by handing the cleanup the *call's* bound instead of its own — the plausible
+# mistake, deriving the grace from the timeout — which takes the giving-up from 1000ms to 2000ms;
+# both elapsed assertions sit at 1500ms for exactly that reason.
+expect_red "the cleanup after a bound is bounded separately from the call" src/runtime/process-probe.ts \
+  's/      \}, PS_CLEANUP_TIMEOUT_MS\);/      }, PS_TIMEOUT_MS);/'
+
+# ── ps is not resolved out of the directory awcli happens to be in ──────────────────────────
+# The bare name `ps` with the operator's PATH passed through, which is how it shipped. `execvp` does
+# the resolving and it searches PATH *relative to the process's working directory*: an empty entry
+# and a relative one both mean "here". Reproduced on this machine: with a `ps` script of mine in the
+# working directory, `PATH=""`, `PATH=":/usr/bin:/bin"` and `PATH="."` each ran my script, and
+# `PATH=".."` ran the one a directory up — on the host, under the operator's identity. And a plant
+# that exits 0 having printed nothing is read as an *answer*: empty stdout is `not-found`, which
+# evicts a live run's lock, so this reaches the fail-open the whole module is arranged around by
+# deciding which binary answers rather than by misreading one.
+#
+# Weaker than the same hole in awcli's git subprocess, which runs with its working directory set to
+# an agent's own worktree; this one inherits awcli's, which is the operator's. Same resolver, same
+# mechanism, same repair. The filter dropped, the split and the rejoin are the identity and the
+# operator's PATH reaches the child whole.
+expect_red "no PATH entry that resolves out of the working directory reaches the ps child" src/runtime/process-probe.ts \
+  's/  const absolute = value\.split\(":"\)\.filter\(\(entry\) => entry\.startsWith\("\/"\)\);/  const absolute = value.split(":");/'
+
+# The half of that repair a filter alone does not give you, and the one a fix would most plausibly
+# get wrong: when nothing absolute survives, PATH is *removed* rather than emptied. Measured here,
+# `PATH=""` is a PATH of one empty entry and that entry is the working directory — so emptying it
+# hands the attack straight back, with every relative entry duly filtered out. Absent, `execvp` falls
+# back to the platform's own confstr default, absolute throughout, which found the real `ps`.
+expect_red "a PATH with no absolute entry left is removed rather than emptied" src/runtime/process-probe.ts \
+  's/  return absolute\.length === 0 \? undefined : absolute\.join\(":"\);/  return absolute.join(":");/'
 
 mutation_gate_finish "each run-lock criterion has a test that fails when it is broken"

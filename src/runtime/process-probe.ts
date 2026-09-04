@@ -1,9 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { promisify } from "node:util";
 import { printable } from "./printable.js";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Who holds something, in a form that survives the death of the process that recorded it.
@@ -128,8 +125,34 @@ export async function livenessOf(
  * Short on purpose: this runs on the startup path, before anything has happened, and a `ps` that
  * hangs must not be the reason a run never begins. Timing out is reported as `unknown` rather than
  * as `not-found`, so a slow machine costs a refusal and never a reclamation.
+ *
+ * The bound on the *question*, which is a different bound from the one `PS_CLEANUP_TIMEOUT_MS` puts
+ * on giving up once this has expired. Enforced by a clock of awcli's own rather than by `execFile`'s
+ * `timeout` option, and `runPsBounded` is where that is argued: the option ends the call without
+ * saying that it did, so what came back was a truncated answer being read as `ps`'s answer.
  */
 const PS_TIMEOUT_MS = 2_000;
+
+/**
+ * How long awcli waits for a `ps` it has just given up on to let go of its pipes.
+ *
+ * A second bound, because the first cannot clean up after itself. Once `PS_TIMEOUT_MS` expires awcli
+ * sends SIGTERM and then still has to see the child's stdout and stderr close before `execFile` will
+ * call back at all — and node's own `timeout` option, which awcli no longer uses, was what destroyed
+ * those pipes. Taking the clock over means taking that over too, or a `ps` whose pipe something else
+ * is holding turns a bounded question into an unbounded wait on the startup path: the failure
+ * `PS_TIMEOUT_MS` exists to prevent, reintroduced by the fix to a different failure.
+ *
+ * What it buys is a ceiling on the whole ask — `PS_TIMEOUT_MS` plus this, and nothing past it —
+ * rather than a ceiling on the part of the ask awcli can see the end of.
+ *
+ * A grace period rather than a working allowance, so it is short: a `ps` that will die on SIGTERM
+ * dies in milliseconds, and anything still holding the pipes after a second is not something awcli
+ * is going to wait out on the way to taking a lock. Deliberately not derived from the bound on the
+ * question — the cleanup is not proportional to the work, and a short bound passed for a test needs
+ * the same grace as the real one.
+ */
+const PS_CLEANUP_TIMEOUT_MS = 1_000;
 
 /**
  * How much of `ps`'s complaint a reason carries.
@@ -222,6 +245,199 @@ async function procIdentify(pid: number): Promise<ProbeAnswer> {
 }
 
 /**
+ * The PATH a `ps` child is given: the operator's, minus every entry that resolves out of the working
+ * directory.
+ *
+ * `execvp` is what resolves the bare name `ps`, and it searches PATH *relative to the process's
+ * working directory*: an empty entry and a relative one both mean "here". Reproduced on this machine
+ * with a `ps` of mine in the working directory — `PATH=""`, `PATH=":/usr/bin:/bin"` and `PATH="."`
+ * each ran my script instead of `ps`, and `PATH=".."` ran the one a directory up, on the host and
+ * under the operator's identity. `PATH="/nonexistent:"`, `PATH="/nonexistent::/bin"` and
+ * `PATH="/nonexistent:/alsonot:"` ran it too, which is the same reproduction for the trailing and
+ * doubled colon: they are that entry, and they decide it whenever nothing earlier on the path holds
+ * a `ps`.
+ *
+ * What that costs here is worse than an unanswered question, because a plant that exits 0 saying
+ * nothing is read as an *answer*: empty stdout is `not-found` below, `not-found` is `gone` in
+ * `livenessOf`, and `gone` evicts a live run's lock. So it reaches the one fail-open this whole file
+ * is arranged around, by deciding which binary answers rather than by misreading one that did.
+ *
+ * Weaker than the same hole in awcli's git subprocess, and repaired anyway. That one runs with its
+ * working directory set to an agent's own worktree, so the directory an entry resolves against is
+ * one an agent writes to; this call passes no `cwd` at all and inherits awcli's own, which is the
+ * operator's. The resolver, the mechanism and the repair are identical, and the precondition — a
+ * PATH carrying an empty or relative entry — is one nobody configures on purpose, which is exactly
+ * what makes it a thing awcli should not depend on being false.
+ *
+ * Sanitising the entries rather than resolving `ps` to an absolute path once. `psIdentify` is
+ * exported and called directly by its own tests, and `runPsBounded` is called with binaries standing
+ * in for `ps`, so a name resolved at module load would either not be the name that ran or would need
+ * a second code path beside it. Editing the environment leaves the resolution exactly where it was
+ * and takes away only the entries that could move it.
+ *
+ * When nothing absolute survives the variable is *removed* rather than emptied, and the difference
+ * is the whole point: measured here, `PATH=""` is a PATH of one empty entry and that entry is the
+ * working directory, so emptying it hands the attack back. Absent, `execvp` falls back to the
+ * platform's own confstr default — absolute throughout, and it found the real `ps` on this Darwin.
+ * A `ps` reachable only through a dropped entry therefore comes back as a `ps` that could not be
+ * run, which is the right answer rather than a regression: a PATH whose `ps` depends on which
+ * directory the process happens to be in names a different binary from one call to the next, and
+ * `self()` says so with a remedy any absolute directory satisfies.
+ *
+ * A leading `/` rather than `isAbsolute`, and `":"` rather than `delimiter`: the question is what
+ * `execvp` does with a PATH entry, which is a POSIX question, and everything below this is a POSIX
+ * assumption too — the adapter's whole mechanism is a `ps` that takes `-o lstart=`, and Windows has
+ * no such program to find. A port would have to revisit both together, and one of them silently
+ * agreeing with Windows while the other does not is worse than neither.
+ *
+ * Exported so the rule can be checked entry by entry without an operating system, for the reason
+ * `isPossiblePid` is: the end-to-end proof needs a `ps` on the machine *and* a working directory a
+ * test may plant one in, and a rule observable only that way is a rule CI can quietly stop checking.
+ */
+export function psSearchPath(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const absolute = value.split(":").filter((entry) => entry.startsWith("/"));
+  return absolute.length === 0 ? undefined : absolute.join(":");
+}
+
+/**
+ * The environment a `ps` child is given: this process's, with the locale pinned and PATH narrowed.
+ *
+ * Two edits, together because they are the same claim about two halves of one contract. `LC_ALL=C`
+ * is why `-o lstart=` prints something `Date.parse` can read — see `psIdentify`. `PATH` is why the
+ * thing printing it is `ps` — see `psSearchPath`.
+ *
+ * Everything else is passed through rather than allowlisted. `ps` reads little of the environment
+ * and a list of what to keep would go stale silently; the two variables that decide what awcli gets
+ * back are the two that are named.
+ */
+function psEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C" };
+  // Removed outright when no absolute entry survives, because the empty string is a PATH of one
+  // empty entry and that entry is the working directory — see `psSearchPath`.
+  const searchPath = psSearchPath(environment.PATH);
+  if (searchPath === undefined) delete environment.PATH;
+  else environment.PATH = searchPath;
+  return environment;
+}
+
+/**
+ * awcli's own bound expiring, shaped like the error `execFile` raises when its own bound expires.
+ *
+ * So that there is one timeout arm and one timeout sentence. `psIdentify` decides a timeout by
+ * reading `killed`, and this is what carries that answer up from the settlements where `execFile`
+ * reports no kill at all. A second sentence saying the same thing in different words would be a
+ * second thing for an operator to reconcile, out of the one file whose job is telling "could not
+ * ask" from "nothing is there".
+ *
+ * The message is a marker rather than prose for anybody: what an operator reads is the reason
+ * `psIdentify` writes in the arm this reaches.
+ */
+class PsBoundExpired extends Error {
+  readonly killed = true;
+
+  constructor(cause: unknown) {
+    super("awcli's bound on this ps invocation expired", { cause });
+  }
+}
+
+/**
+ * One `ps` invocation, bounded by a clock of awcli's own rather than by `execFile`'s.
+ *
+ * Why the promisified form could not answer the question this exists to ask. `promisify(execFile)`
+ * resolves with `{ stdout, stderr }` and discards the `ChildProcess`, so on the *resolve* path there
+ * is no `killed` and no `signal` to read — and the resolve path is reachable after a kill. Measured
+ * on node 22.21.1 with a child that leaves a descendant holding stdout and exits, under
+ * `timeout: 2000`: the promise **resolved successfully** at 2015ms with `stdout: ""`, the
+ * descendant's later line lost. node's own timeout destroys the pipes, the already-exited child then
+ * reports code 0 and signal null, and execFile's internal `killed` flag is never consulted once the
+ * code is 0.
+ *
+ * The empty stdout is what makes that the worst available kind of wrong. `psIdentify` reads it as
+ * `not-found`, `livenessOf` reads that as `gone`, and `gone` evicts a live run's lock — so the bound
+ * written so that a slow machine costs a refusal and never a reclamation was, on exactly the loaded
+ * machine it was written for, producing a reclamation. `ps` itself spawns nothing and is a less
+ * likely child than git to leave a pipe held; a wrapper script around it is not, and hardened and
+ * audited images ship those. The cost of the unlikely case is the one outcome this file is arranged
+ * to make impossible, so it is closed rather than recorded.
+ *
+ * Nor can the `ChildProcess` answer it, which is why the flag below is awcli's own rather than the
+ * child's. Measured on the same case: at the bound, `child.kill("SIGTERM")` returned false and
+ * `child.killed` stayed false, the signal having landed on a process that had already exited.
+ * Nothing the operating system says distinguishes "awcli gave up on this" from "this finished";
+ * only awcli knows, so only awcli can record it.
+ *
+ * Hence: no `timeout` option, a timer of awcli's own, that flag read before either settlement is
+ * trusted, and the cleanup after it on a bound of its own (`PS_CLEANUP_TIMEOUT_MS`).
+ *
+ * Exported, with the binary and the bound as parameters, for the tests that cannot be written any
+ * other way — the same seam `psIdentify` and `isPossiblePid` are exported through. Proving that a
+ * bound awcli enforced is a fault needs a child that will not answer inside it and a bound short
+ * enough that a suite can wait it out; `sh` stands in for `ps` there because what is under test is
+ * this function and not `ps`. Neither parameter is a configuration point: awcli calls this in one
+ * place, with `ps` and the default.
+ */
+export function runPsBounded(
+  binary: string,
+  args: readonly string[],
+  timeoutMs: number = PS_TIMEOUT_MS,
+): Promise<{ readonly stdout: string; readonly stderr: string }> {
+  return new Promise((resolve, reject) => {
+    // Whether awcli's bound is what ended this call. See above: neither settlement of `execFile` nor
+    // the `ChildProcess` carries that answer, so it is kept here.
+    let expired = false;
+    let settled = false;
+    let bound: NodeJS.Timeout | undefined;
+    let grace: NodeJS.Timeout | undefined;
+
+    // Both timers and the callback can be first, and the two that are not must do nothing at all:
+    // destroying the pipes to give up on a child makes `execFile` call back immediately, so the
+    // losing path is not hypothetical.
+    const finish = (settle: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(bound);
+      clearTimeout(grace);
+      settle();
+    };
+
+    const child = execFile(
+      binary,
+      [...args],
+      { encoding: "utf8", env: psEnvironment() },
+      (error, stdout, stderr) => {
+        finish(() => {
+          // The flag before the settlement, which is the whole of it: this callback arrives with
+          // `error === null` and an empty `stdout` for a child awcli killed, whenever the child had
+          // exited and something it left behind was holding the pipes.
+          if (expired) reject(new PsBoundExpired(error));
+          // What the child printed, put on the error, because a non-zero exit is an *answer* here:
+          // `psIdentify` tells "nothing holds that id" from "this `ps` will not take the question"
+          // by reading the status and the stderr together, and node's callback hands them beside the
+          // error rather than on it. This is the one thing `promisify(execFile)` was doing that had
+          // to be kept.
+          else if (error !== null) reject(Object.assign(error, { stdout, stderr }));
+          else resolve({ stdout, stderr });
+        });
+      },
+    );
+
+    bound = setTimeout(() => {
+      expired = true;
+      child.kill("SIGTERM");
+      grace = setTimeout(() => {
+        finish(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.kill("SIGKILL");
+          reject(new PsBoundExpired(undefined));
+        });
+      }, PS_CLEANUP_TIMEOUT_MS);
+    }, timeoutMs);
+  });
+}
+
+/**
  * Reads a process's start time from `ps`, the way macOS exposes it.
  *
  * `LC_ALL=C` is not tidiness. `-o lstart=` prints a *localised* absolute time, and `Date.parse`
@@ -230,18 +446,31 @@ async function procIdentify(pid: number): Promise<ProbeAnswer> {
  * `self()` threw and no run could ever take a lock. `de_DE` parsed only by luck of its
  * abbreviations. Pinning the locale is what makes the format a contract instead of a coincidence.
  *
+ * The pin itself lives in `psEnvironment`, alongside the narrowing of `PATH` that decides which
+ * `ps` prints the line in the first place. Both are stated there rather than here.
+ *
  * Exported for the test that checks the pin, which has to call this on Linux too — where
  * `identify` goes to `/proc` and never reaches here, so a suite that went through `identify`
  * asserted nothing at all on the platform most of CI runs on.
+ *
+ * `timeoutMs` is a defaulted parameter for a neighbouring reason. Proving that a bound awcli had
+ * to enforce comes back as "could not ask" rather than as "nothing holds that id" means waiting the
+ * bound out, and a suite that waits `PS_TIMEOUT_MS` for each such case is a suite nobody keeps. It
+ * is not a configuration point — `identify` calls this with the default — and the sentence below
+ * names the bound that was passed rather than the constant, so one wording covers whichever bound
+ * expired.
  */
-export async function psIdentify(pid: number): Promise<ProbeAnswer> {
+export async function psIdentify(
+  pid: number,
+  timeoutMs: number = PS_TIMEOUT_MS,
+): Promise<ProbeAnswer> {
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: PS_TIMEOUT_MS,
-      env: { ...process.env, LC_ALL: "C" },
-    }));
+    ({ stdout } = await runPsBounded(
+      "ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      timeoutMs,
+    ));
   } catch (error) {
     const failure = error as {
       code?: string | number;
@@ -259,8 +488,10 @@ export async function psIdentify(pid: number): Promise<ProbeAnswer> {
     if (failure.code === 1 && failure.killed !== true && complaint.length === 0) {
       return { kind: "not-found" };
     }
-    // Everything else is a question that could not be asked: `ps` absent from the image
-    // (ENOENT), the timeout above (killed), EAGAIN from fork on a loaded box.
+    // Everything else is a question that could not be asked: `ps` absent from the image or
+    // reachable only through a PATH entry `psSearchPath` drops (ENOENT), the bound in
+    // `runPsBounded` expiring (killed, however `execFile` itself settled), EAGAIN from fork on a
+    // loaded box.
     // `complaint` is another program's stderr, and the reason reaches a terminal two ways: through
     // a refusal, and through the startup throw in `self()`. Sanitised here rather than at each
     // consumer, so a `ps` that prints an escape sequence cannot repaint a screen through whichever
@@ -269,7 +500,7 @@ export async function psIdentify(pid: number): Promise<ProbeAnswer> {
       kind: "unknown",
       reason:
         failure.killed === true
-          ? `ps did not answer within ${PS_TIMEOUT_MS}ms`
+          ? `ps did not answer within ${timeoutMs}ms`
           : complaint.length > 0
             ? `ps refused the question (${printable(complaint.split("\n")[0] ?? "", COMPLAINT_LIMIT)})`
             : `ps could not be run (${printable(String(failure.code ?? error))})`,
@@ -315,8 +546,10 @@ export const systemProcessProbe: ProcessProbe = {
       // Reachable, and the comment here long claimed otherwise — "a process asking about itself is
       // running by definition", which is true of `not-found` and says nothing at all about the
       // branch that actually fires. `unknown` reaches this: a container image whose `ps`
-      // does not take `-o lstart=` answers it on every ask, and so does a `/proc` a hardened
-      // `hidepid` will not show us. Failing loudly rather than inventing a start time, because a
+      // does not take `-o lstart=` answers it on every ask, so does a `/proc` a hardened `hidepid`
+      // will not show us, and so does a PATH whose only `ps` sits behind an entry `psSearchPath`
+      // drops — which is why the remedy below names an absolute directory as well as a package.
+      // Failing loudly rather than inventing a start time, because a
       // wrong `startedAt` here would be written into the lock and would make this run's own lock
       // look stale to the next one — so awcli would refuse its own name for reasons nobody could
       // trace. The message carries the probe's reason for exactly that.
@@ -326,7 +559,7 @@ export const systemProcessProbe: ProcessProbe = {
             ? answer.reason
             : "the process table has no entry for it"
         }. It needs that to hold a run lock a later run can tell apart from a recycled process id. ` +
-          `Install ps (the procps package on most images), or run awcli on a host that will report process start times.`,
+          `Install ps (the procps package on most images), put the directory holding it on PATH as an absolute path, or run awcli on a host that will report process start times.`,
       );
     });
     // Not cached on failure: a transient `ps` timeout should not poison every later attempt in
