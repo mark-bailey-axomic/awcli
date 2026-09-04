@@ -274,7 +274,23 @@ expect_red "a lock file's bytes are not printed to the terminal unfiltered" src/
 # characters make two different values render identically. Each was added after the ranges already
 # there turned out not to cover the next thing tried, which is the argument for the mutation.
 expect_red "the sanitizer covers more than the control characters" src/runtime/printable.ts \
-  's/\\u061c\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff//'
+  's/\\u061c\\u115f\\u1160\\u17b4\\u17b5\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\u3164\\ufe00-\\ufe0e\\ufeff\\uffa0//'
+
+# And the classes that render as blank or as nothing while belonging to none of the groups above:
+# the soft hyphen and the combining grapheme joiner, the Hangul and Khmer fillers, and the variation
+# selectors. Measured one class at a time against the previous pattern, which let every one of them
+# through — and all of them are legal in a filename and legal in a git refname, so both channels this
+# module exists for can carry them.
+expect_red "the sanitizer covers the characters that render as blank, not only as reversed" src/runtime/printable.ts \
+  's/\\u00ad\\u034f//'
+
+# The tags block, which is the one worth its own mutation. Its 128 code points render as nothing at
+# all and U+E0020-U+E007F are a shadow ASCII alphabet, so an arbitrary sentence rides inside a value
+# that displays as `main`. It was out of reach of the earlier pattern twice over — by range, and by
+# shape, because it is non-BMP and the pattern had no `u` flag. Dropping the flag is the faithful
+# regression: the range then cannot be written as a range at all.
+expect_red "the sanitizer reaches the invisible characters above the BMP" src/runtime/printable.ts \
+  's/\\u\{e0000\}-\\u\{e007f\}\]\/gu;/]\/g;/'
 
 # A refusal throws while formatting itself, because `acquiredAt` came off disk.
 expect_red "a lock's unreadable acquisition time is reported, not thrown on" src/runtime/run-lock.ts \

@@ -16,15 +16,20 @@
 # scenario is an acceptance criterion on exactly one ticket, and that every @BR tag names a rule
 # that exists.
 #
-# Four later checks reach past those four documents. Check 9 reads the DELIVERED_BY table in
+# Six later checks reach past those four documents. Check 9 reads the DELIVERED_BY table in
 # src/runtime/context.ts and the work breakdown in the TDD, because that table is the pointer saying
 # which unit delivers each unbuilt context member and it has shipped wrong. Check 10 reads the
 # manifest's own freshness stamp against git. Check 11 recomputes the ticket README's wave picture
 # from the `Blocked by` column of the table above it — the picture was a wave shallower than the
 # edges for three tickets, and nothing said so. Check 12 asserts that every gate `check:gates` runs
-# has a row in the root README's gate table, which the ninth gate did not. All of them are still
-# comparisons between things a person maintains by hand, which is the only thing this script knows
-# how to do.
+# has a row in the root README's gate table, which the ninth gate did not. Check 13 takes the
+# dependency edges the other way round: a ticket's `Blocks` line is the reverse of every other
+# ticket's `Blocked by`, and two of them disagreed with it for as long as they have existed because
+# only the forward direction was ever read. Check 14 recomputes the three sets the ticket README
+# enumerates in prose — the tickets with no scenario, the tickets with no work-breakdown unit, and
+# the tickets outside the waves — each of which has been written down with the wrong count in
+# consecutive review rounds. All of them are still comparisons between things a person maintains by
+# hand, which is the only thing this script knows how to do.
 #
 # Unlike the other gates here it perturbs nothing, so there is no backup to restore and no window
 # in which a Ctrl-C leaves a tracked file corrupted. Every check is a comparison, and all of them
@@ -59,8 +64,9 @@ same() {
   if [ "$2" = "$3" ]; then ok "$1 ($2)"; else bad "$1 — $2 != $3"; fi
 }
 
-# A renamed or moved document would otherwise make every grep below return nothing, and eleven
-# simultaneous count mismatches do not say "the path is wrong".
+# A renamed or moved document would otherwise make every grep below return nothing, and every check
+# in the script failing at once does not say "the path is wrong". Stated without a count, because
+# the count of checks is one more hand-maintained number and this file is where that joke lives.
 for document in "$RULES" "$BDD" "$MANIFEST" "$README" "$TDD" "$CONTEXT"; do
   if [ ! -f "$document" ]; then
     echo "FAIL: $document is not on disk — this script is checking nothing" >&2
@@ -383,10 +389,16 @@ fi
 # The level of a ticket is one more than the deepest ticket it names, which is the definition the
 # README states in words ("workable as soon as every ticket in an earlier wave that it names as a
 # blocker has landed"). Tickets naming nothing sit at level 0 — except that the README deliberately
-# places AWCLI-27 and AWCLI-28 *outside* the waves rather than in wave 0, because neither has an
-# edge in either direction and putting them in a wave would imply one. Those two are read off the
-# table and excluded by name, so adding a third such ticket fails here rather than silently joining
-# wave 0.
+# places them *outside* the waves rather than in wave 0, because a ticket with no edge in either
+# direction would have a wave imply one.
+#
+# The exclusion is by empty `Blocked by` cell and not by name, which is the correction of what this
+# said. It claimed AWCLI-27 and AWCLI-28 were "read off the table and excluded by name, so adding a
+# third such ticket fails here rather than silently joining wave 0" — and the awk below excludes
+# every edgeless ticket alike (`if (edges[id] == "") continue`). AWCLI-29 arrived edgeless two
+# commits after that sentence was written, this check went on printing `ok`, and the sentence was
+# the only thing that said otherwise. What keeps the *prose* in step is the README naming the
+# excluded set in a sentence of its own and check 14c recomputing that sentence from the table.
 waves_expected="$(awk '
   /^\| \[AWCLI-/ {
     # `| [AWCLI-13](...) | Title | 3 | WB-8 | 03, 07 |` — id from the link, blockers from the last cell.
@@ -475,6 +487,204 @@ else
       ok "12 every gate check:gates runs has a row in $ROOT_README ($(printf '%s\n' "$gates_run" | wc -l | tr -d ' ') of them)"
     fi
   fi
+fi
+
+# ── 13. The edges read the same in both directions, and in all three documents ───────────────
+#
+# Every ticket states its dependencies twice — `**Blocked by:**` and `**Blocks:**` — and the second
+# is not an independent fact: it is the reverse of every other ticket's first. Nothing had ever read
+# it. AWCLI-01 declared `Blocks: AWCLI-02, AWCLI-05, AWCLI-15, AWCLI-26` while AWCLI-19, AWCLI-23,
+# AWCLI-24 and AWCLI-25 all named it as a blocker, and AWCLI-04 declared `Blocks: AWCLI-12,
+# AWCLI-16` while AWCLI-11 also named it. Both predate PR #15 and both survived the round that added
+# check 11, which recomputes the wave picture from the same graph in the forward direction only.
+#
+# 13b is the direction that was correct and unwatched. The forward edges live in three places — each
+# ticket's own `Blocked by` line, the `Blocked by` column of the README table, and the manifest's
+# `depends_on` — and check 11 reads only the middle one, so a ticket whose own line drifted from the
+# table would move no wave and fail nothing. Checked rather than trusted: they agreed on all thirty
+# when this was written, which is the state worth pinning rather than the state worth reporting.
+if ! python3 - "$TICKETS" "$README" "$MANIFEST" <<'EDGES_PY'
+import pathlib, re, sys, collections
+
+tickets, readme, manifest = (pathlib.Path(a) for a in sys.argv[1:4])
+
+def ids(text):
+    return sorted(set(re.findall(r"AWCLI-(\d+)", text)))
+
+blocked, blocks = {}, {}
+for path in sorted(tickets.glob("AWCLI-*.md")):
+    ticket = re.match(r"AWCLI-(\d+)", path.name).group(1)
+    body = path.read_text()
+    # One line each, and exactly one: two `Blocks:` lines would let the second drift unread, which
+    # is the failure this whole check is about one level up.
+    for label, into in (("Blocked by", blocked), ("Blocks", blocks)):
+        found = re.findall(rf"^\*\*{label}:\*\*(.*)$", body, re.M)
+        if len(found) != 1:
+            print(f"FAIL: 13  AWCLI-{ticket} has {len(found)} '**{label}:**' lines, so this check "
+                  f"cannot read its edges", file=sys.stderr)
+            sys.exit(1)
+        into[ticket] = ids(found[0])
+
+reverse = collections.defaultdict(list)
+for ticket, parents in blocked.items():
+    for parent in parents:
+        reverse[parent].append(ticket)
+
+broken = 0
+for ticket in sorted(blocked):
+    computed = sorted(reverse[ticket])
+    if blocks[ticket] != computed:
+        print(f"FAIL: 13a AWCLI-{ticket} declares Blocks {blocks[ticket]}; the tickets that name it "
+              f"as a blocker are {computed}", file=sys.stderr)
+        broken = 1
+if not broken:
+    print(f"  ok: 13a every Blocks line is the reverse of the Blocked by edges ({len(blocked)} "
+          f"tickets)")
+
+# `| [AWCLI-13](...) | Title | 3 | WB-8 | 03, 07 |` — the last cell, the way check 11 reads it.
+table = {}
+for line in readme.read_text().splitlines():
+    row = re.match(r"^\| \[AWCLI-(\d+)\]", line)
+    if row:
+        cells = line.split("|")
+        table[row.group(1)] = sorted(set(re.findall(r"\d+", cells[-2])))
+
+declared = {}
+for entry in re.finditer(r"^  - id: AWCLI-(\d+)$(.*?)(?=^  - id: |\Z)",
+                         manifest.read_text(), re.M | re.S):
+    depends = re.search(r"^    depends_on: \[(.*)\]$", entry.group(2), re.M)
+    declared[entry.group(1)] = ids(depends.group(1)) if depends else None
+
+crossed = 0
+for ticket in sorted(blocked):
+    row = table.get(ticket)
+    yaml = declared.get(ticket)
+    if row is None:
+        print(f"FAIL: 13b AWCLI-{ticket} has no row in the README table", file=sys.stderr)
+        crossed = 1
+    elif row != blocked[ticket]:
+        print(f"FAIL: 13b AWCLI-{ticket} says it is blocked by {blocked[ticket]}; the README table "
+              f"says {row}", file=sys.stderr)
+        crossed = 1
+    if yaml is None:
+        print(f"FAIL: 13b the manifest entry for AWCLI-{ticket} has no depends_on", file=sys.stderr)
+        crossed = 1
+    elif yaml != blocked[ticket]:
+        print(f"FAIL: 13b AWCLI-{ticket} says it is blocked by {blocked[ticket]}; the manifest's "
+              f"depends_on says {yaml}", file=sys.stderr)
+        crossed = 1
+if not crossed:
+    print(f"  ok: 13b ticket Blocked by == README table column == manifest depends_on "
+          f"({len(blocked)} tickets)")
+
+sys.exit(1 if (broken or crossed) else 0)
+EDGES_PY
+then
+  fail=1
+fi
+
+# ── 14. The sets the README enumerates in prose are the sets the artifacts compute ────────────
+#
+# Three sentences in the ticket README name a set of tickets and its size. Each has been written
+# down wrong in consecutive review rounds, and always the same way: the commit that added a ticket
+# belonging to the set updated the count it was already looking at and not the sentence that
+# enumerates it. The no-scenario sentence went four → six → six with a seventh ticket present; the
+# WB-dash bullet went two → four → four with a fifth. Both were reported as findings twice.
+#
+# So the sentences are structured to be read: `<count> tickets: AWCLI-nn, ...` with the count as a
+# word and the ids to the end of the sentence, and the rationale in the prose after them, which no
+# check needs to parse. A rewording that this cannot read fails rather than passing quietly — the
+# `sole_match` rule one screen up, applied to a sentence instead of a number, because a check that
+# has silently stopped applying is the failure mode both counts reached.
+#
+# What each set is computed from:
+#   14a  no scenario — a ticket with no italicised criterion in its Acceptance Criteria section,
+#        which is what check 4 defines a scenario reference to be.
+#   14b  no work-breakdown unit — a `—` in the WB column of the README's own table.
+#   14c  outside the waves — an empty `Blocked by` cell, which is exactly what check 11's awk skips,
+#        less AWCLI-00, whose wave 0 the README states in a sentence of its own.
+if ! python3 - "$TICKETS" "$README" <<'ENUMERATIONS_PY'
+import pathlib, re, sys
+
+tickets, readme = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+text = readme.read_text()
+# Hard-wrapped prose, so a sentence straddles line breaks exactly as a criterion does in check 4.
+unwrapped = re.sub(r"\s*\n\s*", " ", text)
+
+WORDS = {w: n for n, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen "
+    "sixteen seventeen eighteen nineteen twenty".split())}
+
+def sentence(pattern, label):
+    """The one sentence matching `pattern`: its count word and the ids it names, or None."""
+    found = re.findall(pattern, unwrapped)
+    if len(found) != 1:
+        print(f"FAIL: {label} the sentence this check reads matches {len(found)} times in "
+              f"{readme} — it has been reworded, so the check has stopped applying",
+              file=sys.stderr)
+        return None
+    word, listed = found[0][0].lower(), found[0][1]
+    if word not in WORDS:
+        print(f"FAIL: {label} '{word}' is not a number word this check knows", file=sys.stderr)
+        return None
+    return WORDS[word], sorted(set(re.findall(r"AWCLI-(\d+)", listed)))
+
+def compare(label, claim, computed, what):
+    if claim is None:
+        return 1
+    count, listed = claim
+    if listed != computed:
+        print(f"FAIL: {label} the README names {['AWCLI-' + i for i in listed]} as {what}; the "
+              f"artifacts say {['AWCLI-' + i for i in computed]}", file=sys.stderr)
+        return 1
+    if count != len(computed):
+        print(f"FAIL: {label} the README says {count} tickets {what} and then names "
+              f"{len(computed)}", file=sys.stderr)
+        return 1
+    print(f"  ok: {label} the {len(computed)} tickets the README names as {what} are the ones the "
+          f"artifacts compute")
+    return 0
+
+# A scenario reference is an italic criterion inside the Acceptance Criteria section — check 4's
+# definition, and it holds that every italic there is a verbatim scenario name, so "no italics" and
+# "no scenario" are the same question by the time this runs.
+no_scenario = []
+for path in sorted(tickets.glob("AWCLI-*.md")):
+    sections = re.findall(r"^## Acceptance Criteria\s*$(.*?)(?=^## |\Z)", path.read_text(),
+                          re.M | re.S)
+    italics = [
+        italic
+        for section in sections
+        for italic in re.findall(r"(?<!\*)\*([^*\n][^*]*)\*(?!\*)", re.sub(r"\n\s+", " ", section))
+    ]
+    if not italics:
+        no_scenario.append(re.match(r"AWCLI-(\d+)", path.name).group(1))
+
+# The README's own table, read the way check 11 reads it: id from the link, WB from the fourth cell,
+# blockers from the last.
+dashed, edgeless = [], []
+for line in text.splitlines():
+    row = re.match(r"^\| \[AWCLI-(\d+)\]", line)
+    if not row:
+        continue
+    cells = [cell.strip() for cell in line.split("|")]
+    if cells[4] == "—":
+        dashed.append(row.group(1))
+    if not re.search(r"\d", cells[5]):
+        edgeless.append(row.group(1))
+
+broken = compare("14a", sentence(r"it applies to (\w+) tickets: ([^.]*)\.", "14a"),
+                 sorted(no_scenario), "carrying no scenario")
+broken |= compare("14b", sentence(r"and (\w+) carry it: ([^.]*)\.", "14b"),
+                  sorted(dashed), "owned by no work-breakdown unit")
+# AWCLI-00 is edgeless and in wave 0, which the README says in its own sentence; the rest of the
+# edgeless tickets are the ones this sentence has to name.
+broken |= compare("14c", sentence(r"\*\*(\w+) tickets sit outside the waves\*\*: ([^.]*)\.", "14c"),
+                  sorted(t for t in edgeless if t != "00"), "sitting outside the waves")
+sys.exit(1 if broken else 0)
+ENUMERATIONS_PY
+then
+  fail=1
 fi
 
 echo

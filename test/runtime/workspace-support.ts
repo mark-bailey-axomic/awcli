@@ -11,12 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterAll, afterEach, beforeAll } from "vitest";
+import { afterEach } from "vitest";
 import { validateRunName, type RunName } from "../../src/runtime/run-identity.js";
 import {
   resolveWorkspaceChoice,
   type WorkspaceChoice,
 } from "../../src/runtime/workspace.js";
+import { gitEnvironment } from "./git-hermetic.js";
 
 /**
  * Real git, against real repositories in a temp directory — the fixtures the workspace suites share.
@@ -31,60 +32,24 @@ import {
  *
  * A module rather than a copy per file, because the suite is split across files for a reason that
  * has nothing to do with what it asserts: every mutation in `verify-workspace-gate.sh` runs the
- * whole thing, vitest parallelises across *files* and not within one, and one 1800-line file made
- * the gate a 20-minute job whose cost was already being traded against coverage (two mutations
- * declined outright for it). Splitting along the `describe` blocks puts the same assertions on
- * eleven cores. What must not be split is the setup: two copies of `repository()` drift, and the
- * drift is invisible because both copies still pass.
+ * whole thing, vitest parallelises across *files* and not within one, and a single file made each
+ * mutation pay the whole suite serially — a cost that was already being traded against coverage (two
+ * mutations declined outright for it). Splitting along the `describe` blocks lets the files run side
+ * by side, bounded by the slowest one rather than by their sum. What must not be split is the setup:
+ * two copies of `repository()` drift, and the drift is invisible because both copies still pass.
  *
- * The hooks below are registered at module scope on purpose. A `use…()` call each file has to
- * remember is a call a new file will not make, and the failure — a suite reading the developer's
- * own git configuration, or leaving temp repositories behind — is silent. Importing this module is
- * how a file gets `repository()`, so it cannot get the fixtures without also getting their cleanup.
+ * The `afterEach` below is registered at module scope on purpose. A `use…()` call each file has to
+ * remember is a call a new file will not make, and the failure — temp repositories left behind — is
+ * silent. Importing this module is how a file gets `repository()`, so it cannot get the fixtures
+ * without also getting their cleanup.
+ *
+ * The environment the code under test reads is pinned the same way, one module along: `git-hermetic.ts`
+ * holds those hooks and `gitEnvironment()`, because a file that builds its own fixtures needs the
+ * pins without needing `repository()` — which is exactly the file that went without them. See there.
  */
 const execFileAsync = promisify(execFile);
 
 const repositories: string[] = [];
-
-/**
- * Git with nothing of the developer's own configuration in it, for the suite's own setup calls.
- *
- * `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` reach the code under test as well, and that is the
- * correction: `gitEnvironment()` used to strip every `GIT_CONFIG*` variable, so this neutralisation
- * covered the tests' own `git()` helper and stopped at the seam — `systemGitRunner` handed the
- * developer's real `$HOME/.gitconfig` back to git. An operator with `status.showUntrackedFiles=no`
- * therefore ran a different `dirty()` from the one CI ran. git-process.ts now passes those two
- * through (it strips the *injectors* by name), so setting them process-wide below makes the git
- * under test hermetic too.
- */
-const GIT_ENV = {
-  ...process.env,
-  GIT_CONFIG_GLOBAL: "/dev/null",
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_AUTHOR_NAME: "awcli test",
-  GIT_AUTHOR_EMAIL: "test@example.invalid",
-  GIT_COMMITTER_NAME: "awcli test",
-  GIT_COMMITTER_EMAIL: "test@example.invalid",
-};
-
-/** The two the code under test reads, set for the length of the file and put back after it. */
-const HERMETIC: readonly string[] = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"];
-const inherited = new Map<string, string | undefined>();
-
-beforeAll(() => {
-  for (const name of HERMETIC) {
-    inherited.set(name, process.env[name]);
-    process.env[name] = "/dev/null";
-  }
-});
-
-afterAll(() => {
-  for (const [name, value] of inherited) {
-    if (value === undefined) delete process.env[name];
-    else process.env[name] = value;
-  }
-  inherited.clear();
-});
 
 afterEach(async () => {
   await Promise.all(
@@ -107,7 +72,7 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", args, {
     cwd,
     encoding: "utf8",
-    env: GIT_ENV,
+    env: gitEnvironment(),
   });
   return stdout;
 }
@@ -123,7 +88,7 @@ export async function shell(cwd: string, command: string): Promise<string> {
   const { stdout } = await execFileAsync("sh", ["-c", command], {
     cwd,
     encoding: "utf8",
-    env: GIT_ENV,
+    env: gitEnvironment(),
   });
   return stdout;
 }
@@ -163,6 +128,31 @@ export async function repository(): Promise<string> {
   await git(path, "commit", "-qm", "first");
   await writeFile(join(path, "file.txt"), "committed\nuncommitted\n", "utf8");
   await writeFile(join(path, "scratch.txt"), "untracked\n", "utf8");
+  return path;
+}
+
+/**
+ * A repository whose path contains a newline, which is the case quoting cannot rescue.
+ *
+ * The sibling of the spaced fixture below and the opposite outcome: a space is what `shellPath`'s
+ * single quotes exist for and the remedy runs unchanged, while a newline is taken out by `printable`
+ * before the quoting happens — so the remedy would name a path with a `?` in it, which is a legal
+ * filename and a different directory. Both live in the *repository root*, because that is what every
+ * `git worktree remove <path>` in a refusal interpolates.
+ *
+ * A newline rather than an ESC because it is the least exotic member of the class: git hands the
+ * path back byte for byte from `rev-parse --show-toplevel` (measured on git 2.55 in a directory
+ * whose name carries one), and nothing about the repository is unusual otherwise.
+ */
+export async function repositoryWithAnUnshowablePath(): Promise<string> {
+  const parent = await mkdtemp(join(tmpdir(), "awcli-workspace-unshowable-"));
+  repositories.push(parent);
+  const path = join(await realpath(parent), "two\nlines");
+  await mkdir(path);
+  await git(path, "init", "-q", "-b", "main", ".");
+  await writeFile(join(path, "file.txt"), "committed\n", "utf8");
+  await git(path, "add", "-A");
+  await git(path, "commit", "-qm", "first");
   return path;
 }
 

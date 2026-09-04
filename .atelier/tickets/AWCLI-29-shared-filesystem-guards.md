@@ -1,13 +1,18 @@
 # AWCLI-29 — [AWCLI] One copy of the filesystem guards the runtime modules share
 
-**Points:** 2 · **Source:** new — review of PR #15, run 3 (F-029 there: the duplicated fs helpers) · **Status:** Ready
+**Points:** 3 · **Source:** new — review of PR #15, run 3 (F-029 there: the duplicated fs helpers); widened in run 6 to carry the refusal-message extraction · **Status:** Ready
 
 ## Problem / Goal
 
 `src/runtime/run-lock.ts` and `src/runtime/workspace.ts` each carry their own copy of the same
-five filesystem guards: `lstatOrMissing`, `isErrno`, `errnoOf`, `ignoreCleanupFailure`, and the
+six filesystem guards: `lstatOrMissing`, `isErrno`, `errnoOf`, `ignoreCleanupFailure`, and the
 "cannot write here" and "nothing through a symlink" guards that use them. The first four are
-byte-identical; the last two differ only in the sentence they hand the operator.
+byte-identical; the last two differ only in the sentence they hand the operator. Six rather than the
+five this said, counted off the definitions rather than the sentence: `run-lock.ts` defines
+`refuseSymlinkedAncestors`, `lstatOrMissing`, `refuseUnwritable`, `isErrno`, `errnoOf` and
+`ignoreCleanupFailure`, and `workspace.ts` defines `assertNoSymlinkedAncestors`, `lstatOrMissing`,
+`faultOnUnwritable`, `isErrno`, `ignoreCleanupFailure` and `errnoOf`. Run 5 called it four and run 6
+called it five, each time by counting the list and not the enumeration in the same sentence.
 
 They have already drifted once and been re-synchronised by hand, which put two copies back in
 agreement without removing the mechanism that separated them. They are drifting again:
@@ -21,7 +26,13 @@ agreement without removing the mechanism that separated them. They are drifting 
   `refuseSymlinkedAncestors` and `refuseUnwritable`.
 
 The third caller is the one this ticket is for. AWCLI-14, AWCLI-22 and AWCLI-25 all touch the
-runtime layout, and each will copy whichever version it happens to open.
+runtime layout, and each will copy whichever version it happens to open. No *Blocks* edge is
+recorded against them even so, and that is a decision rather than an oversight: the edges in this
+file are what `verify-spec-invariants.sh` computes the wave diagram from, so a scheduling preference
+expressed as a dependency would reshape the graph and claim that none of those three can start until
+this lands — which is false, and which is a worse statement than the one this paragraph makes. What
+is true is narrower: whichever of the three lands first should land after this, and if it does not,
+it copies a guard whose weaker copy is a symlink-escape.
 
 ## Context
 
@@ -33,10 +44,14 @@ case it currently throws a raw errno on, and a rename that moves three anchors i
 to a shipped module in a ticket that does not own it, which is the ownership discipline the rest of
 that review is about. The extraction is right; the place for it is a ticket of its own.
 
-Roughly twelve lines move. Neither gate loses a mutation: each one anchors on a line that still
-exists, in a different file.
+About forty lines of code move, not the twelve this said. Measured over the six definitions,
+bodies only and docblocks excluded: 40 code lines in `workspace.ts` and 39 in `run-lock.ts`, of
+which the two ancestor guards are 10 and 14 on their own. Neither gate loses a mutation: each one
+anchors on a line that still exists, in a different file.
 
-## Functional
+## Requirements
+
+### Functional
 
 - Move `lstatOrMissing`, `isErrno`, `errnoOf`, `ignoreCleanupFailure` and the two guards that use
   them into one module both `run-lock.ts` and `workspace.ts` import.
@@ -44,8 +59,28 @@ exists, in a different file.
   not the same sentence — by parameterising what the guard is protecting, not by keeping two guards.
 - Name the moved guards for the channel they use: `assert*` throws, `refuse*` refuses.
 - Give the lock path the "an ancestor is an ordinary file" sentence the workspace path has.
+- Give the lock path the level-by-level layout maker too, which is the divergence with teeth rather
+  than a wording one. `run-lock.ts` still creates its directories with `mkdir(dirname(path),
+  {recursive: true})` between two ancestor checks; `workspace.ts` replaced exactly that shape with
+  `makeLayout` because a recursive `mkdir` *follows* an existing symlink at any level, so awcli had
+  already written outside the repository by the time the second check refused. Checked-then-used
+  either way, but one of the two creates nothing through the link. The lock path is reachable by the
+  same actor for the same reason, so it gets the same maker — or, if that is declined, Out of Scope
+  says so and why, because a known divergence left unnamed is one that gets rediscovered.
 
-## Non-Functional
+- Move `workspace.ts`'s refusal-message layer out with them, or say here why not. Measured at run 6,
+  when the file stood at 1637 lines, of which 957 were comment and 613 code, and the message layer —
+  `shellPath`, the two limits, `WorktreeRegistration`/`worktreeRegistration`, `canonicalPath`,
+  `Occupancy`, `TargetClaim`, `occupiedRefusal`, `BranchCollision`/`branchCollision`,
+  `collisionMessage`, `describe` — was 396 of those lines and 125 of the code. It is the seam with the
+  most prose per line of code, it is where the last four review rounds found the most defects, and it
+  needs nothing from the provisioning path but a `GitRunner` and four strings. The reason it belongs
+  *here* rather than in a ticket of its own is the cost of the move: both extractions re-anchor
+  `verify-workspace-gate.sh`, and doing them in one ticket re-anchors it once. The git port is
+  already properly separated — nothing in `workspace.ts` knows how git is spawned, bounded or
+  classified — so this is the last seam in the file worth moving.
+
+### Non-Functional
 
 - No behaviour change on the workspace path: it already has both sentences.
 
@@ -56,10 +91,12 @@ exists, in a different file.
 
 ## Acceptance Criteria
 
-- [ ] One definition of each of the five, imported by both modules — asserted by there being no
+- [ ] One definition of each of the six, imported by both modules — asserted by there being no
       second definition to find.
 - [ ] A repository carrying a tracked file at `.awcli` is named as such on the lock path, not
       thrown at as a bare `ENOTDIR` — asserted by test, watched failing first.
+- [ ] A symlink planted at any level of the lock path's layout creates nothing through it — asserted
+      by test on the lock path the way `workspace-faults.test.ts` asserts it on the worktree path.
 - [ ] Both mutation gates still pass, with every mutation that named a moved line re-anchored
       rather than removed.
 - [ ] All tests pass, format check clean, type check clean.

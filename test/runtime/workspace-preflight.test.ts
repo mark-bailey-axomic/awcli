@@ -9,7 +9,11 @@ import {
   type GitOutcome,
   type GitRunner,
 } from "../../src/runtime/git-process.js";
-import { acquireWorkspace, resolveWorkspaceChoice } from "../../src/runtime/workspace.js";
+import {
+  LIVE_CHECKOUT_FLAG,
+  acquireWorkspace,
+  resolveWorkspaceChoice,
+} from "../../src/runtime/workspace.js";
 import {
   git,
   bareStart,
@@ -37,6 +41,14 @@ describe("what provisioning refuses rather than does: the repository itself", ()
       if (outcome.ok) return;
       expect(outcome.kind).toBe("no-commit");
       expect(outcome.message).toContain("commit");
+      // And the remedy, which is the whole of what the operator does next and which `toContain(
+      // "commit")` above cannot see: the word is in the diagnosis as well, so the sentence could be
+      // cut back to it with this test green — measured, and the gate mutation that does it is what
+      // keeps this line honest. The refusal kinds this module raises are remedies, not prose.
+      expect(outcome.message).toContain("Make one commit and run again");
+      // The run this was refused for, which travels on the refusal for the log and the run record
+      // and which no test read: a refusal reporting another run's name is as broken as no refusal.
+      expect(outcome.run).toBe(TRIAGE);
     }
     expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
   });
@@ -74,6 +86,15 @@ describe("what provisioning refuses rather than does: the repository itself", ()
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.kind).toBe("detached-head");
+    // The message had no assertion at all, so the whole template literal could be replaced with the
+    // string "x" and the suite stayed green — measured over the gate's ten files. What it has to say
+    // is both remedies, because they are genuinely different decisions: check out a branch and work
+    // where you are, or drop the flag and let awcli make a worktree. The second is the one BR-014's
+    // no-silent-downgrade rule turns on, and it is only offered here because this refusal is the one
+    // place awcli knows the operator asked for their own checkout.
+    expect(outcome.message).toContain(repositoryPath);
+    expect(outcome.message).toContain("Check out a branch and run again");
+    expect(outcome.message).toContain(`leave ${LIVE_CHECKOUT_FLAG} off`);
   });
 
   /**
@@ -99,6 +120,12 @@ describe("what provisioning refuses rather than does: the repository itself", ()
     expect(outcome.message).toContain(missing);
     // The remedy is about the path, and says nothing about installing anything.
     expect(outcome.message).not.toContain("Install git");
+    // And it says which remedy, positively: the path assertion above is satisfied by the path alone,
+    // so everything after it could go — including the clause that tells the operator awcli never got
+    // as far as git, which is the difference between "your path is wrong" and "your git is broken".
+    expect(outcome.message).toContain(
+      "Check the path — awcli did not get as far as asking git about it",
+    );
   });
 
   /**
@@ -219,6 +246,17 @@ describe("what provisioning refuses rather than does: the repository itself", ()
     if (outcome.ok) return;
     expect(outcome.kind).toBe("git-unavailable");
     expect(outcome.message).toContain("git");
+    // The remedy, which `toContain("git")` cannot see — the word is in every sentence in this module.
+    // Both halves of it: install git, or put it on the PATH awcli is run with, because the second is
+    // the case an operator with git in `/opt/homebrew/bin` and a stripped PATH is actually in.
+    expect(outcome.message).toContain(
+      "Install git, or put it on the PATH awcli is run with",
+    );
+    // And git's own reason for not starting, which is the only thing here that came from outside.
+    expect(outcome.message).toContain("spawn git ENOENT");
+    // Said without naming a worktree: this refusal is raised for both axes, and an operator who
+    // passed --live-checkout would otherwise read that awcli works by making one.
+    expect(outcome.message).not.toContain("worktree");
   });
 
   /**
@@ -305,6 +343,77 @@ describe("what provisioning refuses rather than does: the repository itself", ()
     expect(outcome.kind).toBe("no-working-tree");
     expect(outcome.message).toContain("working tree");
     expect(outcome.message).toContain(repositoryPath);
+    // The remedy and git's own complaint, neither of which the two lines above can see: "working
+    // tree" is in the diagnosis, so the clone remedy and git's sentence could both go with this test
+    // green. The remedy is the actionable half — a bare repository is not a state to fix in place —
+    // and git's line is what tells an operator who is *not* in a bare repository what else this is.
+    expect(outcome.message).toContain("point it at a clone rather than at the bare one");
+    // Matched as a shape rather than as git's exact sentence: what awcli owns is that the complaint
+    // is carried and attributed, and pinning `fatal: this operation must be run in a work tree`
+    // verbatim would be asserting the wording of whichever git ran the suite. (It is that sentence on
+    // the git 2.55 this was written against; awcli's floor is 2.36.)
+    expect(outcome.message).toMatch(/git said: fatal: .+/);
     expect(stack.held).toEqual([]);
+  });
+});
+
+/**
+ * Which commit the working copy is cut from, which is the sha the preflight resolved.
+ *
+ * `git branch <name> <sha>` rather than `git branch <name> HEAD`, and the difference is a whole
+ * paragraph in `openWorktree` with nothing watching it: measured, substituting the literal `"HEAD"`
+ * left all ten of the gate's suites green, at the 138 tests those files held when it was measured.
+ * And `HEAD` is `git branch`'s own default, so it is the wrong implementation you get by writing the
+ * obvious version rather than a strawman.
+ *
+ * A sha pins what the run works from at preflight time. `HEAD` is re-resolved by git *inside* the
+ * window the comments around the cut spend paragraphs closing, so a commit landing on the operator's
+ * branch meanwhile silently becomes what this run worked from — and BR-025 records the run against
+ * the commit the preflight read, so the record would name a commit the run never started from.
+ */
+describe("the commit a run is cut from", () => {
+  it("cuts from the commit the preflight read, not from HEAD resolved again", async () => {
+    const repositoryPath = await repository();
+    const atPreflight = (await git(repositoryPath, "rev-parse", "HEAD")).trim();
+    let landed: string | undefined;
+    // The operator's own commit, landing inside the window: after the preflight has read HEAD and
+    // before `git branch` is given its argument. Staged through the seam at the collision query,
+    // which is the call immediately before the cut, on this suite's own precedent — racing for it
+    // would assert whichever ordering the machine produced.
+    const committing: GitRunner = async (args, cwd) => {
+      if (landed === undefined && args.includes("for-each-ref")) {
+        await git(
+          repositoryPath,
+          "commit",
+          "--allow-empty",
+          "-qm",
+          "the operator's own commit",
+        );
+        landed = (await git(repositoryPath, "rev-parse", "HEAD")).trim();
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: committing,
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // The operator's branch really did move inside the window — the premise, not an assertion about
+    // awcli. Without it the two shas are equal and the test would pass either implementation.
+    expect(landed).toBeDefined();
+    expect(landed).not.toBe(atPreflight);
+    expect((await git(repositoryPath, "rev-parse", "HEAD")).trim()).toBe(landed);
+
+    // And the run works from what the preflight read, on the handle BR-025 records...
+    expect(await outcome.workspace.head()).toBe(atPreflight);
+    // ...and on the ref itself, which is what an operator and AWCLI-14 both look at.
+    expect((await git(repositoryPath, "rev-parse", "awcli/triage/main")).trim()).toBe(
+      atPreflight,
+    );
   });
 });

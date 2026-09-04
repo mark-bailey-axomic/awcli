@@ -1,6 +1,6 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, realpath, rmdir } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import type { Acquisition, DisposalStack } from "./disposal.js";
 import { gitComplaint, systemGitRunner, type GitRunner } from "./git-process.js";
 import { printable } from "./printable.js";
@@ -32,9 +32,12 @@ import {
  *     downgrade in either direction is a run whose reported isolation is not the isolation it had,
  *     which BR-015 exists to prevent. What is structural is that the value cannot be forged: the
  *     check is by identity, so a cast does not produce one. What is *not* structural is that a
- *     workflow cannot obtain one — nothing routes workflow input into the resolver today, and
- *     AWCLI-20's flag parsing is the call site that could change that. `LiveCheckoutConsent` sets
- *     out the three properties one at a time; read that before relying on this paragraph.
+ *     workflow cannot obtain one — nothing routes workflow input into the resolver today, and three
+ *     tickets between them are the call sites that could change that: AWCLI-05 loads the workflow,
+ *     AWCLI-20 parses the flag, AWCLI-19 builds `ctx.sandbox`. This named only AWCLI-20, and naming
+ *     one of three is how the rule ended up deferred to a ticket that did not carry it.
+ *     `LiveCheckoutConsent` sets out the three properties one at a time and says which ticket holds
+ *     which half; read that before relying on this paragraph.
  *   - **The branch and the path are pure functions of the run name and the slot** (BR-036). A
  *     resumed run finds what it made by deriving the name again, so a timestamp or a counter
  *     anywhere near either would leave a branch per iteration behind and make AWCLI-14's
@@ -50,31 +53,70 @@ import {
  *     `undoOwnBranch` deletes that one, and the proof is the exit status rather than the ref: git
  *     refuses a name that already exists, so a zero exit from the cut is what establishes that the
  *     ref is awcli's and nobody else's. Reading the sha back could not have established it, which
- *     is why the two calls are split at all; see the note at the call site. Leaving that branch
+ *     is why the two calls are split at all; see the note at the call site. Both removals are best
+ *     effort, and the fault names what actually went back rather than implying either did — which
+ *     is the honest version of a promise this docblock used to make unconditionally. `Undone` has a
+ *     third answer for the delete, because "what went back" is a claim about what git said and two
+ *     of the five failure shapes are a git that never ran: see `Undone.branch`. A
+ *     `git worktree add` killed by a signal (the OOM case `git-process.ts` documents at length) is
+ *     the state where neither works: it leaves a part-checked-out target, a registration git holds
+ *     `locked initializing`, and the branch, and in that state `rmdir` fails with ENOTEMPTY and
+ *     `git branch -D` exits 1 because a working copy still holds the ref. Measured on git 2.55.
+ *     awcli cannot clear a locked registration — `git worktree remove` refuses one, `--force`
+ *     included — and does not claim to have; `undoOwnBranch` reports what it managed and the
+ *     message names the leftovers and the commands that do clear them. Leaving that branch
  *     behind is what is destructive: it made the run and slot permanently unusable and told the
  *     operator a branch they had never seen was in the way. Note also that the refusals *advise*
  *     `git worktree remove` and `git branch -d`: what awcli will not do on its own, an operator may
  *     well want to do, and the message's job is to name a command that works — `-d` and never `-D`,
  *     because a refusal is not the place to hand someone a command that discards commits.
  *
- * Provisioning runs none of the repository's *hooks*, on either of the two git calls that could run
- * one. `git branch` updates a ref and a ref update runs `reference-transaction`; `git worktree add`
- * performs a checkout and a checkout runs `post-checkout`. Both resolve through the *shared* git dir
- * and through the shared config's `core.hooksPath`, neither of which is per-worktree — so the one
- * moment awcli acts with the operator's identity, before any execution boundary exists, would be
- * handing execution to a file any agent in any slot can have written. Hooks are off for both
- * (`NO_HOOKS`), and `describe` says so, because "the worktree protects your checkout" is not a claim
- * to make while making the worktree ran the repository's code. The `reference-transaction` half
- * arrived with the split of `git worktree add -b` into a `git branch` of its own and was missed for a
- * commit, which is the argument for stating the rule per *mutating call* rather than per hook name.
+ * awcli runs none of the repository's *hooks*, on every git call that can run one — four of them
+ * today, reaching three hook names between them. `git branch` updates a ref and a ref update runs
+ * `reference-transaction`, and so does `undoOwnBranch`'s delete on the failure path; `git worktree
+ * add` performs a checkout and a checkout runs `post-checkout`; and `dirty()`'s `git status` writes
+ * the index whenever it has to refresh stat information, and writing the index runs
+ * `post-index-change`. All three hooks resolve through the *shared* git dir and through the shared
+ * config's `core.hooksPath`, neither of which is per-worktree — so the moments awcli acts with the
+ * operator's identity, before any execution boundary exists, would be handing execution to a file
+ * any agent in any slot can have written. Every one of the four carries `NO_HOOKS`, and `describe`
+ * says so, because "the worktree protects your checkout" is not a claim to make while making the
+ * worktree — or reading it — ran the repository's code.
  *
- * Hooks specifically, and not "no code at all", which is what this claimed and which is false. The
- * same checkout runs `filter.<driver>.smudge` for every path `.gitattributes` assigns to a driver,
- * and the driver's command is a shell string read from the *same* shared `.git/config` — which an
- * agent reaches from inside any worktree with a plain `git config filter.x.smudge '<cmd>'`, no path
- * knowledge needed. `dirty()`'s `git status` is the same shape again through `core.fsmonitor`. Both
- * are left open deliberately, and the reasoning is recorded because the residual is the interesting
- * part:
+ * "On every git call that *mutates the repository*" is what this said, and the scope is the part
+ * that has now been wrong twice in the same paragraph. The `reference-transaction` half arrived with
+ * the split of `git worktree add -b` into a `git branch` of its own and was missed for a commit,
+ * which is what moved the rule from hook names to calls. `post-index-change` was missed because
+ * `dirty()` mutates the *index* and not the repository, so a rule scoped to repository mutations
+ * excused the one call an agent can reach repeatedly and at will — later than provisioning, for the
+ * whole life of the run, and after AWCLI-25's boundary is supposed to be what stands between an
+ * agent and the host. Scoping the rule to what can run a hook is what makes it hold for a call
+ * nobody has thought of yet.
+ *
+ * Hooks specifically, and not "no code at all", which is what this claimed and which is false. Two
+ * routes stay open, and *when* each applies matters as much as that it exists:
+ *
+ *   - The checkout runs `filter.<driver>.smudge` for every path `.gitattributes` assigns to a
+ *     driver, and the driver's command is a shell string read from the *same* shared `.git/config` —
+ *     which an agent reaches from inside any worktree with a plain
+ *     `git config filter.x.smudge '<cmd>'`, no path knowledge needed. That is one command, at
+ *     provisioning time.
+ *   - `dirty()` runs `filter.<driver>.clean`, on the same `.gitattributes` and the same shared
+ *     config, for every assigned path whose stat information has changed. And `dirty()` is a
+ *     `WorkspaceHandle` member: it is called for the whole life of the run, so this route is not a
+ *     moment during provisioning but a command available on every question awcli asks about the
+ *     working copy. This was recorded as `core.fsmonitor`, which is a second route and not the one:
+ *     the clean filter is the route that needs no configuration an operator would notice, and it was
+ *     named nowhere. Measured under awcli's exact argv, `filter.evil.clean` and `filter.evil.smudge`
+ *     pointing at a script that appends to a marker file: `git -c core.hooksPath=/dev/null/...
+ *     worktree add -q <t> -b <b>` wrote `RAN-smudge`, and
+ *     `git -c core.hooksPath=/dev/null/... -c status.showUntrackedFiles=normal status --porcelain`
+ *     wrote `RAN-clean` — run both from the repository and from inside the worktree, on git 2.55.
+ *     `core.fsmonitor` ran in the same status invocation and is named here for completeness.
+ *
+ * `NO_HOOKS` does not touch any of them: `core.hooksPath` governs hooks and says nothing about
+ * filters, verified by the same run. Both are left open deliberately, and the reasoning is recorded
+ * because the residual is the interesting part:
  *
  *   - Closing them costs correctness. Neutralising the drivers on the command line
  *     (`-c filter.<n>.smudge=`) checks out git-lfs *pointer files* instead of content, so an agent
@@ -86,8 +128,12 @@ import {
  *     the command itself. There is no boundary yet for a filter to escape.
  *
  * It stops being free the moment AWCLI-19 puts a container around an agent: from then on the shared
- * `.git/config` is inside the boundary and awcli executes it outside, which is an escape. That is a
- * requirement on AWCLI-19 rather than a note here, and it is written on that ticket — on AWCLI-19
+ * `.git/config` is inside the boundary and awcli executes it outside, which is an escape. The
+ * `clean` half is the worse one to inherit, and the reason is the *when* above: a smudge filter is
+ * one command at provisioning, before the agent has run at all, so a container built after it cannot
+ * be escaped by something the agent had not yet written. `dirty()` is called for the life of the run,
+ * so a filter an agent plants inside the boundary is executed outside it on the next question awcli
+ * asks. That is a requirement on AWCLI-19 rather than a note here, and it is written on that ticket — on AWCLI-19
  * and not on AWCLI-25, which is where review suggested it: AWCLI-25 is the *host* target and has no
  * boundary for a planted filter to cross, so a requirement about what a boundary must not permit
  * belongs to the ticket that builds one.
@@ -149,13 +195,27 @@ export type WorkspaceAxis = "liveTree" | "worktree";
  *     call the resolver in the first place. That is the property to preserve, and it is the weakest
  *     of the three: it is a fact about the call sites that exist today, not about this module.
  *
- *     What preserves it is a rule for the ticket that changes it. AWCLI-20 is where a workflow first
- *     gets loaded in-process, and the requirement on that ticket is that `resolveWorkspaceChoice` is
- *     called from the CLI layer, from the parsed command line, and the `WorkspaceChoice` handed down
- *     — never re-derived anywhere a workflow can reach. Binding the consent to the run name instead
- *     was considered and is not the answer: a workflow knows its own run name, so it would satisfy
- *     the check as readily as the CLI does, and the ceremony would read as a guarantee where the
- *     call-site rule is the whole of it.
+ *     What preserves it is a rule on the tickets that could change it — and this paragraph named the
+ *     wrong ticket and a requirement that ticket does not carry, which is the orphan class three of
+ *     this PR's amendment rows exist to close, in the module the rule protects. AWCLI-20 is *not*
+ *     where a workflow first gets loaded in-process: AWCLI-05 owns "transpile and import a TypeScript
+ *     workflow file using a bundled loader", AWCLI-20's own Out of Scope defers loading to it, and
+ *     AWCLI-05 blocks AWCLI-20 — so the window opens a wave before the ticket named as its guard. And
+ *     what AWCLI-20 carries is narrower than what was claimed for it: `--live-checkout` is consumed
+ *     at the flag boundary, resolved "through AWCLI-13's `resolveWorkspaceChoice` — not by a second
+ *     decision taken here", and absent from `ctx.args`. That is a rule about *that* unit, not the
+ *     stronger "handed down, never re-derived anywhere a workflow can reach".
+ *
+ *     Three tickets carry it between them, each the half it can enforce, and none of them alone is
+ *     the sentence this used to assert. AWCLI-05 is where the window opens, and it now requires that
+ *     a loaded workflow is called with the injected context and nothing else, so the loader adds no
+ *     channel of its own — the half no ticket held. AWCLI-20 is the command line, and takes the
+ *     decision there rather than twice. AWCLI-19 is `ctx.sandbox`, the one member that routes a
+ *     workflow's own input at a working copy, and it fixes both isolation axes at construction with
+ *     `SandboxOptions` carrying a slot name and nothing else. Binding the consent to the run name
+ *     instead was considered and is not the answer: a workflow knows its own run name, so it would
+ *     satisfy the check as readily as the CLI does, and the ceremony would read as a guarantee where
+ *     the call-site rules are the whole of it.
  *
  * BR-014 wants the person whose uncommitted work is at stake to be the one asking. A boolean flag on
  * a request object would have been the obvious design and it is exactly what a workflow could set.
@@ -218,13 +278,16 @@ export interface WorkspaceIsolation {
   /**
    * What is and is not protected, for the operator and the log (BR-015).
    *
-   * A paragraph, not a line — measured at 444 and 557 characters for the two axes, four to six
-   * wrapped terminal lines. It said "one line", which is the kind of claim AWCLI-21 discovers is
-   * false at print time: that ticket states this once for the run *and* once per agent call, and
-   * three parallel agents each restating the same ~380 characters of bounding prose is the terminal
-   * rather than a line in it. Deciding it here is cheaper than deciding it there. What AWCLI-21
-   * needs and does not have yet is a short per-call form; this field is the long one, for the run
-   * header, and splitting it belongs to the ticket that has both call sites in hand.
+   * A paragraph, not a line — 351 characters for the live-checkout axis and 634 for the worktree one,
+   * measured with a plausible repository path (`/Users/you/code/repo`), so four and seven wrapped
+   * terminal lines at 100 columns. It said "one line", which is the kind of claim AWCLI-21 discovers
+   * is false at print time: that ticket states this once for the run *and* once per agent call, and
+   * three parallel agents each restating the same few hundred characters of bounding prose is the
+   * terminal rather than a line in it. The numbers move with the wording, so what has to stay true is
+   * the shape rather than the count — the contract says "a short paragraph" for that reason. Deciding
+   * it here is cheaper than deciding it there. What AWCLI-21 needs and does not have yet is a short
+   * per-call form; this field is the long one, for the run header, and splitting it belongs to the
+   * ticket that has both call sites in hand.
    */
   readonly description: string;
 }
@@ -266,14 +329,68 @@ export type WorkspaceRefusalKind =
   | "no-working-tree"
   /** The live checkout is on a detached HEAD, so it has no branch to report. */
   | "detached-head"
-  /** The branch this slot derives already exists. Reattaching to it is AWCLI-14's. */
+  /**
+   * The branch this slot derives already exists. Reattaching to it is AWCLI-14's.
+   *
+   * Four states, and `detail.collision` is what tells them apart — one of them has no remedy in a
+   * different `--name`. See `WorkspaceRefusalDetail`.
+   */
   | "branch-exists"
-  /** Something is already at the target path. Left exactly as it was; reuse is AWCLI-14's. */
+  /**
+   * Something is already at the target path. Left exactly as it was; reuse is AWCLI-14's.
+   *
+   * Also the answer for a path another acquisition is provisioning onto *right now*, whose remedy is
+   * the opposite one — wait, touch nothing. `detail` is what separates them; see
+   * `WorkspaceRefusalDetail`.
+   */
   | "occupied";
+
+/**
+ * The finer answer behind `kind`, for the two kinds that fold several states together.
+ *
+ * `kind` alone is not enough on either, and for the same reason both times: this module computes a
+ * finer answer to decide what the *sentence* says and then dropped it on the way out, so anything
+ * downstream — the gate chain deciding whether to suggest a retry, AWCLI-14 deciding whether an
+ * existing branch is reattachable, a caller reporting a run's outcome — had to string-match operator
+ * prose to recover it. The refusal shape is contract surface, so the place to widen it is here
+ * rather than in the ticket that will consume it.
+ *
+ * The `occupied` arm carries *both* the discovery and git's answer about the path, and the pairing is
+ * the point rather than completeness: `occupancy` on its own reproduces at the machine-readable layer
+ * the exact defect the prose was corrected for. A racing loser reaches the `found` site whenever the
+ * winner's `mkdir` lands before its own `lstat`, so "another run is provisioning here" is not
+ * `occupancy === "raced"` — it is `raced` *or* a registration git has marked `locked initializing`.
+ * A consumer switching on the discovery alone would clear a live winner's working copy.
+ */
+export type WorkspaceRefusalDetail =
+  | {
+      readonly kind: "occupied";
+      /** How awcli found out the path was taken. See `Occupancy`. */
+      readonly occupancy: Occupancy;
+      /**
+       * What git says is registered at the path, or `undefined` where awcli did not ask — the
+       * `raced` discovery refuses without a git call, because EEXIST from awcli's own `mkdir` is
+       * already the strongest evidence there is that another writer is working right now.
+       */
+      readonly registration: WorktreeRegistrationAnswer | undefined;
+    }
+  | {
+      readonly kind: "branch-exists";
+      /** Which ref is in the way, and so whether a different `--name` is a remedy at all. */
+      readonly collision: BranchCollision["kind"];
+    };
 
 export interface WorkspaceRefusal {
   readonly ok: false;
   readonly kind: WorkspaceRefusalKind;
+  /**
+   * The finer answer behind `kind`, where there is one. See `WorkspaceRefusalDetail`.
+   *
+   * Absent rather than invented on the kinds that fold nothing together — an invalid slot, a
+   * repository with no commit — because a `detail` a consumer can switch on and learn nothing from
+   * is worse than no field at all.
+   */
+  readonly detail?: WorkspaceRefusalDetail;
   readonly run: RunName;
   /**
    * The slot this was for, as it was asked for.
@@ -305,7 +422,30 @@ export interface WorkspaceRequest {
    */
   readonly slot?: string | undefined;
   readonly choice: WorkspaceChoice;
-  /** Substituted in tests for the faults a real repository cannot stage. The default runs git. */
+  /**
+   * Substituted in tests for the faults a real repository cannot stage. The default runs git.
+   *
+   * It is a test seam on a request object, and the asymmetry with `LiveCheckoutConsent` two fields
+   * up is worth naming rather than leaving to be found. That field spends sixty lines making it
+   * impossible for a request to decide the workspace axis — a module-private frozen sentinel, an
+   * identity check, an unspellable brand — and this one is a plain optional function that decides
+   * strictly more: a supplied runner answers `rev-parse --show-toplevel`, and the `root` that comes
+   * back is what `worktreePath`, `makeLayout`, `mkdir`, `assertNoSymlinkedAncestors` and
+   * `assertInsideRuntimeDirectory` are all derived from, while the real `mkdir`/`rmdir`/`realpath`
+   * execute against whatever path it named. So the boundary is compared against a value the caller
+   * chose.
+   *
+   * What makes that safe today is a fact about the call sites rather than a property of the type:
+   * nothing routes workflow input into `acquireWorkspace`, because `ctx.sandbox` is unbuilt
+   * (`DELIVERED_BY.sandbox` points at AWCLI-19). That is the same weakest-property admission the
+   * consent docblock makes about itself — and the consent has a written call-site rule for the
+   * ticket that changes it while this had none. It has one now: AWCLI-20's Constraints say this
+   * field is never populated from anything a workflow or an invocation can reach, with a criterion
+   * that watches which runner an acquisition is given. Branding it instead was considered and
+   * declined: the brand would have to be spellable by every test in eight suites, which makes it a
+   * naming convention rather than a guarantee, and the guarantee that is actually available is a
+   * rule on the one unit that turns invocation input into awcli's own values.
+   */
   readonly git?: GitRunner;
 }
 
@@ -349,12 +489,22 @@ export async function acquireWorkspace(
   // repository in flight.
   const repositoryPath = resolve(request.repositoryPath);
 
-  const refuseWith = (kind: WorkspaceRefusalKind, slot: string, message: string) => ({
+  // `detail` is spread in rather than assigned, because `exactOptionalPropertyTypes` distinguishes
+  // an absent optional field from one present and undefined — and the distinction is the one the
+  // field's docblock makes: a refusal that folds nothing together carries no discriminator, rather
+  // than carrying an empty one.
+  const refuseWith = (
+    kind: WorkspaceRefusalKind,
+    slot: string,
+    message: string,
+    detail?: WorkspaceRefusalDetail,
+  ): WorkspaceRefusal => ({
     ok: false as const,
     kind,
     run: runName,
     slot,
     message,
+    ...(detail === undefined ? {} : { detail }),
   });
 
   // The slot is decided out here because two things need it before anything is opened: the refusal
@@ -376,8 +526,12 @@ export async function acquireWorkspace(
   // threw unchanged — so the catch below reads the refusal off the error it caught. A copy held in a
   // binding out here would be read by a future edit *instead* of the error, and a path that reaches
   // it without the throw having happened would report success on a refused run.
-  const refuse = (kind: WorkspaceRefusalKind, message: string): never => {
-    throw new WorkspaceRefusedError(refuseWith(kind, slot, message));
+  const refuse = (
+    kind: WorkspaceRefusalKind,
+    message: string,
+    detail?: WorkspaceRefusalDetail,
+  ): never => {
+    throw new WorkspaceRefusedError(refuseWith(kind, slot, message, detail));
   };
 
   const acquisition: Acquisition<WorkspaceHandle> = {
@@ -386,7 +540,7 @@ export async function acquireWorkspace(
     // its branch carries the commits that are the whole deliverable (BR-021, BR-036).
     disposition: "preserve",
     open: async () => {
-      // Inside `open`, with the six that need git, and that is the point rather than an accident of
+      // Inside `open`, with the seven that need git, and that is the point rather than an accident of
       // placement. `DisposalStack.acquire` refuses outright once an unwind has begun, so a check
       // decided *before* it went on answering while the run was shutting down: a workflow's
       // in-flight `sandbox({ name: "Review 1" })` was told its slot name was illegal — implying a
@@ -404,7 +558,7 @@ export async function acquireWorkspace(
       if (choice.workspace === "liveTree" && choice.consent !== OPERATOR_CONSENT) {
         refuse(
           "live-checkout-not-consented",
-          `awcli will not work in your checkout at ${repositoryPath} for the "${runName}" run: working there is the operator's decision and this run has no ${LIVE_CHECKOUT_FLAG} from one. Nothing was provisioned, and awcli has not silently used a worktree instead — run it again with ${LIVE_CHECKOUT_FLAG} to work in your checkout, or without it to have awcli provision a worktree.`,
+          `awcli will not work in your checkout at ${printable(repositoryPath, PATH_LIMIT)} for the "${runName}" run: working there is the operator's decision and this run has no ${LIVE_CHECKOUT_FLAG} from one. Nothing was provisioned, and awcli has not silently used a worktree instead — run it again with ${LIVE_CHECKOUT_FLAG} to work in your checkout, or without it to have awcli provision a worktree.`,
         );
       }
       const { root, head } = await sharedPreflight(git, repositoryPath, refuse);
@@ -440,12 +594,25 @@ export async function acquireWorkspace(
 const PATH_LIMIT = 256;
 
 /**
- * The bound for a path inside a command the operator is meant to run.
+ * The bound for a value the operator is meant to copy: a path inside a command, or a ref they are
+ * told to rename or delete.
  *
  * `PATH_LIMIT` is the wrong one there: `printable` truncates with an ellipsis, and an ellipsis inside
- * `git worktree remove /some/tru...` is a command that runs and does the wrong thing. `PATH_MAX` on
- * every platform awcli runs on is 4096, so nothing a filesystem can hold is truncated by this — the
- * bound is here so a hostile value still cannot flood the terminal, not to shorten real paths.
+ * `git worktree remove /some/tru...` is a command that runs and does the wrong thing. `PATH_MAX` is
+ * 1024 on macOS — measured with `getconf PATH_MAX /` on the Darwin this is developed on, not the 4096
+ * this comment used to assert of "every platform awcli runs on" — and 4096 on Linux, so this bound is
+ * above anything either filesystem can hand back. It is here so a hostile value cannot flood the
+ * terminal, not to shorten real values, which is why it is a round number well clear of both rather
+ * than either of them.
+ *
+ * The same reasoning covers a ref, which is why `branchCollision`'s `short` uses this and not
+ * `PRINTABLE_LIMIT`: the `namespace`, `prefix` and `below` refusals interpolate a branch name into
+ * "so rename or delete it", and a name with `...` in the middle of it is a name the operator cannot
+ * act on. It was reachable rather than theoretical — a run name may be 64 characters
+ * (`MAX_NAME_LENGTH`), so the `prefix` collision ref `awcli/<run>` passes 64 at a 59-character run
+ * name, and a `below` ref is longer again. Nothing bounds a ref at 4096 either: git's own limit is
+ * per component through the filesystem, and a deep enough `refs/heads/a/b/c/...` exceeds any bound
+ * short of one like this.
  */
 const COMMAND_PATH_LIMIT = 4096;
 
@@ -464,23 +631,76 @@ function shellPath(path: string): string {
 }
 
 /**
+ * Said when a path cannot be written down, because then every remedy above names a different path.
+ *
+ * `shellPath`'s quoting is correct — inside single quotes every byte is literal and the one exception
+ * is escaped the standard way — and the quoting is not the defect. The *ordering* is: `printable`
+ * runs first, and it maps each control character, bidi mark and zero-width character to `?`, which is
+ * itself a perfectly legal filename character. So a newline in the repository root produces
+ * `git worktree remove '<path with ? where the newline was>'` — a command that parses, addresses
+ * something else, and exits 128 naming a path the operator has never seen. This module goes to some
+ * trouble elsewhere (the `-z` parse of `worktree list --porcelain`) to be correct for a path
+ * containing a newline, and then handed out a remedy that was not.
+ *
+ * Quoting the raw path instead is the fix that trades one defect for a worse one: it puts the control
+ * character on the operator's terminal, in a refusal, which is the whole of what `printable` exists
+ * to stop. So the sentence says what happened and names the command that prints the real bytes
+ * rather than pretending the printed form is copyable.
+ *
+ * The limit passed is the path's own length, so this asks only whether the *substitution* changed
+ * anything: `printable` replaces each character it takes out with a single `?` and non-BMP ones with
+ * one `?` for two units, so a sanitised path is never longer than the original and this cannot trip
+ * on the truncation. A path long enough to be truncated at `COMMAND_PATH_LIMIT` is a different
+ * problem and not one a sentence fixes.
+ *
+ * Empty for every ordinary path, which is nearly all of them — a repository root with a space in it
+ * is what `shellPath` is for, and it is unaffected. Watched by workspace-branches.test.ts, beside
+ * the spaced-path test whose remedy it runs: there the pasted command works, here it is required to
+ * fail before the sentence is asserted. And by the gate mutation that empties this.
+ */
+function unshowablePathNote(path: string): string {
+  if (printable(path, path.length) === path) return "";
+  return ` Every "?" in that path is a character awcli will not print: a directory name may hold any byte but NUL and "/", and a control character or a bidi mark in one repaints the terminal reading it. So the path above, and any command here that names it, addresses something other than the working copy — copy the real one out of "git worktree list" rather than from here.`;
+}
+
+/**
+ * Where awcli points `core.hooksPath` so that no hook of the repository's can be found there.
+ *
+ * A path *under* `/dev/null`, which is a character device: nothing can exist beneath it and nothing
+ * can create anything there, so this cannot become a directory an agent plants a hook in — which a
+ * path inside the repository, or a temporary directory, could. That is the half of `NO_HOOKS` that
+ * carries a security property rather than a convenience, and it is why the constant is exported:
+ * `mkdir` of this path has to fail, and workspace-inherit.test.ts asserts that it does. Measured on
+ * this machine (macOS 26.5, Darwin 25.5) — `mkdir -p` of it fails ENOTDIR, both from a shell and
+ * from node's `fs/promises` with `recursive: true`. `/tmp/awcli-runs-no-hooks` is the plausible wrong
+ * value and every suite was green over it; the gate mutation that substitutes it is what keeps this
+ * sentence honest.
+ *
+ * Spelled once, so the value the tests can reach is the value git is given. Two spellings would let a
+ * mutation move the argv and leave the constant the assertion reads.
+ */
+export const NO_HOOKS_PATH = "/dev/null/awcli-runs-no-hooks";
+
+/**
  * The arguments that keep a git invocation from running the repository's hooks.
  *
- * A path under `/dev/null`, which is a character device on every platform awcli runs on: nothing can
- * exist beneath it and nothing can create anything there, so this cannot become a directory an agent
- * plants a hook in — which a path inside the repository, or a temporary directory, could. git looks
- * for the hook, does not find it, and proceeds; verified against git 2.55 on both of the calls that
- * carry it — the same `git branch` runs `reference-transaction` without this and does not with it, and
- * the same `git worktree add` runs `post-checkout` without this and does not with it.
+ * git looks for the hook under `NO_HOOKS_PATH`, does not find it, and proceeds; verified against git
+ * 2.55 on both hook *names* rather than on a count of call sites — the same `git branch` runs
+ * `reference-transaction` without this and does not with it, and the same `git worktree add` runs
+ * `post-checkout` without this and does not with it. Those two are what the two kinds of mutation
+ * reach, so this sentence does not need editing when a third mutating call is added; the rule below
+ * is what has to be applied to it.
  *
- * Every git invocation that *mutates* the repository takes it. That is the rule to apply when a call
- * is added here, rather than "the add takes it": the split of `git worktree add -b` into a cut of its
- * own added a mutating call, and the argument went onto the add's argv only.
+ * Every git invocation that *can run a hook* takes it. That is the rule to apply when a call is
+ * added here, and it is deliberately wider than the two narrower rules that stood here before, each
+ * of which excused a real call. "The add takes it" was overtaken by the split of `git worktree add
+ * -b` into a cut of its own, which added a mutating call the argument did not reach. "Every
+ * invocation that mutates the repository" was overtaken by `dirty()`, which mutates the *index*
+ * rather than the repository and runs `post-index-change` — the one call an agent can reach
+ * repeatedly, for the whole life of the run. The module docblock records both misses; scoping the
+ * rule to what can run a hook is what makes it hold for the call nobody has thought of yet.
  */
-const NO_HOOKS: readonly string[] = [
-  "-c",
-  "core.hooksPath=/dev/null/awcli-runs-no-hooks",
-];
+const NO_HOOKS: readonly string[] = ["-c", `core.hooksPath=${NO_HOOKS_PATH}`];
 
 /** Thrown out of the acquisition so an operator-fixable condition becomes a refusal, not a throw. */
 class WorkspaceRefusedError extends Error {
@@ -491,7 +711,11 @@ class WorkspaceRefusedError extends Error {
 }
 
 /** How a refusal is raised from inside the acquisition. Never returns. */
-type Refuse = (kind: WorkspaceRefusalKind, message: string) => never;
+type Refuse = (
+  kind: WorkspaceRefusalKind,
+  message: string,
+  detail?: WorkspaceRefusalDetail,
+) => never;
 
 /**
  * What both axes need to be true before anything is provisioned, and the commit they share.
@@ -626,22 +850,30 @@ async function openLiveTree(
     // and the likeliest something else is a git older than 2.22, which has no `--show-current` at
     // all. Folded together, an operator on git 2.21 sitting on `main` was refused with "check out a
     // branch and run again": advice that cannot work, because they are on one. The minimum git
-    // version is stated in the README beside the Node one.
+    // version is stated in the README beside the Node one, and it is 2.36 rather than this call's
+    // own 2.22 — `worktree list --porcelain -z` is what moved it. The sentence still names 2.22,
+    // because what it explains is *this* exit status: an operator who reads it is on a git without
+    // `--show-current`, and 2.22 is where that arrived.
     throw new Error(
       `awcli could not read which branch your checkout at ${printable(repositoryPath, PATH_LIMIT)} is on: git branch --show-current exited ${current.code}. ${gitComplaint(current.stderr)} awcli needs git 2.22 or later, which is where --show-current arrived.`,
     );
   }
-  // Sanitised, because this one is not awcli's name. A run's own branches are refused unless they
-  // are already lowercase letters, digits, dots, dashes and underscores — but the live checkout's
-  // branch is whatever the repository has, and of the *non-printing* characters git's ref rules ban
-  // only the C0 controls and DEL. (git bans plenty besides — space, `~`, `^`, `:`, `?`, `*`, `[`,
-  // `\`, `..`, a `.lock` suffix — and `run-identity.ts` enumerates the ones awcli's own names meet;
-  // none of them is a character that renders as nothing.)
-  // The bidirectional format characters are legal in a ref and are the class `printable` exists for:
-  // a branch called `main‮...` reverses the rendering of everything after it in the BR-015
-  // sentence, so the operator reads a line awcli did not emit. The refusal path already sanitises
-  // refs read out of the same repository (`branchCollision`'s `short`); this is the success path.
-  const branch = printable(current.stdout.trim(), PATH_LIMIT);
+  // Raw, and sanitised where it is *printed* rather than here. This is not a nicety about layering:
+  // the value becomes `WorkspaceHandle.branch`, which is the contract field AWCLI-14 reattaches by
+  // and BR-025 records the run against — not a string in a sentence. `printable` substitutes `?` for
+  // every C0/C1 control, bidi mark and zero-width character and appends an ellipsis past its limit,
+  // and of the *non-printing* characters git's ref rules ban only the C0 controls and DEL, so a
+  // repository using a bidi mark or a zero-width space in a branch name had the handle naming a
+  // branch that does not exist and a later `git checkout` of it failing. (git bans plenty besides —
+  // space, `~`, `^`, `:`, `?`, `*`, `[`, `\`, `..`, a `.lock` suffix — and `run-identity.ts`
+  // enumerates the ones awcli's own names meet; none of them is a character that renders as nothing.)
+  //
+  // Sanitising is still required, because the class is real: a branch called `main‮...` reverses the
+  // rendering of everything after it in the BR-015 sentence, so the operator reads a line awcli did
+  // not emit. It happens at each message that prints it — `describe`, which is the only one that
+  // does — exactly as the refusal path already splits it: `branchCollision` compares raw refs and
+  // `short` sanitises for the sentence.
+  const branch = current.stdout.trim();
   if (branch.length === 0) {
     // `branch --show-current` answers with an empty line on a detached HEAD. Refused rather than
     // reported as an empty branch or as the commit id: a run's branch is what AWCLI-14 reattaches by
@@ -687,10 +919,15 @@ async function openWorktree(
     // it. A working copy that already exists is either a run in progress or the last one's, and
     // reusing it deliberately is AWCLI-14's job — which it can only do because nothing here has
     // removed it first.
-    refuse(
-      "occupied",
-      await occupiedMessage(git, repositoryPath, target, runName, branch, "found"),
+    const occupied = await occupiedRefusal(
+      git,
+      repositoryPath,
+      target,
+      runName,
+      branch,
+      "found",
     );
+    refuse("occupied", occupied.message, occupied.detail);
   }
 
   const namespaced = await namespaceRefs(git, repositoryPath);
@@ -701,8 +938,14 @@ async function openWorktree(
     // awcli branches at all, and the run walked on into `git worktree add` to fail there with no
     // remedy. A question awcli could not get an answer to is a fault: there is nothing for the
     // operator to choose differently, and answering it wrongly is what costs them the refusal.
+    //
+    // Every way of not getting an answer, not only a non-zero exit. `namespaceRefs` is total now, so
+    // a runner rejection — the read bound on a repository with hundreds of thousands of branches,
+    // the timeout, a git that has gone — arrives here as `why` and lands in this sentence instead of
+    // escaping as the runner's own line about bytes. See there for the measurement.
     throw new Error(
-      `awcli could not list the branches in ${printable(repositoryPath, PATH_LIMIT)}, so it cannot tell whether ${branch} is free: git for-each-ref exited ${namespaced.code}. ${gitComplaint(namespaced.stderr)}`,
+      `awcli could not list the branches in ${printable(repositoryPath, PATH_LIMIT)}, so it cannot tell whether ${branch} is free: ${namespaced.why}`,
+      namespaced.cause === undefined ? undefined : { cause: namespaced.cause },
     );
   }
   const collision = branchCollision(branch, runName, namespaced.refs);
@@ -723,6 +966,9 @@ async function openWorktree(
         // Nothing of awcli's has been created yet, so anything at the target is someone else's.
         "untouched",
       ),
+      // The shape of the collision, which decides whether a different `--name` is a remedy at all
+      // and which a consumer had to read out of the prose. See `WorkspaceRefusalDetail`.
+      { kind: "branch-exists", collision: collision.kind },
     );
   }
 
@@ -744,10 +990,15 @@ async function openWorktree(
     await mkdir(target);
   } catch (error) {
     if (isErrno(error, "EEXIST")) {
-      refuse(
-        "occupied",
-        await occupiedMessage(git, repositoryPath, target, runName, branch, "raced"),
+      const occupied = await occupiedRefusal(
+        git,
+        repositoryPath,
+        target,
+        runName,
+        branch,
+        "raced",
       );
+      refuse("occupied", occupied.message, occupied.detail);
     }
     faultOnUnwritable(error, dirname(target));
     throw error;
@@ -793,7 +1044,31 @@ async function openWorktree(
   const cut = await run(git, [...NO_HOOKS, "branch", branch, head], repositoryPath).catch(
     async (error: unknown) => {
       await rmdir(target).catch(ignoreCleanupFailure);
-      throw error;
+      // Only for the shapes where git *ran*, which is the correction rather than a nicety. Five
+      // rejections reach this handler and `run` raises two of them itself — `unavailable` (git could
+      // not be started) and `no-such-directory` (the repository directory has gone) — and in both git
+      // never ran, so no ref can exist and the residual below is a confident sentence about a state
+      // awcli never established. It read worse than merely wrong on the second: it told the operator
+      // to run `git branch --list` in a directory the same sentence has just said is no longer there.
+      // `GitDidNotRunError` is what tells the two apart, by identity rather than by re-inspecting the
+      // outcome, because the outcome is gone by the time this runs. Watched by the
+      // `{unavailable, no-such-directory}` rows of `a branch cut that fails` in
+      // workspace-fs-faults.test.ts, which assert the residual is absent, and by the gate mutation
+      // that appends it unconditionally.
+      if (error instanceof GitDidNotRunError) throw error;
+      // The directory goes back and the branch cannot, so the fault says so. The three remaining
+      // shapes are a git that ran: the 120s timeout, an answer past the read bound, a child killed by
+      // a signal. In those the ref transaction may well have completed before the runner gave up on
+      // it, and `undoOwnBranch` cannot be used to tidy it: its whole ownership proof is a zero exit,
+      // which is exactly what did not arrive, so deleting on suspicion would be awcli deleting a
+      // branch it cannot prove is its own — the one thing this module forswears. Named instead,
+      // because the silent version costs the operator the next invocation of this run and slot: it is
+      // refused `branch-exists` and told that the commits on a branch are the deliverable, about a
+      // commitless branch awcli cut and abandoned.
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} awcli was cutting ${branch} when git stopped answering, so that branch may exist even though the working copy does not: "git branch --list ${branch}" says whether it does. awcli has not deleted it, because a git that did not answer is not a git that said the branch is awcli's.`,
+        { cause: error },
+      );
     },
   );
   if (cut.code !== 0) {
@@ -820,6 +1095,7 @@ async function openWorktree(
           // awcli made the target directory above and put it back a few lines up. See `TargetClaim`.
           "created-and-removed",
         ),
+        { kind: "branch-exists", collision: late.kind },
       );
     }
     throw new Error(
@@ -851,8 +1127,36 @@ async function openWorktree(
     [...NO_HOOKS, "worktree", "add", target, branch],
     repositoryPath,
   ).catch(async (error: unknown) => {
-    await undoOwnBranch(git, repositoryPath, branch, target);
-    throw error;
+    const undone = await undoOwnBranch(git, repositoryPath, branch, target);
+    // Enriched the way the cut's own catch is, which this handler was not. Three of the shapes that
+    // reach it are a git that *ran* — the 120s timeout, an answer past the read bound, and a child
+    // killed by a signal, which is the OOM case `git-process.ts` documents at length — and in the
+    // signal case git's cleanup handler does not run at all. Measured on git 2.55 by SIGKILLing an
+    // add mid-checkout: three things are left, not the one this handler was written for. A
+    // part-checked-out target, a registration git still holds and has marked `locked initializing`,
+    // and the branch that registration holds. What was rethrown here was the raw runner line — `git
+    // worktree add ... was killed by SIGKILL in <cwd>` — which names none of them, and awcli's
+    // silence about its own tidying read as a claim that the tidying had worked. It had not: in that
+    // state `rmdir` exits ENOTEMPTY and `git branch -D` exits 1. `undoneResidual` says which of the
+    // two actually went back and names the commands that clear the rest; it says nothing when
+    // nothing is left, which is the ordinary case for the other two shapes.
+    const residual = undoneResidual(undone, branch, target);
+    if (residual === "") throw error;
+    // "Part-way through the checkout" only where git ran, which is the cut's own correction one
+    // handler along: `run` raises `unavailable` and `no-such-directory` itself, and in both no add
+    // process started, so a checkout that stopped part-way is a state awcli never established. The
+    // *residual* stands on all five shapes and is why this handler still says something rather than
+    // rethrowing — the cut exited zero, so the branch is certainly there, and `undone` is what says
+    // whether the tidying took it back. Watched by the fs-fault suite's pair of runner-throw tests
+    // and by the gate mutation that collapses the two arms into the confident one.
+    const how =
+      error instanceof GitDidNotRunError
+        ? "and git never started the checkout"
+        : "and git stopped part-way through the checkout";
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} awcli had already made ${printable(target, PATH_LIMIT)} and cut ${branch} for it, ${how}. ${residual}`,
+      { cause: error },
+    );
   });
   if (added.code !== 0) {
     // Both of awcli's own leavings go back, and the branch is unambiguously awcli's: `git branch`
@@ -860,12 +1164,19 @@ async function openWorktree(
     // while it is still empty — `rmdir` is what makes that a property rather than an intention, since
     // it refuses a directory with anything in it, including an add that got far enough to write
     // something before failing, which is git's to account for and not awcli's to delete.
-    await undoOwnBranch(git, repositoryPath, branch, target);
+    const undone = await undoOwnBranch(git, repositoryPath, branch, target);
     // Nothing awcli has a sentence for, then. Thrown rather than refused: a refusal claims awcli
     // knows what is wrong and what to do instead, and here it knows neither — but git does, and this
     // is the sentence that carries what it said, which the old `branch-exists` refusal replaced.
+    //
+    // The residual is appended and not led with, because on this exit it is almost always empty: git
+    // that exits non-zero has cleaned up after itself, so both halves of the tidying succeed and
+    // `undoneResidual` says nothing. When they do not, the leftover is what makes the next invocation
+    // of this run and slot unusable, so it belongs in the same sentence as git's complaint rather
+    // than in a fault the operator sees one run later.
+    const residual = undoneResidual(undone, branch, target);
     throw new Error(
-      `awcli could not create a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: git worktree add exited ${added.code}. ${gitComplaint(added.stderr)}`,
+      `awcli could not create a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: git worktree add exited ${added.code}. ${gitComplaint(added.stderr)}${residual === "" ? "" : ` ${residual}`}`,
     );
   }
 
@@ -878,13 +1189,13 @@ async function openWorktree(
   // now. A working copy outside the runtime directory is a fault whoever put it there, because
   // `WorkspaceHandle.dir` and the BR-015 sentence would both name a path inside the repository
   // while an agent worked outside it — which is the whole of what this module promises.
-  await assertInsideRuntimeDirectory(repositoryPath, target);
+  await assertInsideRuntimeDirectory(repositoryPath, target, branch);
 
   return handle(git, target, branch, slot, "worktree");
 }
 
 /**
- * Refuses a target that is not, in fact, inside the runtime directory.
+ * Refuses a working copy that is not, in fact, where awcli put it.
  *
  * The boundary is built from the *repository root* resolved, plus the layout spelled out — not from
  * `realpath` of the worktrees directory, which is what this did and which resolved the boundary
@@ -901,44 +1212,122 @@ async function openWorktree(
  * about the operator's disk rather than about anything a racing writer put there. The layout suffix
  * comes from `worktreesRoot` via `relative`, so the layout stays declared in one place.
  *
- * The trailing separator is load-bearing: without it a sibling directory whose name merely starts
- * with `worktrees` — `.awcli/run/worktrees-elsewhere/x` — passes the prefix test. A `realpath` that
- * fails is refused too; this is the check that says where the working copy is, and "awcli could not
- * tell" is not an answer to hand back as a handle.
+ * Equality, not a prefix, and that is the correction of the version this replaced. A prefix test
+ * answers "is it somewhere under the boundary", and the property this guard exists for is narrower:
+ * that the path awcli checked and the path git used are *the same path*. A link at
+ * `worktrees/<run>` pointing at `worktrees/<other>` resolves to somewhere that still starts with the
+ * boundary, so the prefix test passed while `handle.dir` reported `.awcli/run/worktrees/<run>/<slot>`
+ * and the working copy sat at `.awcli/run/worktrees/<other>/<slot>` — the exact mismatch the fault
+ * channel exists to catch, unreported because it happened to land inside. It cannot put two live runs
+ * in one tree (`mkdir(target)`'s EEXIST and the occupied `lstat` serialise that) and it is only
+ * reachable in the window after `makeLayout`, which is why it is a strengthening rather than a
+ * scramble. Equality also subsumes the two weaknesses the prefix form needed handling for — a
+ * sibling whose name merely starts with `worktrees` (`.awcli/run/worktrees-elsewhere/x` passed the
+ * separator-less prefix test) and everything below the boundary that is not this slot — so there is
+ * one comparison rather than a prefix plus a trailing separator plus the cases neither covers.
+ *
+ * The expected path is derived the same way the boundary was: the repository root resolved, plus the
+ * layout's own spelling of the target via `relative`. Nothing is hard-coded here and the layout stays
+ * declared in `run-identity.ts`. A `realpath` that fails is refused too; this is the check that says
+ * where the working copy is, and "awcli could not tell" is not an answer to hand back as a handle.
+ *
+ * It is also the only failure exit in `openWorktree` reached after a *successful* `git worktree add`,
+ * and that is why the fault ends by naming what is left behind. Nothing catches here and nothing
+ * calls `undoOwnBranch` — deliberately, because the module's non-destructive rule is at its
+ * strongest on a path where somebody has planted a link, and the registration is git's to clear
+ * anyway — so two things of awcli's survive: the branch, whose `git branch` exited zero, and git's
+ * registration of the working copy, whose add exited zero. Both are certain rather than possible,
+ * which is what lets the sentence state them.
+ *
+ * "Nothing was removed" was the whole of it, which is accurate about the *target* and silent about
+ * those two, and the silence costs the operator four steps: the next invocation of this run and slot
+ * is refused `occupied` over the planted link; `worktreeRegistration` answers `unregistered`,
+ * because the registration's canonical path is the link's destination while `canonicalPath(target)`
+ * leaves the last component unresolved, so they are told git has nothing registered there; they
+ * delete the link and run again; and they are refused `branch-exists` and handed
+ * `git branch -d awcli/<run>/<slot>`, which fails naming a working copy at a path they have never
+ * seen. Every other leftover path in this module names what may survive — the cut's catch says a
+ * branch "may exist even though the working copy does not" — and this one is the path where the
+ * answer is not "may". Watched by workspace-faults.test.ts's "inside the repository but outside the
+ * runtime directory" case, which asks `git branch --list` and `git worktree list --porcelain` what
+ * is actually there rather than only matching the prose, and by the gate mutation that empties the
+ * clause.
+ *
+ * The fault goes through `printable`, and `placed` is the reason rather than the paths awcli derived
+ * itself. This guard fires precisely when someone planted a symlink in the layout, so the resolved
+ * destination it quotes is a filename the attacker chose — and a filename may hold any byte but NUL
+ * and `/`. An ESC repaints the terminal over the fault; a U+202E reverses the rendering of the rest
+ * of the sentence. This is the message in this module whose content is *guaranteed* adversarial,
+ * which is the load-bearing half of what this sentence used to say. The other half — that it was the
+ * last one still interpolating raw — is true of nothing now, and was not true when it was written:
+ * grepping the file for an interpolated `dir`, `cwd`, `repositoryPath` or resolved path that reaches
+ * a message through neither `printable` nor `shellPath` finds none, `describe`'s two sentences
+ * included. That grep is scoped to this file, which is what made it insufficient rather than wrong:
+ * `git-process.ts` writes three of its own messages about a failed invocation, and interpolated the
+ * `cwd` this module hands it raw in all three while sanitising the binary, the argv and the signal
+ * beside it. Sanitising by delegation is not sanitising, so that file now carries its own bound. The one value still interpolated raw is `branch`, in the remedies, and that is a value
+ * awcli *constructed* — `workspaceBranch(runName, slot)` over a run name the gate chain validated
+ * and a slot this module refuses unless it is already lowercase — rather than one it found on disk.
+ * `target` and the expected path are bounded for the lesser reason: neither can flood a terminal that
+ * has one fault to show.
  */
 async function assertInsideRuntimeDirectory(
   repositoryPath: string,
   target: string,
+  branch: string,
 ): Promise<void> {
   const root = await realpath(repositoryPath).catch(() => undefined);
-  const boundary =
-    root === undefined
-      ? undefined
-      : join(root, relative(repositoryPath, worktreesRoot(repositoryPath)));
+  const expected =
+    root === undefined ? undefined : join(root, relative(repositoryPath, target));
   const placed = await realpath(target).catch(() => undefined);
-  if (
-    boundary === undefined ||
-    placed === undefined ||
-    !placed.startsWith(`${boundary}${sep}`)
-  ) {
+  if (expected === undefined || placed === undefined || placed !== expected) {
+    // Both leftovers are certain rather than possible, which is why they are stated and not hedged:
+    // the `git branch` above exited zero, which it does only when it created the ref, and the
+    // `git worktree add` above exited zero, so git registered the working copy. See the docblock.
+    const leftovers = `Two things of awcli's are behind that and neither has been put back: the branch ${branch}, which awcli cut for this working copy, and git's registration of the working copy itself — which names the path the link resolves to and not this one, so a later run asking "git worktree list" about this path is told git has nothing here. "git worktree list" says what git holds and where it points, and "git branch --list ${branch}" says the branch is there.`;
     throw new Error(
-      `awcli made a working copy at ${target}, and it is not inside ${worktreesRoot(repositoryPath)}: it is at ${placed ?? "a path awcli could not resolve"}. That is outside the runtime directory, so an agent would be working outside the repository while everything awcli reports says otherwise. Nothing was removed — look at what is at that path before running again.`,
+      `awcli made a working copy for this run at ${printable(target, PATH_LIMIT)}, and that is not where it is: it is at ${placed === undefined ? "a path awcli could not resolve" : printable(placed, PATH_LIMIT)}, where awcli expected ${expected === undefined ? "a path it could not resolve" : printable(expected, PATH_LIMIT)}. Something between the repository root and that leaf is a link, so an agent would be working somewhere other than the directory everything awcli reports names — outside ${printable(worktreesRoot(repositoryPath), PATH_LIMIT)} altogether, or in another run's. Nothing was removed — look at what is at that path before running again. ${leftovers}`,
     );
   }
 }
 
 /**
- * Whether git has a working copy registered at a path.
+ * Whether git has a working copy registered at a path, and whether that registration is locked.
  *
- * The question the `occupied` refusal turns on, because the two answers have different remedies and
- * one of them is a command git rejects: `git worktree remove` on an ordinary directory exits 128
- * with `fatal: ... is not a working tree` (confirmed on git 2.55). The first version of that message
- * advised it unconditionally, on a branch whose own comment says it fires for *anything at all*, and
- * the test only string-matched the sentence — so the suite was green over advice that does not run.
+ * The question the `occupied` refusal turns on, because the answers have different remedies and two
+ * of them are commands git rejects. `git worktree remove` on an ordinary directory exits 128 with
+ * `fatal: ... is not a working tree`. On a *locked* registration it exits 128 with `fatal: cannot
+ * remove a locked working tree, lock reason: <reason> / use 'remove -f -f' to override or unlock
+ * first` — and `--force` exits 128 identically, because git wants the second `-f` for that one.
+ * `git worktree prune` does not help either: it left a locked registration listed even with the
+ * directory deleted. All measured on git 2.55 on the machine this was written on. The first version
+ * of that message advised the removal unconditionally, on a branch whose own comment says it fires
+ * for *anything at all*, and the test only string-matched the sentence — so the suite was green over
+ * advice that does not run.
  *
- * `unknown` is a third answer rather than a default to one of the others, and it is why this asks git
- * through the raw runner instead of through `run`: this builds a *refusal message*, so it must not
- * throw, and a git that cannot answer must not be turned into a confident sentence in either
+ * The lock is read because it answers a question this module had been getting wrong from the other
+ * side, and getting wrong in the one direction that costs somebody their work. `git worktree add`
+ * registers the working copy at the *start* of its run, not at the end: from the first moment of the
+ * add the entry is listed with its `HEAD` and its `branch` and carries the attribute
+ * `locked initializing`, and the attribute goes only once the add exits zero. Verified on git 2.55
+ * by polling `git worktree list --porcelain` through an add held open with a `filter.<driver>.smudge`
+ * that sleeps. A losing racer — which reaches the `found` site whenever the winner's `mkdir` lands
+ * before its own `lstat`, the ordering `Occupancy` records CI producing on the first try — therefore
+ * asks this question in the middle of the winner's checkout and gets a registration back. Answering
+ * `registered` for that sent the loser the one arm with no racing hedge on it: remove the winner's
+ * in-flight working copy, delete the branch its agent is committing onto. `initializing` is that
+ * state told apart from a settled one, and it is git's own word for it rather than awcli's guess.
+ *
+ * It is not proof against an operator who wrote that word themselves — `git worktree lock --reason
+ * initializing` is indistinguishable from git's own lock, and nothing in the output separates the
+ * two. What that costs is the safe direction: such an operator is told to wait for a run that has
+ * already finished, rather than being told to remove something a live run is using. Recorded here
+ * rather than defended against, because the defence would have to be a guess about which of two
+ * identical answers git meant.
+ *
+ * `unknown` is a separate answer rather than a default to one of the others, and it is why this asks
+ * git through the raw runner instead of through `run`: this builds a *refusal message*, so it must
+ * not throw, and a git that cannot answer must not be turned into a confident sentence in any
  * direction.
  *
  * Paths are compared with the parent resolved and the last component left alone. That divergence is
@@ -951,7 +1340,31 @@ async function assertInsideRuntimeDirectory(
  * `unregistered`, with the remedy that leaves the registration holding the branch). Nothing watches
  * it, and no gate mutation can: with `--show-toplevel` in place both implementations agree.
  */
-type WorktreeRegistration = "registered" | "unregistered" | "unknown";
+type WorktreeRegistration =
+  | { readonly answer: "registered" | "initializing" | "unregistered" | "unknown" }
+  /** The reason git recorded, which is a string somebody chose. Sanitised where it is printed. */
+  | { readonly answer: "locked"; readonly reason: string };
+
+/**
+ * The registration answers on their own, for the machine-readable half of a refusal.
+ *
+ * The reason does not travel with them: it is prose for the operator to recognise a lock by, and a
+ * consumer branching on it would be branching on a string an agent can write. See
+ * `WorkspaceRefusalDetail`.
+ */
+export type WorktreeRegistrationAnswer = WorktreeRegistration["answer"];
+
+/**
+ * The lock reason `git worktree add` holds a working copy under while it is checking it out.
+ *
+ * git's own word, read back out of git's own output — awcli never writes a lock. Spelled once
+ * because the message that explains the state to an operator quotes it verbatim, and a sentence
+ * naming an attribute the code no longer recognises is worse than no sentence.
+ */
+const INITIALIZING_LOCK = "initializing";
+
+/** The attribute record `git worktree list --porcelain` prints for a locked registration. */
+const LOCKED_ATTRIBUTE = "locked";
 
 async function worktreeRegistration(
   git: GitRunner,
@@ -965,20 +1378,87 @@ async function worktreeRegistration(
   // target got `git worktree list --porcelain did not finish within 120000ms` instead of the
   // refusal and its remedies. `unknown` is the answer that already exists for "git could not say",
   // and a git that could not be run at all is a git that could not say.
-  const listed = await git(["worktree", "list", "--porcelain"], repositoryPath).catch(
-    () => undefined,
-  );
+  // `-z` rather than the newline form, because git prints paths raw in `--porcelain`: no quoting and
+  // no escaping. A filename may hold a newline, so a working copy registered at
+  // `<repo>/spoof\nworktree <target>\nx` emits lines that parse as records of their own, and awcli
+  // answered "registered" for a target nothing was registered at — reproduced on git 2.55. Both
+  // consumers then lead with `git worktree remove '<target>'`, which exits 128 on an unregistered
+  // path: the exact defect the docblock above says this function exists to prevent, reachable by any
+  // agent that can run git in the shared dir. Under `-z` one record is one attribute, so an embedded
+  // newline stays inside the path it belongs to. The same holds of a lock *reason*, which git prints
+  // raw under `-z` and quotes under the newline form — verified both ways on git 2.55, with a reason
+  // containing a newline printing as `locked "line one\nline two"` in one and as one NUL-terminated
+  // record in the other. A git too old for the switch exits non-zero and lands on `unknown`, which
+  // names every remedy and claims none.
+  //
+  // Which is the safe direction and is not the same as costing nothing, and that is why `-z` is now
+  // what sets awcli's documented floor. Below 2.36 this function can only ever answer `unknown`, so
+  // the `registered`, `initializing`, `locked` and `unregistered` arms are all unreachable and every
+  // operator on such a git gets the hedged sentence — worse than the pre-`-z` behaviour on those
+  // versions, which answered correctly and unsafely. The alternative was to retry without `-z` and
+  // treat any record containing a newline as `unknown`, which keeps 2.22-2.35 working; it was
+  // declined because it is a second parser for a git version nobody here can run, in the one
+  // function whose whole job is to avoid being confidently wrong. So the README says 2.36, which is
+  // four years old, and this stays one parser. Nothing hard-fails below it — the answer is `unknown`
+  // and the refusals still name every remedy — so the floor is a statement about which refusals an
+  // operator gets, not about whether awcli starts.
+  const listed = await git(
+    ["worktree", "list", "--porcelain", "-z"],
+    repositoryPath,
+  ).catch(() => undefined);
   if (listed === undefined || listed.kind !== "ran" || listed.code !== 0)
-    return "unknown";
+    return { answer: "unknown" };
   const wanted = await canonicalPath(target);
-  for (const line of listed.stdout.split("\n")) {
-    const prefix = "worktree ";
-    if (!line.startsWith(prefix)) continue;
-    if ((await canonicalPath(line.slice(prefix.length).trim())) === wanted) {
-      return "registered";
+  // One *entry* at a time, rather than one record at a time, because the discriminator this now
+  // reads is an attribute of an entry and an attribute cannot be recognised on its own: `locked`
+  // says nothing about which working copy it belongs to. git's format is a `worktree <path>` record
+  // opening an entry, its attributes as records of their own after it, and an empty record closing
+  // it — which under `-z` is a NUL after every record and therefore two NULs between entries.
+  // Confirmed against `od -c` on git 2.55. So the path record decides whether this is the entry
+  // being asked about, the attributes are read only while it is, and the answer is given when the
+  // entry closes rather than when it opens.
+  const prefix = "worktree ";
+  let mine = false;
+  let lock: string | undefined;
+  const answer = (): WorktreeRegistration =>
+    lock === undefined
+      ? { answer: "registered" }
+      : lock === INITIALIZING_LOCK
+        ? { answer: "initializing" }
+        : { answer: "locked", reason: lock };
+  for (const record of listed.stdout.split("\0")) {
+    if (record.startsWith(prefix)) {
+      // A new entry opens, so whatever the last one said about a lock stops applying — and that one
+      // assignment is the whole of the entry scoping. `locked` is an attribute of an entry and the
+      // record carries nothing saying which working copy it belongs to, so a reader that let it
+      // carry over would attribute an operator's own deliberately locked worktree to the target and
+      // then tell them to unlock and remove a path git has nothing registered at, which exits 128.
+      // A second `if (this is not the entry asked about) continue` guard over the attributes would
+      // enforce the same invariant and nothing could tell the two mechanisms apart, so there is one.
+      //
+      // No `trim` on the path: `-z` delimits exactly, and a path may legitimately end in a space.
+      mine = (await canonicalPath(record.slice(prefix.length))) === wanted;
+      lock = undefined;
+      continue;
     }
+    // The empty record closes the entry, and that is where the answer is given: at the `worktree`
+    // record above, the attributes it turns on have not been read yet.
+    if (record.length === 0) {
+      if (mine) return answer();
+      continue;
+    }
+    // A lock with no reason prints as the bare attribute, one with a reason as `locked <reason>`.
+    // Both measured on git 2.55; the empty reason is carried as an empty string rather than folded
+    // into "unlocked", because a lock somebody set without saying why is still a lock git refuses
+    // the removal for.
+    if (record === LOCKED_ATTRIBUTE) lock = "";
+    else if (record.startsWith(`${LOCKED_ATTRIBUTE} `))
+      lock = record.slice(LOCKED_ATTRIBUTE.length + 1);
   }
-  return "unregistered";
+  // The last entry is closed by the trailing NUL pair above, so this is reached only for output that
+  // ends without one — nothing git 2.55 produces, and `unregistered` is the answer that claims least
+  // about a shape awcli did not recognise.
+  return mine ? answer() : { answer: "unregistered" };
 }
 
 /**
@@ -1008,13 +1488,22 @@ async function canonicalPath(path: string): Promise<string> {
  * it touched anything. `raced` is EEXIST from awcli's own `mkdir` — the path was free when it looked
  * and taken by the time it created, which is direct evidence of another writer working right now.
  *
- * The distinction is worth making and is *not* what makes the `unregistered` sentence safe, which is
- * what a first attempt at this assumed. A losing racer reaches either site depending on scheduling:
- * if the winner's `mkdir` lands before the loser's `lstat`, the loser discovers a `found` target and
- * never sees EEXIST at all. That is not a rare ordering — it is the one a CI runner produced on the
- * first try, where this machine had produced the other eight times out of eight. So `unregistered`
- * had to stop claiming a settled world on *both* paths; `raced` is the stronger sentence awcli can
- * give when it happens to have the stronger evidence, not the fix.
+ * The distinction is worth making and is *not* what makes the settled sentences safe, which is what a
+ * first attempt at this assumed. A losing racer reaches either site depending on scheduling: if the
+ * winner's `mkdir` lands before the loser's `lstat`, the loser discovers a `found` target and never
+ * sees EEXIST at all. That is not a rare ordering — it is the one a CI runner produced on the first
+ * try, where this machine had produced the other eight times out of eight. So the arms a `found`
+ * discovery reaches had to stop claiming a settled world too; `raced` is the stronger sentence awcli
+ * can give when it happens to have the stronger evidence, not the fix.
+ *
+ * What makes those arms safe is `worktreeRegistration`, and only since it learned to read the lock.
+ * A loser landing on `found` is asking git about the target in the middle of the winner's
+ * `git worktree add`, and git registers the working copy from the *start* of that add and marks it
+ * `locked initializing` for the whole of it — so `initializing` is the answer a loser most often
+ * gets, and it is a positive, unambiguous "a run is provisioning here right now" rather than an
+ * absence to be hedged around. The narrow gap left is the winner's own `mkdir` and cut, before its
+ * add has begun: for those few milliseconds the directory exists and nothing is registered, which is
+ * what keeps the `unregistered` arm hedged at all.
  */
 type Occupancy = "found" | "raced";
 
@@ -1024,56 +1513,85 @@ type Occupancy = "found" | "raced";
  * The `Occupancy` question one refusal over. `collisionMessage` looks at the target again before it
  * advises anything that would touch what is there, and what that second look means depends on who
  * put it there: at the early site awcli has never created the directory, so anything at it is another
- * writer's; at the late site awcli made it and then removed it, and a `rmdir` that refused — a
- * directory git wrote into before failing — would be read as a racing writer if the question were
- * asked there too. `created-and-removed` is what stops that, and it is why this is a parameter rather
- * than something the function could work out for itself.
+ * writer's. At the late site awcli made it and gave it back with a best-effort `rmdir`, so what is
+ * there may be awcli's own leftover — the `rmdir` failing is the whole of the difference, and nothing
+ * in the second look can tell that from another writer. (Not "a directory git wrote into before
+ * failing", which is what this said: the late site is reached from a non-zero exit of the *cut*, so
+ * `git worktree add` has not run and nothing of git's is in there.) `created-and-removed` is what
+ * stops the confident racing-writer sentence being given about awcli's own abandoned directory, and
+ * it is why this is a parameter rather than something the function could work out for itself. Watched
+ * by the fs-fault suite, which stages a cut that fails over a leftover, and by the gate mutation that
+ * collapses the two answers into one.
  */
 type TargetClaim = "untouched" | "created-and-removed";
 
 /**
- * What to say about a target that is not free, and the remedy that fits what is actually there.
+ * What to say about a target that is not free, the remedy that fits what is actually there, and the
+ * discriminator a consumer reads instead of the sentence.
  *
- * Three remedies for a target awcli *found* taken, because there are three truths. A registered
- * working copy is cleared with `git worktree remove`, which also clears the registration that would
- * otherwise go on holding this run's branch — and which refuses while there is uncommitted work in
- * it, which is the answer an operator wants. Anything else is an ordinary directory as far as git is
- * concerned and `git worktree remove` refuses it, so the remedy is to move it or delete it. And when
- * git could not be asked, the sentence names both rather than guessing at one.
+ * Five answers for a target awcli *found* taken, because git distinguishes five states and the
+ * remedies genuinely differ. An *unlocked* registration is cleared with `git worktree remove`, which
+ * also clears the registration that would otherwise go on holding this run's branch — and which
+ * refuses while there is uncommitted work in it, which is the answer an operator wants. A
+ * registration locked with the reason `initializing` is a `git worktree add` that has not finished:
+ * nothing is to be removed, because the thing at that path is another acquisition's live working
+ * copy, and every command the removal arm names exits non-zero in that state anyway. A registration
+ * locked for some other reason is somebody's deliberate hold, and the removal only runs after
+ * `git worktree unlock`. Anything with no registration at all is an ordinary directory as far as git
+ * is concerned and `git worktree remove` refuses it, so the remedy is to move it or delete it. And
+ * when git could not be asked, the sentence names them and claims none.
  *
- * A fourth for a target awcli *raced* for, and it is not a fourth truth but the absence of one.
- * Measured 8 times out of 8: the loser's `mkdir` fails while the winner's `git worktree add` is still
- * running, so `worktree list` has nothing registered there yet and the `unregistered` arm fired —
- * telling the operator that git has no working copy there and to "move it or delete it yourself"
- * about a directory that a second later holds another run's live agent. `worktreeRegistration`'s three
- * answers are all about a settled world; a target another writer is halfway through claiming is a
- * fourth state it has no answer for, and the sentence has to say that rather than pick one.
+ * A sixth for a target awcli *raced* for, and that one is not a state of the path but of awcli's
+ * knowledge: EEXIST from its own `mkdir` is stronger evidence of a live writer than any answer git
+ * could give about a world that is still changing, so it is answered without asking.
+ *
+ * What this section used to argue, and what made the `registered` arm dangerous, was that
+ * `worktreeRegistration`'s answers were "all about a settled world" and that a target another writer
+ * was halfway through claiming was a state it had no answer for. That is false, and it is false in
+ * git's favour: `git worktree add` registers the working copy at the *start* of the add and marks the
+ * entry `locked initializing` until the checkout finishes (verified on git 2.55; see
+ * `worktreeRegistration`). So `git worktree list` is precisely the command that says whether a run is
+ * provisioning at a path, and the answer a losing racer most often gets is a positive one. The
+ * sentences point the operator at it rather than away from it, which is the opposite of what they did.
  */
-async function occupiedMessage(
+async function occupiedRefusal(
   git: GitRunner,
   repositoryPath: string,
   target: string,
   runName: RunName,
   branch: string,
   occupancy: Occupancy,
-): Promise<string> {
+): Promise<{
+  readonly message: string;
+  readonly detail: WorkspaceRefusalDetail;
+}> {
   if (occupancy === "raced") {
-    return `awcli will not provision a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: that path was free when awcli looked and taken by the time it created it, so another acquisition of this run and slot is almost certainly claiming it right now. Wait for that run and look at what is there before doing anything to it — git will not have it registered as a working copy until the checkout finishes, so an answer read now would be the wrong one. Or run this under a different --name.`;
+    return {
+      message: `awcli will not provision a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: that path was free when awcli looked and occupied by the time it created it. Something arrived in that window, and another acquisition of this run and slot is the likeliest thing it was — but a file, a directory or a symlink somebody else put there comes back as the same EEXIST, so awcli will not tell you a run is there when what it has is an errno. Look at what is there before doing anything to it, and wait for that run if a run is what it turns out to be — "git worktree list" is what says whether a run is still provisioning there, because git registers a working copy from the moment "git worktree add" starts and marks the entry "locked initializing" until its checkout finishes. Or run this under a different --name.${unshowablePathNote(target)}`,
+      detail: { kind: "occupied", occupancy, registration: undefined },
+    };
   }
   const registration = await worktreeRegistration(git, repositoryPath, target);
   const remedy =
-    registration === "registered"
-      ? `Otherwise that is a working copy git still has registered, so clear it with "git worktree remove ${shellPath(target)}" rather than by deleting the directory — a registration left behind goes on holding this run's branch — and then "git branch -d ${branch}" if the branch is finished with too. The removal refuses while there is uncommitted work in there, which is the answer you want.`
-      : registration === "unregistered"
-        ? `Otherwise git has nothing registered there as far as it can say right now — and a working copy another run is still checking out is not registered until that checkout finishes, so this answer does not tell an ordinary directory from a run in flight. Wait for any run that is in progress and look at what is actually in there before you move or delete it; "git worktree remove" is not the command for an ordinary directory and git refuses it for one.`
-        : `Otherwise clear it before running again — "git worktree remove ${shellPath(target)}" if git still has a working copy registered there, and an ordinary move or delete if it does not. awcli could not ask git which of the two this is.`;
-  return `awcli will not provision a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: something is there already, and awcli never removes or writes over what it finds. If a run is in progress, wait for it. ${remedy} Or run this under a different --name.`;
+    registration.answer === "registered"
+      ? `Otherwise that is a working copy git still has registered, so clear it with "git worktree remove ${shellPath(target)}" rather than by deleting the directory — a registration left behind goes on holding this run's branch — and then "git branch -d ${branch}", which is not the optional half if you mean to run this run and slot again: the branch is a pure function of both, so leaving it behind turns this refusal into the branch-exists one on the next attempt. The removal refuses while there is uncommitted work in there, and the delete refuses while the branch holds work no other branch has — both of which are the answer you want; git prints its own "-D" form to insist with.`
+      : registration.answer === "initializing"
+        ? `Otherwise git has that path registered and marked "locked ${INITIALIZING_LOCK}", which is what a "git worktree add" that has not finished looks like: another acquisition of this run and slot is checking a working copy out there right now. Wait for it and remove nothing — the run that is using that path and this run's branch has not finished with either, and git would refuse anyway: "git worktree remove" exits 128 on a locked working copy, "--force" included, and the branch delete exits 1 while a working copy holds the ref. "git worktree list" is where to watch for the lock going.`
+        : registration.answer === "locked"
+          ? `Otherwise git has that path registered and locked, ${registration.reason.length === 0 ? "with no reason recorded" : `for the recorded reason "${printable(registration.reason)}"`} — so somebody held it deliberately and "git worktree remove" refuses it while the lock stands, "--force" included, and "git worktree prune" will not clear it either. Look at what that lock is for first; then "git worktree unlock ${shellPath(target)}" and "git worktree remove ${shellPath(target)}" clear it, and "git branch -d ${branch}" the branch, which running this run and slot again needs done rather than left — which refuses while the branch holds work no other branch has, and git prints its own "-D" form to insist with.`
+          : registration.answer === "unregistered"
+            ? `Otherwise git had nothing registered there when awcli asked, which is nearly an answer and not quite one: git registers a working copy from the moment "git worktree add" starts and marks it "locked ${INITIALIZING_LOCK}" for the whole checkout, so a run already checking out there would have shown up — but one that has made the directory and not yet reached its add would not, and that gap is milliseconds wide. So ask "git worktree list" once more, and look at what is actually in there, before you move or delete it. "git worktree remove" is not the command for an ordinary directory and git refuses it for one.`
+            : `Otherwise clear it before running again — "git worktree list" says whether git has a working copy registered there, "git worktree remove ${shellPath(target)}" clears one that is not locked, and an ordinary move or delete is the answer if git has nothing there. awcli could not ask git which of those this is.`;
+  return {
+    message: `awcli will not provision a working copy at ${printable(target, PATH_LIMIT)} for the "${runName}" run: something is there already, and awcli never removes or writes over what it finds. If a run is in progress, wait for it. ${remedy} Or run this under a different --name.${unshowablePathNote(target)}`,
+    detail: { kind: "occupied", occupancy, registration: registration.answer },
+  };
 }
 
 /**
  * A ref that stops `awcli/<run>/<slot>` being created, and how.
  *
- * Three shapes rather than one, because the remedy differs and only the first is awcli's own doing.
+ * Four shapes rather than one, because the remedy differs and only the first is awcli's own doing.
  * git stores a branch as a file at `refs/heads/<name>`, so a branch and a directory of branches
  * cannot share a name: `awcli` or `awcli/<run>` existing as a branch makes every branch below it
  * uncreatable, and a branch *below* this one makes this one uncreatable. Both were verified against
@@ -1127,15 +1645,35 @@ async function namespaceRefs(
   repositoryPath: string,
 ): Promise<
   | { readonly ok: true; readonly refs: readonly string[] }
-  | { readonly ok: false; readonly code: number; readonly stderr: string }
+  | { readonly ok: false; readonly why: string; readonly cause?: unknown }
 > {
+  // Total, which is the fix: this used to return a failure only for a non-zero *exit*, and the runner
+  // does not confine itself to those. It rejects for a git that has gone missing, for a `cwd` that
+  // has, for the 120s timeout, and for an answer past `GIT_MAX_BUFFER` — and the last one is
+  // reachable precisely because this query has no pattern. Measured on git 2.55: 20,001 packed refs
+  // named `refs/heads/topic/branch-number-<n>` answer in 728,906 bytes and 81-98ms, so at 36 bytes a
+  // ref the 16MB bound arrives at around 460,000 branches. That is not an exposure, and prior runs
+  // recorded it as one; what it is, is a repository where the operator got the runner's sentence
+  // about bytes instead of the "awcli could not list the branches" fault written one line below the
+  // early call site. The reason it carries prose rather than an exit code is that half of what can
+  // go wrong here has no exit code to carry.
   const listed = await run(
     git,
     ["for-each-ref", "--format=%(refname)", "refs/heads"],
     repositoryPath,
-  );
+  ).catch((error: unknown) => ({ threw: error }) as const);
+  if ("threw" in listed) {
+    return {
+      ok: false,
+      why: listed.threw instanceof Error ? listed.threw.message : String(listed.threw),
+      cause: listed.threw,
+    };
+  }
   if (listed.code !== 0) {
-    return { ok: false, code: listed.code, stderr: listed.stderr };
+    return {
+      ok: false,
+      why: `git for-each-ref exited ${listed.code}. ${gitComplaint(listed.stderr)}`,
+    };
   }
   return {
     ok: true,
@@ -1174,19 +1712,79 @@ async function lateCollision(
  *
  * Deleting a branch awcli cut inside the same failed call is not the destructive behaviour the module
  * docblock forswears; leaving it is. It has no commits on it — it points at the sha the preflight
- * read, moments ago — and left behind it makes the run and slot unusable for good.
+ * read, moments ago — and left behind it makes the run and slot unusable for good. BR-036's
+ * Exceptions carry that carve-out, and the rule is where it belongs: it was written onto AWCLI-13's
+ * Constraints and into this comment first, which left the rule a reader consults saying awcli never
+ * deletes a branch automatically while this line does, with the reconciliation on a ticket that will
+ * be closed. A behaviour outside an approved rule that only the code records is the drift the
+ * amendment log exists for, and so is one recorded next to the code instead of in the rule.
  *
  * Best effort, through the raw runner with a `catch`, like `worktreeRegistration`: the outcome here is
  * already a failure, and a rejection from the tidying would replace the fault that names git's own
  * complaint with a complaint about the tidying.
+ *
+ * What it *managed* comes back, and that is the correction rather than a convenience. Both outcomes
+ * used to be discarded — the `rmdir` behind a swallowing `catch` and the delete's exit status not
+ * looked at — so the fault the caller then threw said nothing about either and read as though awcli
+ * had put everything back. Neither call succeeds in the state that matters. SIGKILL of
+ * `git worktree add` mid-checkout — the OOM killer's own signal, where git's cleanup handler does not
+ * run — leaves a part-checked-out target, so `rmdir` exits ENOTEMPTY, and leaves the registration
+ * holding the branch, so `git branch -D` exits 1 with `cannot delete branch '<name>' used by worktree
+ * at '<path>'`. Both measured on git 2.55, the second with the registration locked, which git counts
+ * as holding the ref exactly as an ordinary one does.
+ *
+ * The pair of statuses is also what lets the caller claim something rather than hedge everything: a
+ * `git branch -D` that *succeeded* is proof that no working copy held the ref, since that is the one
+ * reason git refuses one — so with the directory gone too, there is nothing of awcli's left and the
+ * fault says nothing about leftovers. See `undoneResidual`.
  */
+type Undone = {
+  /**
+   * Whether the directory awcli made is gone. `rmdir` is what holds that to "empty": it refuses a
+   * directory with anything in it, so `left-behind` means something is in there — git's partial
+   * checkout, in the case this is written for.
+   *
+   * ENOENT counts as `removed`, which is the correction: the directory being *already* gone is the
+   * outcome this axis reports, not a failure to reach it. It is the ordinary state on the
+   * `no-such-directory` shape — the repository directory has been removed, and the target lives
+   * under it — and there `left-behind` made the residual say "there is something in <target>" about
+   * a path that no longer exists at all.
+   */
+  readonly directory: "removed" | "left-behind";
+  /**
+   * What `git branch -D` said about the ref the cut created. Three answers rather than two, because
+   * the residual makes a claim that only one of them supports.
+   *
+   * `deleted` is a zero exit. `left-behind` is a git that *ran* and refused, which is the only state
+   * in which "a working copy is still holding the ref" is a deduction rather than a guess — that
+   * being the one reason git refuses this delete. `no-answer` is everything else: git could not be
+   * started, its `cwd` had gone, or the runner gave up on it (the 120s timeout, an answer past the
+   * read bound, a child killed by a signal). In none of those did git say anything about the ref, so
+   * awcli knows neither whether it is there nor whether a command it might name would run.
+   *
+   * Collapsing `no-answer` into `left-behind` is how the wrong version of this shipped: on the two
+   * shapes where git never ran at all, the residual told the operator the branch had survived
+   * *because git refused the delete*, and then handed them four git commands to run in a repository
+   * the same fault had just said git could not be reached in.
+   */
+  readonly branch: "deleted" | "left-behind" | "no-answer";
+};
+
 async function undoOwnBranch(
   git: GitRunner,
   repositoryPath: string,
   branch: string,
   target: string,
-): Promise<void> {
-  await rmdir(target).catch(ignoreCleanupFailure);
+): Promise<Undone> {
+  const directory = await rmdir(target).then(
+    () => "removed" as const,
+    // ENOENT is not a leftover. `rmdir` rejects both for a directory with something in it and for one
+    // that is not there, and only the first is something for the operator to clear — so folding them
+    // together made the residual describe contents of a path that had gone, which is the ordinary
+    // case when the repository directory itself is what vanished under the run.
+    (error: unknown) =>
+      isErrno(error, "ENOENT") ? ("removed" as const) : ("left-behind" as const),
+  );
   // `NO_HOOKS` here too: this is a ref update like the cut it undoes, so it runs
   // `reference-transaction` out of the shared git dir without it — and it runs on the *failure* path,
   // where an operator is already being handed a fault and is least able to account for a hook that
@@ -1195,7 +1793,78 @@ async function undoOwnBranch(
   // provably commitless (it points at the sha the preflight read moments ago), so there is nothing for
   // `-d` to protect and its merged-ness check would leave the leak behind on a repository whose HEAD
   // has moved. Every *operator-facing* remedy names `-d`; see `collisionMessage`.
-  await git([...NO_HOOKS, "branch", "-D", branch], repositoryPath).catch(() => undefined);
+  const deleted = await git([...NO_HOOKS, "branch", "-D", branch], repositoryPath).catch(
+    () => undefined,
+  );
+  // The raw runner is used here rather than `run`, so the two no-git outcomes arrive as *values* and
+  // can be told from a refusal instead of being flattened into one. That distinction is the whole of
+  // why `no-answer` exists: `left-behind` is a claim about what git said, and git that did not run
+  // said nothing. See `Undone.branch`.
+  return {
+    directory,
+    branch:
+      deleted === undefined || deleted.kind !== "ran"
+        ? "no-answer"
+        : deleted.code === 0
+          ? "deleted"
+          : "left-behind",
+  };
+}
+
+/**
+ * What awcli did not manage to put back, and the commands that clear what is left.
+ *
+ * Nothing at all when both went back, which is a claim the pair of statuses supports rather than a
+ * hopeful default: git refuses `git branch -D` for a branch a working copy holds, so a delete that
+ * exited zero says no registration held this run's ref, and with the directory gone as well there is
+ * nothing of awcli's for the operator to find. Saying nothing is then the right answer — a fault
+ * that lists three hypothetical leftovers on the ordinary failing-add path buries git's own
+ * complaint, which is the sentence the operator actually needs.
+ *
+ * And a third answer that is neither: `no-answer` says git never told awcli anything about the ref,
+ * so the arm for it claims nothing about why the branch survived and conditions every command on a
+ * git that can be run again. The two confident arms are deductions from what git *said* — a refusal
+ * means a working copy holds the ref — and applying either to a git that never ran produced a fault
+ * asserting three false things and naming four commands that could not be typed.
+ *
+ * When something *is* left, the commands named are the ones that work in that state, and they are
+ * not the set every other remedy in this module names. A registration `git worktree add` abandoned is
+ * locked with the reason `initializing`, and on a locked registration `git worktree remove` exits 128
+ * and so does `--force` — git asks for `-f -f` — while `git worktree prune` leaves the entry listed
+ * even once its directory has gone. So `unlock` then `remove`, or `remove -f -f`, is the pair that
+ * clears it, and the branch delete only works after that. All measured on git 2.55. Shared by the
+ * add's two failure exits because the residual and the next step are the same on both.
+ *
+ * `-d` for the branch, as everywhere else operator-facing: awcli's own `-D` is justified where it is
+ * used by a proof the operator does not have. And every path goes through `printable`/`shellPath`,
+ * because the target is a path and a message is a terminal.
+ */
+function undoneResidual(undone: Undone, branch: string, target: string): string {
+  if (undone.directory === "removed" && undone.branch === "deleted") return "";
+  const where = printable(target, PATH_LIMIT);
+  const left =
+    undone.branch === "no-answer"
+      ? // Neither of the two confident sentences below, because both are claims about what git said
+        // and git said nothing. What awcli knows here is what it *asked*, so that is what it reports:
+        // it cut a branch, it could not get an answer about deleting it, and the ref's fate is
+        // therefore the operator's to establish rather than awcli's to assert.
+        undone.directory === "removed"
+        ? `awcli removed the directory it had made, but got no answer from git about deleting ${branch}: whatever stopped the add stopped that delete too, so awcli cannot say whether that branch is still there.`
+        : `awcli could not account for either of the two things it made: there is something in ${where}, and it got no answer from git about deleting ${branch} — whatever stopped the add stopped that delete too, so it cannot say whether that branch is still there.`
+      : undone.directory === "removed"
+        ? `awcli removed the directory it had made, but "git branch -D ${branch}" did not succeed, so that branch is still there.`
+        : undone.branch === "deleted"
+          ? `awcli deleted the branch it had cut, but could not remove ${where}: there is something in it now, and awcli removes only a directory that is still empty.`
+          : `awcli could not put back either of the two things it made: there is something in ${where}, and ${branch} is still there — which is what git refusing that delete means, because the one reason it refuses is a working copy still holding the ref.`;
+  // The commands are the same set on all three, and on `no-answer` they are the same set *later*:
+  // every one of them is a git invocation, and the state that produced `no-answer` is a git that
+  // could not be run — in the `no-such-directory` shape, in a repository that is no longer there. So
+  // they are conditioned rather than dropped. Naming them flatly was the second half of the defect
+  // the third arm carried: advice that cannot be followed until the fault the operator is reading
+  // about has been dealt with, presented as the next thing to type.
+  const once =
+    undone.branch === "no-answer" ? "Once git can be run in that repository again, " : "";
+  return `${left} ${once}"git worktree list" says whether git also still has a working copy registered at that path. If it has, the entry will be locked with the reason "${INITIALIZING_LOCK}", and a locked one refuses "git worktree remove" and "--force" alike and survives "git worktree prune" even with its directory gone — so "git worktree unlock ${shellPath(target)}" and then "git worktree remove ${shellPath(target)}" is what clears it, or "git worktree remove -f -f ${shellPath(target)}" in one step. Then "git branch -d ${branch}" for the branch, which git refuses while a working copy still holds it.${unshowablePathNote(target)}`;
 }
 
 /**
@@ -1219,7 +1888,11 @@ function branchCollision(
   runName: RunName,
   existing: readonly string[],
 ): BranchCollision | undefined {
-  const short = (ref: string): string => printable(ref.slice("refs/heads/".length));
+  // `COMMAND_PATH_LIMIT`, not `printable`'s own default: this value is handed to the operator with
+  // "rename or delete it" after it, so truncating it produces a name that does not exist. See the
+  // constant, which carries the arithmetic that makes it reachable.
+  const short = (ref: string): string =>
+    printable(ref.slice("refs/heads/".length), COMMAND_PATH_LIMIT);
   const matching = (candidate: string): string | undefined => {
     const wanted = `refs/heads/${candidate}`.toLowerCase();
     return existing.find((ref) => ref.toLowerCase() === wanted);
@@ -1263,6 +1936,14 @@ function branchCollision(
  * whether anything is on that branch. `-d` refuses an unmerged one and prints git's own `-D` hint, so
  * insisting costs one paste and not insisting costs nothing. Reproduced both ways on git 2.55.
  * `undoOwnBranch` still uses `-D`, and says there why that one is not this.
+ *
+ * And every sentence naming it says that it refuses, which is the half the swap from `-D` first left
+ * behind: the arms asserted flatly that the command "deletes it", and the state this whole refusal
+ * exists for — BR-036, a finished run of this name and slot whose branch carries the agent's commits
+ * — is exactly the state where `git branch -d` exits 1 with "not fully merged". So the confident
+ * wording was false for every run that committed anything, and the only refusal it accounted for was
+ * a working copy holding the branch, which `git worktree list` answers and this one is not. git prints
+ * the `-D` form itself, so the sentence only has to say that insisting is what that hint is for.
  */
 async function collisionMessage(
   git: GitRunner,
@@ -1275,12 +1956,14 @@ async function collisionMessage(
 ): Promise<string> {
   if (collision.kind === "same") {
     // Before any remedy that touches what is at the target: is another acquisition of this run and
-    // slot provisioning onto this very branch right now? `occupiedMessage` asks that question and this
-    // did not, and cutting the branch in its own call is what made the omission expensive — the
-    // winner's ref now appears immediately after its `mkdir`, a far wider window than
-    // `worktree add -b`, which cut the branch and checked out in one call. So a loser's collision
-    // query routinely finds a branch a live run cut a moment ago, and every remedy below would have
-    // told it to remove the winner's working copy and delete the winner's branch.
+    // slot provisioning onto this very branch right now? `occupiedRefusal` asks that question and this
+    // did not. The window is not new and cutting the branch in its own call did not widen it much:
+    // `-b` published the ref before it validated the target (verified, and recorded at the cut
+    // below), so under the combined form too the winner's branch was visible for the whole of its
+    // checkout. What the split adds is the gap between two processes at the front of it. Either way
+    // a loser's collision query routinely finds a branch a live run cut a moment ago, and every
+    // remedy below would have told it to remove the winner's working copy and delete the winner's
+    // branch — which is a consequence of a loser reaching this site at all, not of the split.
     //
     // The evidence is awcli's own `lstat`, asked again. Reaching this site at all means nothing was at
     // the target when awcli looked; a winner whose branch exists has already created that directory,
@@ -1301,7 +1984,7 @@ async function collisionMessage(
     if (arrived !== undefined) {
       return `awcli will not cut the branch ${branch} for the "${runName}" run: it already exists, and ${printable(target, PATH_LIMIT)} was free when awcli looked a moment ago while something is there now — so another acquisition of this run and slot is almost certainly provisioning onto that branch right now. Wait for that run: do not remove what is at that path and do not delete the branch, because the run using them has not finished with either. Or run this under a different --name.`;
     }
-    // Which command to name is the same question `occupiedMessage` asks, and it has to be asked
+    // Which command to name is the same question `occupiedRefusal` asks, and it has to be asked
     // here too: this path is only reached once the `occupied` check has established that nothing is
     // at the target, so the live cases are a registration whose directory has already been deleted
     // — where `git worktree remove` is exactly right — and a branch nothing has ever held, where it
@@ -1315,14 +1998,29 @@ async function collisionMessage(
     // anywhere on disk — gets `error: cannot delete branch ... used by worktree at <somewhere else>`,
     // exit 1, out of the command this sentence told them would work. Reproduced on git 2.55. So the
     // claim is scoped to `target` and the sentence names what answers the other case.
+    //
+    // The removal arm is the *unlocked* registration only, which is what makes its parenthetical
+    // true: `git worktree prune` clears a stale registration, but not a locked one — verified on git
+    // 2.55, where a locked entry stayed listed after `prune` even with its directory deleted. The two
+    // locked answers get their own arm, and reaching them here means something more specific than it
+    // does on the occupied path: awcli only gets this far because nothing is at the target, and a
+    // live `git worktree add` has made its directory before it registers anything. So a registration
+    // locked `initializing` with no directory under it is an add that was killed rather than one in
+    // flight — which is precisely the leftover this module's own failed-add path can produce.
     const held = await worktreeRegistration(git, repositoryPath, target);
+    const unlockFirst = `"git worktree remove" refuses a locked registration and so does "--force" — git asks for "-f -f" — and "git worktree prune" will not clear it either, so "git worktree unlock ${shellPath(target)}" and then "git worktree remove ${shellPath(target)}" is what releases the branch, or "git worktree remove -f -f ${shellPath(target)}" in one step.`;
+    const thenDelete = `Then "git branch -d ${branch}", which refuses while the branch holds work no other branch has, and prints git's own "-D" form to insist with.`;
     const remedy =
-      held === "registered"
-        ? `If it is finished with, remove the working copy that holds it first with "git worktree remove ${shellPath(target)}" (which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once), then "git branch -d ${branch}".`
-        : held === "unregistered"
-          ? `If it is finished with, "git branch -d ${branch}" deletes it — git has no working copy registered at ${printable(target, PATH_LIMIT)}, so there is nothing to remove there first. If git refuses because some other working copy holds the branch, "git worktree list" says which one.`
-          : `If it is finished with, "git branch -d ${branch}" deletes it; if git refuses because a working copy still holds it, "git worktree remove ${shellPath(target)}" clears that registration first ("git worktree prune" clears every stale one at once). awcli could not ask git which of the two this is.`;
-    return `awcli will not cut the branch ${branch} for the "${runName}" run: it already exists, and awcli never moves or deletes a branch — the commits on one are the deliverable. ${remedy} Or run this under a different --name.`;
+      held.answer === "registered"
+        ? `If it is finished with, remove the working copy that holds it first with "git worktree remove ${shellPath(target)}" (which works even if that directory has already gone, and "git worktree prune" clears every stale registration at once), then "git branch -d ${branch}" — which refuses while the branch holds work no other branch has, and prints git's own "-D" form to insist with.`
+        : held.answer === "initializing"
+          ? `git still has a working copy registered at ${printable(target, PATH_LIMIT)}, locked with the reason "${INITIALIZING_LOCK}", and nothing is at that path — which is a "git worktree add" that was killed part-way rather than one running now, and it is what goes on holding this branch. ${unlockFirst} ${thenDelete}`
+          : held.answer === "locked"
+            ? `git still has a working copy registered at ${printable(target, PATH_LIMIT)} and locked, ${held.reason.length === 0 ? "with no reason recorded" : `for the recorded reason "${printable(held.reason)}"`}, and that registration is what holds this branch. Somebody locked it deliberately, so look at what the lock is for before you clear it. ${unlockFirst} ${thenDelete}`
+            : held.answer === "unregistered"
+              ? `If it is finished with, "git branch -d ${branch}" deletes it once nothing else needs the commits on it — git refuses while the branch holds work no other branch has, and prints its own "-D" form to insist with. git has no working copy registered at ${printable(target, PATH_LIMIT)}, so there is nothing to remove there first; if it refuses naming a working copy instead, "git worktree list" says which one.`
+              : `If it is finished with, "git branch -d ${branch}" is the delete, and it refuses while the branch holds work no other branch has — git prints its own "-D" form to insist with. If it refuses naming a working copy that still holds the branch, "git worktree remove ${shellPath(target)}" clears that registration first ("git worktree prune" clears every stale one at once, and neither touches a registration somebody has locked — "git worktree unlock ${shellPath(target)}" comes first for one of those). awcli could not ask git which of these this is.`;
+    return `awcli will not cut the branch ${branch} for the "${runName}" run: it already exists, and awcli never moves or deletes a branch — the commits on one are the deliverable. ${remedy} Or run this under a different --name.${unshowablePathNote(target)}`;
   }
   const where =
     collision.kind === "below"
@@ -1360,13 +2058,32 @@ function handle(
       const answer = await run(git, ["rev-parse", "HEAD"], dir);
       if (answer.code !== 0) {
         throw new Error(
-          `awcli could not read the commit the working copy at ${dir} is on: git rev-parse exited ${answer.code}. ${gitComplaint(answer.stderr)}`,
+          `awcli could not read the commit the working copy at ${printable(dir, PATH_LIMIT)} is on: git rev-parse exited ${answer.code}. ${gitComplaint(answer.stderr)}`,
         );
       }
       return answer.stdout.trim();
     },
     dirty: async () => {
-      // Pinned the way `NO_HOOKS` pins `core.hooksPath`, and for a reason found in the suite rather
+      // `NO_HOOKS`, which this was the one git call in the module without — and the only one an agent
+      // could reach more than once. `git status` writes the index whenever it has to refresh stat
+      // information, and writing it runs `post-index-change`, resolved through the *shared*
+      // `.git/hooks` and the shared config's `core.hooksPath` exactly as `post-checkout` and
+      // `reference-transaction` are. So a hook any agent in any slot can plant was handed execution
+      // on the host with the operator's identity on every `dirty()` call, for the whole life of the
+      // run, by the one member a workflow calls repeatedly — later and more often than the two
+      // provisioning calls that already carried the argument, and after AWCLI-25's boundary is
+      // supposed to be what stands between an agent and the host. It also made `describe`'s "awcli
+      // ran none of the repository's git hooks" false in the tense that sentence is now written in,
+      // which says *making it and reading it*. Verified on git 2.55 both ways, under awcli's exact
+      // argv: with `post-index-change` planted and the index needing a refresh the hook ran, and the
+      // same call under this `core.hooksPath` did not.
+      //
+      // The filter residual is not closed by this and is not meant to be: `core.hooksPath` governs
+      // hooks and says nothing about `filter.<driver>.clean`, which `git status` still runs from the
+      // same shared config. That is the half BR-015 states rather than removes — see `describe` and
+      // the module header.
+      //
+      // `status.showUntrackedFiles` pinned the same way, and for a reason found in the suite rather
       // than in the code: `status.showUntrackedFiles=no` is a common setting on a large repository,
       // and under it `git status --porcelain` says nothing about untracked files at all. This answers
       // "what would a resumed run inherit", and an untracked file is something it would inherit — so
@@ -1375,12 +2092,12 @@ function handle(
       // operator's configuration says about status is theirs to say.
       const answer = await run(
         git,
-        ["-c", "status.showUntrackedFiles=normal", "status", "--porcelain"],
+        [...NO_HOOKS, "-c", "status.showUntrackedFiles=normal", "status", "--porcelain"],
         dir,
       );
       if (answer.code !== 0) {
         throw new Error(
-          `awcli could not tell whether the working copy at ${dir} has uncommitted changes: git status exited ${answer.code}. ${gitComplaint(answer.stderr)}`,
+          `awcli could not tell whether the working copy at ${printable(dir, PATH_LIMIT)} has uncommitted changes: git status exited ${answer.code}. ${gitComplaint(answer.stderr)}`,
         );
       }
       return answer.stdout.trim().length > 0;
@@ -1405,11 +2122,57 @@ function handle(
  * and a worktree composed with one (AWCLI-19) would reuse this description to tell the operator their
  * credentials are reachable inside a container that blocks them. So each axis says its own half, and
  * whatever composes them into the contract's `Isolation` says both.
+ *
+ * The hooks clause carries its own bound for the same reason the `.awcli/run/` carve-out does. What
+ * `NO_HOOKS` buys is that no hook runs; it does not buy "no code from the repository runs", because
+ * a `filter.<driver>` command runs for every path `.gitattributes` assigns to a driver, and
+ * `.git/config` is shared by every worktree — so an agent in one slot can arrange for the next
+ * provisioning, any run, to execute a command on the host. Verified against git 2.55 under awcli's
+ * exact argv, `core.hooksPath` in force. The module header carries the residual and the operator does
+ * not read the module header, so the unqualified version of this clause promised more than the code
+ * delivers: precisely the direction BR-015 exists to stop.
+ *
+ * And the clause says *making it and reading it*, which is the second correction to the same
+ * sentence. Bounded to "a checkout", it named the residual and then put it in the past: the reader
+ * is told a command ran once, while provisioning. `dirty()` runs `git status`, `git status` runs the
+ * `clean` half of the same driver, and `dirty()` is a `WorkspaceHandle` member called for the whole
+ * life of the run — measured under awcli's exact `status` argv on git 2.55, see the module header. So
+ * the one sentence BR-015 governs understated *when* the residual applies, which is the same class of
+ * error as understating that it applies at all.
+ *
+ * Both interpolations are sanitised, and the asymmetry that made that necessary is worth stating: the
+ * branch used to arrive pre-sanitised from `openLiveTree` and `dir` arrived raw, so this string
+ * hardened the narrower of its two foreign values and left the wider one open. A git ref cannot carry
+ * a C0 control — git's ref rules ban them, and `git check-ref-format` refuses `refs/heads/a<ESC>b`,
+ * measured — while a directory name may hold any byte but NUL and `/`, and `git rev-parse
+ * --show-toplevel` hands the path back byte for byte, ESC included (measured on git 2.55 against a
+ * repository whose directory name carried U+001B and U+202E). So `dir` was the channel that could
+ * repaint the terminal, on the success path, in the one string an operator always reads.
+ * `WorkspaceHandle.dir` and `.branch` stay the real values; sanitising is what printing them costs.
  */
 function describe(workspace: WorkspaceAxis, dir: string, branch: string): string {
+  const where = printable(dir, PATH_LIMIT);
+  const on = printable(branch, PATH_LIMIT);
   return workspace === "liveTree"
-    ? `Working directly in your own checkout at ${dir}, on your branch ${branch}, because this run was given ${LIVE_CHECKOUT_FLAG}: uncommitted changes there are an agent's to change, and nothing about the working copy protects them. What an agent can touch beyond your checkout is settled by where this run executes, not by the working copy it was given.`
-    : `Working in a worktree at ${dir}, on the branch ${branch}: your own checkout, its branch and its uncommitted changes are untouched — the one thing this run adds to your checkout is the working copy itself, under .awcli/run/ — and awcli ran none of the repository's git hooks to make it. That is the whole of what a working copy protects: it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
+    ? `Working directly in your own checkout at ${where}, on your branch ${on}, because this run was given ${LIVE_CHECKOUT_FLAG}: uncommitted changes there are an agent's to change, and nothing about the working copy protects them. What an agent can touch beyond your checkout is settled by where this run executes, not by the working copy it was given.`
+    : `Working in a worktree at ${where}, on the branch ${on}: your own checkout, its branch and its uncommitted changes are untouched — the one thing this run adds to your checkout is the working copy itself, under .awcli/run/ — and awcli ran none of the repository's git hooks to make it, though git still runs any content filter the repository configures, both to make this working copy and to read it. That is the whole of what a working copy protects: it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
+}
+
+/**
+ * A fault `run` raised itself, because git never started.
+ *
+ * The two shapes it covers — `unavailable` and `no-such-directory` — are the ones where nothing of
+ * git's happened, so nothing of git's can have been left behind. That matters one caller along: the
+ * branch cut's handler appends a residual about a ref that "may exist", which is true of the three
+ * shapes where git *ran* and false of these two. A class rather than a flag on the message, because
+ * the outcome that would answer the question is no longer in hand where the distinction is needed,
+ * and matching on the prose of a sentence is how the wrong version of this shipped.
+ */
+class GitDidNotRunError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GitDidNotRunError";
+  }
 }
 
 /**
@@ -1419,6 +2182,10 @@ function describe(workspace: WorkspaceAxis, dir: string, branch: string): string
  * answer cannot change during one acquisition. Everything after it is entitled to assume git exists,
  * and a git that has become unavailable *between* two calls in the same acquisition is a machine
  * changing under a run, which is a fault and not a choice the operator can make differently.
+ *
+ * Both faults are `GitDidNotRunError`, and that is contract rather than tidiness: they are the two
+ * shapes in which no git process ran, which is what lets a caller tell "awcli may have left a ref
+ * behind" from "nothing happened". See there.
  */
 async function run(
   git: GitRunner,
@@ -1427,15 +2194,15 @@ async function run(
 ): Promise<{ readonly code: number; readonly stdout: string; readonly stderr: string }> {
   const outcome = await git(args, cwd);
   if (outcome.kind === "unavailable") {
-    throw new Error(
-      `awcli could not run git in ${cwd} (${printable(outcome.reason)}), having already run it once in this repository. git has gone missing while the run was starting.`,
+    throw new GitDidNotRunError(
+      `awcli could not run git in ${printable(cwd, PATH_LIMIT)} (${printable(outcome.reason)}), having already run it once in this repository. git has gone missing while the run was starting.`,
     );
   }
   if (outcome.kind === "no-such-directory") {
     // The preflight established that this directory exists, so it has gone since — a run's own
     // repository being removed underneath it is a fault, not something to offer a flag for.
-    throw new Error(
-      `awcli could not run git in ${cwd}: that directory is no longer there, and it was when this run started.`,
+    throw new GitDidNotRunError(
+      `awcli could not run git in ${printable(cwd, PATH_LIMIT)}: that directory is no longer there, and it was when this run started.`,
     );
   }
   return outcome;
@@ -1503,11 +2270,20 @@ async function makeLayout(repositoryPath: string, runName: RunName): Promise<voi
   }
 }
 
-/** A component of the layout awcli can use: a real directory, and not a link to one. */
+/**
+ * A component of the layout awcli can use: a real directory, and not a link to one.
+ *
+ * Both faults quote the component through `printable`, on `assertInsideRuntimeDirectory`'s reasoning
+ * rather than a weaker version of it. The layout descends from `rev-parse --show-toplevel`, which
+ * hands a repository path back byte for byte — measured on git 2.55 against a directory name carrying
+ * U+001B and U+202E — and a directory name may hold any byte but NUL and `/`. These two guards fire
+ * precisely when somebody has put something in the layout that awcli will not use, so the value they
+ * quote is one an attacker had a hand in.
+ */
 function assertUsableDirectory(ancestor: string, stats: Stats): void {
   if (stats.isSymbolicLink()) {
     throw new Error(
-      `${ancestor} is a symbolic link, and awcli will not follow one to reach a run's working copies: the working copy, and everything an agent writes in it, would land outside the repository. Remove it and run again.`,
+      `${printable(ancestor, PATH_LIMIT)} is a symbolic link, and awcli will not follow one to reach a run's working copies: the working copy, and everything an agent writes in it, would land outside the repository. Remove it and run again.`,
     );
   }
   // Anything else that is not a directory, which is the sibling case and used to have no sentence
@@ -1518,7 +2294,7 @@ function assertUsableDirectory(ancestor: string, stats: Stats): void {
   // looking for a path that cannot exist.
   if (!stats.isDirectory()) {
     throw new Error(
-      `${ancestor} is a file, and awcli needs a directory there to hold this run's working copies. awcli never writes over what it finds: move or remove it and run again.`,
+      `${printable(ancestor, PATH_LIMIT)} is a file, and awcli needs a directory there to hold this run's working copies. awcli never writes over what it finds: move or remove it and run again.`,
     );
   }
 }
@@ -1544,7 +2320,7 @@ async function lstatOrMissing(path: string): Promise<Stats | undefined> {
 function faultOnUnwritable(error: unknown, directory: string): void {
   if (isErrno(error, "EACCES") || isErrno(error, "EPERM") || isErrno(error, "EROFS")) {
     throw new Error(
-      `awcli cannot create a working copy in ${directory} (${errnoOf(error) ?? "permission denied"}): that directory is not writable. Check its permissions, or run against a repository this user can write to.`,
+      `awcli cannot create a working copy in ${printable(directory, PATH_LIMIT)} (${errnoOf(error) ?? "permission denied"}): that directory is not writable. Check its permissions, or run against a repository this user can write to.`,
       { cause: error },
     );
   }

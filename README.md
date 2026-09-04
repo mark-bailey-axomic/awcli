@@ -11,9 +11,9 @@ That is the difference from tools you add to each project: the repository you po
 needs no `package.json`, no `node_modules`, and no TypeScript toolchain of its own. It can be
 a Python or Go repository. One workflow file runs against all of them.
 
-> **Status: early.** `AWCLI-00` is complete — the project builds, tests, type-checks and
-> installs globally. No workflow commands exist yet. The design is finished and ticketed:
-> see [`.atelier/tickets/`](.atelier/tickets/) for the tickets and their order.
+> **Status: early.** No workflow commands exist yet. The design is finished and ticketed, and the
+> runtime is being built ticket by ticket — [their README](.atelier/tickets/README.md) carries what
+> is done and in what order, so this page does not restate it.
 
 ## Install
 
@@ -28,9 +28,12 @@ Both steps are needed. `npm install -g .` on a bare clone fails: npm does not in
 devDependencies for a local folder install, so the `prepare` build has no bundler to run.
 It fails loudly rather than installing a broken command.
 
-Requires Node >= 20.11 and git >= 2.22. The git floor is `git branch --show-current`, which
-awcli uses to read the branch of a live checkout and which arrived in 2.22; `git worktree add`
-is older than that. Then, from any directory:
+Requires Node >= 20.11 and git >= 2.36. The floor is `git worktree list --porcelain -z`, which
+arrived in 2.36 and which awcli uses to ask what git has registered at a path — the newline form
+cannot be parsed safely, because git prints paths raw and a path may contain a newline. Below 2.36
+awcli still runs, but that question can only be answered "awcli could not ask", so three of its
+refusals lose the remedy that fits what is actually there. `git branch --show-current` (2.22) and
+`git worktree add` are both older. Then, from any directory:
 
 ```bash
 awcli --version
@@ -73,7 +76,7 @@ with the code and is quietly wrong the moment it does.
 | `verify:lock-gate` | each run-lock guarantee, one at a time | the suite to go red for each |
 | `verify:workspace-gate` | each worktree-provisioning guarantee, one at a time | the suite to go red for each |
 | `verify:acquisition-returns` | the backoff timer, as a plain node process | the acquisition to stop returning |
-| `verify:mutation-gate` | the harness the three gates above share | its own self-test to catch it |
+| `verify:mutation-gate` | the harness the four gates above share | its own self-test to catch it |
 
 No counts here on purpose: the number of mutations changes with the code, and a number in prose is
 one more thing to be quietly wrong.
@@ -91,7 +94,7 @@ The design is complete and written down before the code:
 | Document | What it holds |
 |---|---|
 | [Technical design](.atelier/design/agentic-workflow-cli-tdd.md) | Architecture, contracts, work breakdown |
-| [Business rules](.atelier/design/agentic-workflow-cli-rules.md) | 40 approved rules |
+| [Business rules](.atelier/design/agentic-workflow-cli-rules.md) | 40 rules; the file's own re-approval table carries how many of them are approved as written |
 | [BDD scenarios](.atelier/design/agentic-workflow-cli-bdd.feature) | 78 scenarios, every rule tagged |
 | [ADRs](docs/adr/) | Seven decisions and their rationale |
 | [Tickets](.atelier/tickets/) | Dependency-ordered; [their README](.atelier/tickets/README.md) carries the totals |

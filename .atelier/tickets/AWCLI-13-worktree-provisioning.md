@@ -46,6 +46,23 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 - The workspace axis is independent of the execution axis — a worktree must work with host or
   container execution.
 - Never delete or reset a working copy holding uncommitted changes as part of provisioning.
+- Never delete a branch, with the one carve-out BR-036's Exceptions now carry: a branch this
+  ticket's own `git branch` cut, in an attempt whose `git worktree add` then failed, is removed by
+  that same attempt. The rule is where that lives — it was written here first, which left the rule a
+  reader consults saying awcli never deletes a branch automatically while this code does, and put the
+  reconciliation on a ticket that will be closed. What this ticket adds is the part that is about the
+  ticket: awcli's claim on that branch is provable rather than assumed, because `git branch` exits
+  zero only when it created the ref and the ref points at the commit the preflight read moments
+  earlier. Nothing else in provisioning deletes a branch, and no refusal names a delete that
+  discards commits.
+- A message an operator is meant to act on names something that is actually there. Two halves, both
+  found by review with nothing stating them: a remedy is a command that *runs*, which is why every
+  path in one is shell-quoted and why a path holding a character a terminal will not show is named as
+  unshowable rather than pasted into a command that parses and addresses a different directory; and a
+  fault raised after a `git worktree add` that *succeeded* names both things awcli leaves behind — the
+  branch it cut and git's registration of the working copy — because that is the only exit where both
+  are certain, and the silent version costs the next invocation four steps to rediscover. Watched by
+  `verify-workspace-gate.sh` in both halves.
 
 ## Acceptance Criteria
 
@@ -67,7 +84,7 @@ deterministic so a resumed run can find what it made, and so an operator can rec
       working tree rather than a second repository. The bounded-cost requirement above had no
       criterion and nothing watching it — no test, no benchmark, no gate mutation — so it would have
       shipped on the strength of the sentence. Asserted as a count (six invocations, identical for a
-      one-commit repository and a nine-commit one with nine extra branches) and as the worktree's
+      one-commit repository and a nine-commit one with eight extra branches) and as the worktree's
       `.git` being a pointer file. No gate mutation covers this one, and that is worth saying: the
       wrong implementations it guards against are extra calls and a walk of the history, and a
       substitution that adds a plausible extra invocation is not a wrong implementation of any line
@@ -110,9 +127,10 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 
 ## Notes
 
-Two 2026-08-28 rows of the `## Amendments` section in
+Two rows of the `## Amendments` section in
 [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md) move through
-this ticket; three rows carry that date, so each is cited by its subject rather than its position.
+this ticket; several rows share their date, so each is cited by its subject rather than by its
+position or by a count of them.
 The `--live-checkout` row re-owns the flag onto AWCLI-20 and the run's isolation line onto
 AWCLI-21, and unticks the scenario criterion above. The BR-030 row records that the third
 non-functional criterion was reconciled with BR-030 — it read "nothing is written to the operator's

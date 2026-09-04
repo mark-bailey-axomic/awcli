@@ -472,7 +472,7 @@ with them; no ticket estimate changed.
 | Type | Path | Purpose |
 |---|---|---|
 | bdd | design/agentic-workflow-cli-bdd.feature | 78 scenarios, every rule tagged — 59 approved, 19 pending re-approval |
-| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 31 approved, 9 pending re-approval |
+| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 30 approved, 10 pending re-approval |
 | context | context/agentic-workflow-cli-prd-draft.md | Source PRD (13 P0 / 7 P1 / 5 P2) |
 | context | context/agentic-workflow-cli-grill-brief.md | 13 architecture decisions and their rationale |
 | flows | design/agentic-workflow-cli-flows.md | 7 diagrams |

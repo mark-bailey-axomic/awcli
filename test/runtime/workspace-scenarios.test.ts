@@ -90,7 +90,14 @@ describe("provisioning a working copy", () => {
     expect(stack.leaks()).toEqual([]);
   });
 
-  /** @BR-014's other half, and the one the operator has to ask for. Named by the it() below. */
+  /**
+   * @BR-014's other half, and the one the operator has to ask for. Named verbatim by the it() below,
+   * which is the scenario-to-test link the ticket README defines and AWCLI-28 will mechanise — but
+   * two of this scenario's four steps are not reachable here: nothing parses `--live-checkout` off
+   * `awcli run` (AWCLI-20) and nothing prints the isolation line (AWCLI-21). That is why the
+   * criterion on AWCLI-13 is deliberately unticked. What this asserts is the resolver and the
+   * provisioning on either side of the two missing steps.
+   */
   it("Working on the live checkout requires asking for it", async () => {
     const repositoryPath = await repository();
     const before = await checkout(repositoryPath);
@@ -109,6 +116,33 @@ describe("provisioning a working copy", () => {
     if (refused.ok) return;
     expect(refused.kind).toBe("live-checkout-not-consented");
     expect(refused.message).toContain(LIVE_CHECKOUT_FLAG);
+    // And the sentence BR-014's no-silent-downgrade rule turns on, which naming the flag does not
+    // cover: the flag appears three times in this message, so everything saying what awcli did
+    // *instead* could go with the line above green — measured over the gate's ten files. What the
+    // operator has to be told is that nothing was provisioned and no worktree was quietly used in
+    // place of what was asked for, because a run whose reported isolation is not the isolation it
+    // had is the failure this refusal exists to prevent.
+    expect(refused.message).toContain(
+      "Nothing was provisioned, and awcli has not silently used a worktree instead",
+    );
+    // The path in it is sanitised, as its four siblings in `sharedPreflight` are. This refusal is
+    // the one that fires *before* the preflight, so it is the only message in the module that prints
+    // `repositoryPath` when nothing — not an `lstat`, not a git round-trip, not PATH_MAX — has yet
+    // bounded it: `resolve()` accepts a megabyte-long string with an ESC in it and hands it straight
+    // here. Asserted with a repository that does not exist, because the point is that awcli has not
+    // looked at anything yet.
+    const hostile = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath: `/no/such/repo\u001b[2K${"x".repeat(400)}`,
+      runName: TRIAGE,
+      choice: { workspace: "liveTree", consent: {} as LiveCheckoutConsent },
+    });
+    expect(hostile.ok).toBe(false);
+    if (hostile.ok) return;
+    expect(hostile.kind).toBe("live-checkout-not-consented");
+    expect(hostile.message).not.toContain("\u001b");
+    expect(hostile.message).toContain("/no/such/repo?[2K");
+    // And bounded, so a caller cannot make one refusal scroll the rest of the run off the screen.
+    expect(hostile.message).not.toContain("x".repeat(400));
     expect(forged.held).toEqual([]);
     expect(await branches(repositoryPath)).toEqual(["main"]);
     expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
@@ -190,7 +224,7 @@ describe("provisioning a working copy", () => {
     expect(members).toEqual(["name"]);
   });
 
-  /** A scenario of the feature file's, @BR-014, named verbatim by the it() below. */
+  /** A scenario of the feature file's, @BR-013, named verbatim by the it() below. */
   it("Parallel agents never share a working copy", async () => {
     const repositoryPath = await repository();
     const stack = new DisposalStack();
@@ -277,9 +311,14 @@ describe("what provisioning costs", () => {
   it("Provisioning asks git a fixed number of questions", async () => {
     const small = await repository();
     const large = await repository();
-    // Enough refs and commits that anything walking either would show up in the count. Eight
-    // rather than a hundred: the assertion is that the count does not move at all, so any difference
-    // between the two repositories is enough, and this file is on the gate's critical path.
+    // Enough refs and commits that anything walking either would show up in the count. Eight rather
+    // than a hundred, and on the first of the two reasons that used to be given: the assertion is
+    // that the count does not move at all, so any difference between the two repositories is enough.
+    // The second was that this file is on the gate's critical path, and it is not — the gate runs all
+    // ten files in one parallel vitest per mutation, so the critical path is the *slowest single
+    // file*. Measured on this machine, this file is sixth of the eight workspace files at ~5.0s
+    // against workspace-branches' ~11.4s, and the ten-file wall is within noise of branches alone. A
+    // reason that points at the wrong file is worse than the one sound reason on its own.
     for (let i = 0; i < 8; i += 1) {
       await writeFile(join(large, `file-${i}.txt`), `${i}\n`, "utf8");
       await git(large, "add", "-A");

@@ -69,8 +69,12 @@ const MAX_NAME_LENGTH = 64;
 /**
  * Alphanumeric at both ends, dots, dashes and underscores inside.
  *
- * The ends are constrained because git's ref rules are: a component may not begin with a dot and
- * may not end with one. This does not cover git's third rule — a component may not end in `.lock`.
+ * The leading end is constrained because git's ref rules are: no component of a refname may begin
+ * with a dot. The trailing end is not that rule — git's ban on a trailing dot is on the *refname*,
+ * so it binds the slot and not the run name, which never sits last: verified on git 2.55, which
+ * accepts `refs/heads/awcli/nightly./main` and refuses `refs/heads/awcli/nightly/main.`. What
+ * constrains this end is the legibility rule at the foot of this docblock. Nor does this pattern
+ * cover git's `.lock` rule — a component may not end in `.lock`.
  * `k` is a letter, so `nightly.lock` satisfies this pattern and would be refused later by git, at
  * branch-creation time, after the run had taken its lock and started work. That rule is checked
  * explicitly below, and not by this.

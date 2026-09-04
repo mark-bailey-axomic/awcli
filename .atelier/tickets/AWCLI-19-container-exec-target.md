@@ -65,18 +65,28 @@ This is the second half of the container work; the image itself comes from AWCLI
   copy on disk and its branch undeleted — the commits are the deliverable (BR-021, BR-036).
 - Keep the shared git configuration out of the agent's reach. Every worktree of a run shares one
   `.git/config` with the operator's checkout, and awcli executes what is in it *outside* the
-  container: `git worktree add` runs `filter.<driver>.smudge` for every path `.gitattributes`
-  assigns to a driver, and `git status` runs `core.fsmonitor`. Both are arbitrary shell strings, and
-  an agent reaches the file from inside its own worktree with a plain
-  `git config filter.x.smudge '<cmd>'` — no path knowledge needed, because its `.git` pointer
-  resolves to the common git dir. On the current build this costs nothing: an agent runs on the host
-  with the operator's identity already, so a planted filter buys it what it can do directly. It
-  becomes an escape the moment this ticket draws a boundary, and it escapes it *sideways* — through
-  a file the agent may write, executed by the next provisioning on the host. So the container may
-  not leave the shared config writable from inside a scope. AWCLI-13 closed the equivalent hook
-  vector (`core.hooksPath` is pinned for the add) and recorded this half as a residual rather than
-  neutralising the drivers, because neutralising them checks out git-lfs pointer files instead of
-  content — a defence that loses work.
+  container. Two routes, and the second is the one that matters here: `git worktree add` runs
+  `filter.<driver>.smudge` for every path `.gitattributes` assigns to a driver, and `git status` —
+  which is what `WorkspaceHandle.dirty()` runs — runs `filter.<driver>.clean` for every assigned
+  path whose stat information changed. `core.fsmonitor` is a third route and a distant one; this
+  ticket said `core.fsmonitor` where it should have said the clean filter, which understated both
+  what runs and when. Verified on git 2.55 under awcli's exact argv, `core.hooksPath` pinned: the
+  add ran the smudge command and `-c status.showUntrackedFiles=normal status --porcelain` ran the
+  clean command. All are arbitrary shell strings, and an agent reaches the file from inside its own
+  worktree with a plain `git config filter.x.clean '<cmd>'` — no path knowledge needed, because its
+  `.git` pointer resolves to the common git dir.
+- The *timing* is what this ticket has to design against. A smudge filter runs once, at
+  provisioning, before any agent of that run has executed — so a boundary built after it cannot be
+  escaped by something an agent had not yet written. `dirty()` is a `WorkspaceHandle` member called
+  for the whole life of the run, so a `clean` command an agent plants *inside* the boundary is
+  executed *outside* it on the next question awcli asks about that working copy. That is the
+  sideways escape in its live form, and it is not closed by anything AWCLI-13 does.
+  On the current build both cost nothing: an agent runs on the host with the operator's identity
+  already, so a planted filter buys it what it can do directly. So the container may not leave the
+  shared config writable from inside a scope. AWCLI-13 closed the equivalent hook vector
+  (`core.hooksPath` is pinned for every mutating call) and recorded the filter half as a residual
+  rather than neutralising the drivers, because neutralising them checks out git-lfs pointer files
+  instead of content — a defence that loses work.
 
 ### Non-Functional
 
@@ -96,6 +106,18 @@ This is the second half of the container work; the image itself comes from AWCLI
   else (BR-014, ADR-0003).
 - No new member or overload on the context surface — this implements a declared member and removes
   its stub (BR-033).
+- Resolve `sharedPreflight` once per run, not once per slot, and hand each slot's acquisition the
+  `{root, head}` it already answered. Three of provisioning's six git subprocesses ask about the
+  *repository* rather than the slot — `rev-parse --git-dir`, `rev-parse --show-toplevel` and
+  `rev-parse --verify HEAD` — and cannot change between two slots of one run. At a measured ~31ms a
+  subprocess that is ~90ms of the ~190ms an acquisition costs, which does not matter while there is
+  one acquisition per run and does the moment this ticket allocates a slot per parallel agent: a
+  five-slot fan-out pays ~950ms of subprocess time with ~460ms of it re-asking settled questions.
+  It also removes a correctness wrinkle that is currently harmless — two slots of one run resolving
+  different `head` shas — because the resolved pair is exactly what a run-scoped preflight hands
+  each slot. Noted here rather than done in AWCLI-13 because the hoist has no observable effect
+  until a second slot exists, and AWCLI-13's own counting test asserts six subprocesses per
+  acquisition.
 
 ## Acceptance Criteria
 
@@ -111,10 +133,12 @@ This is the second half of the container work; the image itself comes from AWCLI
 - [ ] `scope.dispose()` removes the container and leaves the working copy and its branch on disk;
       a run that ends without calling it disposes the scope anyway.
 - [ ] A container refused after the working copy was obtained leaves no working copy behind.
-- [ ] An agent inside a scope cannot write the shared `.git/config`, and a `filter.*.smudge` or
-      `core.fsmonitor` planted there before the boundary existed is not executed by a later
-      provisioning as a consequence of this scope having run — asserted by planting one from inside
-      a scope and watching the next acquisition, not by inspecting a mount table.
+- [ ] An agent inside a scope cannot write the shared `.git/config`, and a
+      `filter.<driver>.smudge`, `filter.<driver>.clean` or `core.fsmonitor` planted there is not
+      executed on the host as a consequence of this scope having run — asserted by planting one
+      from inside a scope and then watching the next acquisition and also a `dirty()` call on the
+      scope's own working copy, because the clean filter runs on every one of those and not only at
+      provisioning. Not by inspecting a mount table.
 - [ ] `ctx.version.supports("sandbox")` returns true, and the member's entry in `DELIVERED_BY` is
       gone.
 - [ ] All tests pass, format check clean, type check clean.

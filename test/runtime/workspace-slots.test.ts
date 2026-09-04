@@ -145,7 +145,7 @@ describe("a run that is already unwinding", () => {
    * One answer for "the run is shutting down", whichever refusal it would otherwise have been.
    *
    * `DisposalStack.acquire` refuses outright once an unwind has begun, so every condition decided
-   * *inside* `open` surfaces as that refusal — but two of the eight used to be decided before the
+   * *inside* `open` surfaces as that refusal — but two of the nine used to be decided before the
    * stack was touched at all, and went on answering. A workflow's in-flight `sandbox({ name:
    * "Review 1" })` landing after a SIGINT was told its slot name was illegal, implying a workflow
    * bug, while its sibling `sandbox({ name: "reviewer" })` in the same moment was told the run was

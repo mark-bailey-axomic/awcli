@@ -41,6 +41,18 @@ therefore a separate home directory (ADR-0007).
 - The shared library contains workflows only — no run state, no logs, no machine-specific paths.
 - A workflow reaching past the injected context for extra capability takes on that requirement
   itself; the tool does not install it.
+- `WorkspaceRequest.git` is never populated from anything a workflow or an invocation can reach.
+  It is the test seam for the three failures a real repository cannot stage — git absent from the
+  machine, git hanging, a `cwd` that has gone — and it out-ranks every guard in `workspace.ts`: a
+  supplied runner answers `rev-parse --show-toplevel`, and the root it returns is what the layout,
+  the `mkdir`s, the ancestor guard and the runtime-boundary check are all derived from, while the
+  real filesystem calls execute against whatever path it named. `LiveCheckoutConsent` is the
+  comparison that makes this a constraint rather than a note: that field spends sixty lines making
+  it impossible for a request object to decide the workspace axis, and this one decides strictly
+  more with a plain optional function. What keeps it safe today is only a fact about the call
+  sites — nothing routes workflow input into `acquireWorkspace`, because `ctx.sandbox` is
+  unbuilt — and this ticket is the boundary that decides which of an invocation's inputs become
+  awcli's own. So the rule is written here, beside the `--live-checkout` one, for the same reason.
 
 ## Acceptance Criteria
 
@@ -55,6 +67,9 @@ therefore a separate home directory (ADR-0007).
       decision taken here.
 - [ ] `--live-checkout` is absent from `ctx.args`, and no `--arg` value selects the workspace on any
       spelling (BR-014).
+- [ ] No invocation input reaches `WorkspaceRequest.git`: the runner awcli passes is
+      `systemGitRunner`, decided in this unit and derived from nothing a caller supplied —
+      asserted by a test that watches which runner an acquisition is given, not by inspection.
 - [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope

@@ -27,7 +27,28 @@ const execFileAsync = promisify(execFile);
  *
  * Provisioning is required to cost a bounded amount of time, and `git worktree add` on a large
  * repository is the call that does real work. Generous rather than tight: what this prevents is a run
- * that hangs for ever on a git waiting for an index lock or for credentials, not a slow checkout.
+ * that hangs for ever on a git waiting for credentials or on a lock nothing is going to release, not
+ * a slow checkout.
+ *
+ * One bound for all of them, and that is a decision that has been asked about twice, so here is the
+ * measurement it turns on. The objection is that five of awcli's six invocations are metadata calls
+ * costing tens of milliseconds, and that an operator meeting a stuck repository therefore waits two
+ * minutes in silence at the *first* of them — the scenario named being a held `index.lock`. That
+ * scenario does not occur. Measured on git 2.55 with `.git/index.lock` present and held:
+ * `rev-parse --git-dir`, `rev-parse --show-toplevel`, `rev-parse --verify HEAD`,
+ * `for-each-ref refs/heads`, `worktree list --porcelain`, `status --porcelain`, `branch <name>` and
+ * `worktree add` each exited 0 in 63-103ms. A stale lock file makes git fail or proceed at once; it
+ * does not make git wait.
+ *
+ * And the split a tighter bound would need does not fall where "metadata" suggests. `status
+ * --porcelain` is one of the calls the objection classes as metadata, and it walks the whole working
+ * tree — on a large repository it is legitimately among the slowest things awcli runs, and it is the
+ * one call `dirty()` makes for the life of the run. Giving it a few seconds would turn a big
+ * repository into a fault. So a second bound would have to be a per-argv policy table, which is more
+ * surface than the residual justifies: what is actually left is that a git hung for some *other*
+ * reason is noticed after two minutes rather than after ten seconds, and the operator seeing nothing
+ * while it happens is a reporting question — AWCLI-21's — rather than a question about the bound.
+ * Recorded rather than left to be re-raised a third time.
  */
 export const GIT_TIMEOUT_MS = 120_000;
 
@@ -38,6 +59,23 @@ export const GIT_TIMEOUT_MS = 120_000;
  * would go on passing if the bound moved.
  */
 export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * How much of a `cwd` these messages will show.
+ *
+ * `binary`, `args` and a signal name all go through `printable` here, and `cwd` did not — which left
+ * the one value in the sentence that awcli did not construct as the one value not sanitised. It is a
+ * directory path, and a directory name may hold any byte but NUL and `/`: `git rev-parse
+ * --show-toplevel` hands the repository root back byte for byte, ESC and U+202E included, which
+ * `workspace.ts` measures and states where it sanitises the same value for its own messages. Every
+ * one of the three throws below reaches an operator's terminal, so an ESC in a repository's own
+ * directory name repainted the line explaining why git had just been killed.
+ *
+ * A path's own limit rather than `PRINTABLE_LIMIT`, which is sized for a hostname: a repository root
+ * truncated at 64 characters is not a path anybody can act on. This matches the bound `workspace.ts`
+ * uses for the same value in a message.
+ */
+const CWD_LIMIT = 256;
 
 /**
  * What running git produced.
@@ -69,16 +107,36 @@ export type GitRunner = (args: readonly string[], cwd: string) => Promise<GitOut
  *
  * Not "every one of these wins over `-C`", which is what this said: that is true of `GIT_DIR`,
  * `GIT_WORK_TREE` and `GIT_COMMON_DIR` and of nothing else here. The union is wider and weaker —
- * each of these redirects *something* git resolves for itself, in one of three directions:
+ * each of these redirects *something* git resolves for itself, in one of four directions:
  * which repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`), where its storage is
- * (`GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`), and how refs and
- * discovery are scoped (`GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`,
- * `GIT_DISCOVERY_ACROSS_FILESYSTEM`). Stating the strong property of the first three as the rule for
+ * (`GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`), how refs and
+ * discovery are scoped (`GIT_NAMESPACE`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`), and where git finds its
+ * own subcommands (`GIT_EXEC_PATH`). Stating the strong property of the first three as the rule for
  * all nine invites the next maintainer to trim the six it does not describe.
+ *
+ * `GIT_EXEC_PATH` was missing from this list while the list's own rule described it exactly, and it is
+ * the one with an execution consequence: it names the directory git resolves `git-<subcommand>` out
+ * of, so an attacker-controlled directory means an executable of theirs runs with the operator's
+ * identity. It is inert on this build and only because of what awcli happens to call — `rev-parse`,
+ * `branch`, `worktree`, `for-each-ref` and `status` are all builtins, which `GIT_EXEC_PATH` cannot
+ * reach. Measured on git 2.55: with a `git-worktree` script of my own on that path,
+ * `GIT_EXEC_PATH=<dir> git worktree list` still ran the builtin. That is a fact about today's call
+ * sites and not a property, which is the reason to strip it rather than to write the omission down as
+ * reasoned: AWCLI-14 adds `ctx.git.log`, `.diff` and `.commit`, and a git that ever grows a
+ * non-builtin here would inherit the hole silently.
+ *
+ * `GIT_CEILING_DIRECTORIES` was in this list and is not, and the reason is its own rather than the
+ * one the `GIT_CONFIG` prefix scrub was unpicked for — that one was false and is retracted below,
+ * where the two config variables are kept for a weaker reason stated as such. This variable really
+ * does point the other way: it stops git walking up past the directories it names, so removing it
+ * can only *widen* discovery — an operator who had fenced their tree off would have awcli find a
+ * repository above the fence. Restricting is not redirecting, and `cwd` already pins the repository
+ * awcli means, so it is passed through.
  *
  * None of them are exotic: git itself exports them, so anything running under a hook,
  * `git rebase --exec`, `git bisect run` or a filter has them set for every child it starts, awcli
- * included. awcli has already decided which repository it means by the time it calls — it is the
+ * included. Measured for the one that would be easiest to assume is not exported: a `post-checkout`
+ * hook under git 2.55 printed `GIT_EXEC_PATH=[/opt/homebrew/opt/git/libexec/git-core]`. awcli has already decided which repository it means by the time it calls — it is the
  * `cwd` argument — and nothing in the environment may overrule it.
  */
 const GIT_REDIRECTING_VARIABLES: readonly string[] = [
@@ -89,8 +147,8 @@ const GIT_REDIRECTING_VARIABLES: readonly string[] = [
   "GIT_OBJECT_DIRECTORY",
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_NAMESPACE",
-  "GIT_CEILING_DIRECTORIES",
   "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  "GIT_EXEC_PATH",
 ];
 
 /**
@@ -120,14 +178,39 @@ const GIT_CONFIG_INJECTOR_PREFIXES: readonly string[] = [
  * credential variables — and a list of what to keep would be a list that goes stale silently, in the
  * direction of a git that behaves differently under awcli than in the operator's own shell.
  *
- * `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are passed through, and that is a decision rather than
- * an omission. A `name.startsWith("GIT_CONFIG")` rule removed them along with the injectors, which
- * is the opposite of what either does: pointing them at `/dev/null` is the standard way to run git
- * *without* the operator's and the machine's configuration, so awcli silently undid the hardening of
- * any caller, CI job or test harness that had switched it off. Passing them through is the choice
+ * `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` and `GIT_CEILING_DIRECTORIES` are passed through, and that
+ * is a decision rather than an omission. The ceiling variable restricts where git may look rather
+ * than redirecting it, so stripping it widens discovery; see the note on the list above.
+ *
+ * The two config variables are a different case, and the reason recorded for them was false — which
+ * matters, because the reason is what a maintainer trims a list by. It said stripping them "is the
+ * opposite of what either does", on the strength of one *use*: pointing them at `/dev/null` is the
+ * standard way to run git without the operator's and the machine's configuration, and a
+ * `name.startsWith("GIT_CONFIG")` rule silently undid the hardening of any caller, CI job or test
+ * harness that had switched it off. That use is real and it is not what the variables are.
+ * `GIT_CONFIG_GLOBAL=<file>` names a config file git then reads, so it *adds* configuration exactly
+ * as `GIT_CONFIG_PARAMETERS` does. Measured on git 2.55:
+ * `GIT_CONFIG_GLOBAL=<mine> git config --get core.hooksPath` printed my path, and a
+ * `filter.<n>.smudge` supplied only through that variable executed during
+ * `git -c core.hooksPath=/dev/null/... worktree add`. So the rule this list is sorted by — injecting
+ * is stripped, restricting is passed through — does not separate these two from the three injectors
+ * above them, and pretending it does invites the next maintainer to keep exactly the wrong one.
+ *
+ * They are preserved for a different and weaker reason, stated as such: awcli deliberately runs *the
+ * operator's* git, and on this build the environment awcli was started with is a trusted input,
+ * because anything able to set it already has execution on the host with the operator's identity.
+ * `NO_HOOKS` survives them regardless, and that is a property rather than a hope — a command-line
+ * `-c` outranks every config file, verified on the same run:
+ * `GIT_CONFIG_GLOBAL=<mine> git -c core.hooksPath=/dev/null/awcli-runs-no-hooks config --get
+ * core.hooksPath` printed awcli's value, not mine. Passing them through is the choice
  * that keeps awcli's git the same git the operator has — which is what AWCLI-14 needs, since a
- * commit reads `user.name` and `user.email` from exactly there — and it is what lets a suite make
- * the code under test hermetic. The other direction (pinning both to `/dev/null`) would make
+ * commit reads `user.name` and `user.email` from exactly there — and it is what lets a suite pin the
+ * configuration the code under test sees. It does not by itself make that suite hermetic: git resolves
+ * `core.excludesFile` to `$XDG_CONFIG_HOME/git/ignore` by default and reads it whether or not the
+ * global config file has been neutralised, so a suite that wants hermeticity pins `HOME` too — see
+ * `git-hermetic.ts`, which is where that pinning lives and where a personal ignore entry was enough
+ * to turn a scenario red. It sat in `workspace-support.ts` until the two concerns were split; a
+ * suite that wants the hermeticity and not the repository fixtures imports the former alone. The other direction (pinning both to `/dev/null`) would make
  * provisioning reproducible and `ctx.git.commit()` authorless; this file picks the operator's git.
  *
  * Built per invocation rather than once, because `process.env` is mutable and a module-level copy
@@ -210,7 +293,7 @@ export function createGitRunner(binary: string, timeoutMs = GIT_TIMEOUT_MS): Git
       // an operator who reads the size can tell which bound they met.
       if (failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
         throw new Error(
-          `${printable(binary)} ${printable(args.join(" "))} printed more than ${GIT_MAX_BUFFER} bytes in ${cwd}, which is more than awcli reads from one git invocation.`,
+          `${printable(binary)} ${printable(args.join(" "))} printed more than ${GIT_MAX_BUFFER} bytes in ${printable(cwd, CWD_LIMIT)}, which is more than awcli reads from one git invocation.`,
           { cause: error },
         );
       }
@@ -225,13 +308,13 @@ export function createGitRunner(binary: string, timeoutMs = GIT_TIMEOUT_MS): Git
         failure.signal.length > 0
       ) {
         throw new Error(
-          `${printable(binary)} ${printable(args.join(" "))} was killed by ${printable(failure.signal)} in ${cwd}. Something outside awcli stopped it — the out-of-memory killer is the usual reason on a large repository.`,
+          `${printable(binary)} ${printable(args.join(" "))} was killed by ${printable(failure.signal)} in ${printable(cwd, CWD_LIMIT)}. Something outside awcli stopped it — the out-of-memory killer is the usual reason on a large repository.`,
           { cause: error },
         );
       }
       if (failure.killed === true) {
         throw new Error(
-          `${printable(binary)} ${printable(args.join(" "))} did not finish within ${timeoutMs}ms in ${cwd}. Something is holding a git lock, or waiting for input awcli cannot give it.`,
+          `${printable(binary)} ${printable(args.join(" "))} did not finish within ${timeoutMs}ms in ${printable(cwd, CWD_LIMIT)}. Something is holding a git lock, or waiting for input awcli cannot give it.`,
           { cause: error },
         );
       }
@@ -283,11 +366,18 @@ export const NO_COMPLAINT = "git printed nothing.";
  * The line of git's stderr that says what went wrong.
  *
  * Not the first line, which is what this was and which is wrong for the one command in awcli that
- * prints progress: `git worktree add` writes `Preparing worktree (new branch 'awcli/triage/main')`
+ * prints progress: `git worktree add` writes `Preparing worktree (checking out 'awcli/triage/main')`
  * before it fails, so taking the first line quoted the announcement and threw the cause away — on
  * the single path this module declares it cannot explain and therefore throws on, where the quoted
- * line *is* the whole of the remedy. Verified against git 2.55: two lines, the second beginning
- * `fatal:`.
+ * line *is* the whole of the remedy. Measured on git 2.55 under awcli's own argv — `worktree add
+ * <target> <branch>`, into a directory with a file in it — two lines, that announcement and then
+ * `fatal: 'occupied' already exists`, exit 128.
+ *
+ * The wording quoted here was `(new branch 'awcli/triage/main')` until the same measurement was
+ * repeated, and that form is what `git worktree add -b` prints: awcli's argv stopped carrying `-b`
+ * when the branch cut became a `git branch` of its own, so the module under review could no longer
+ * emit the line its own docblock told a reader to look for. The general point — first line progress,
+ * second line cause — is what the split did not change.
  *
  * So: the first line git marks as a complaint, and failing that the last non-empty one, which is
  * where a program that prints progress puts its verdict. Sanitised, because this is another

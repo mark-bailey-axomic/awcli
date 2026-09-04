@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -24,9 +24,10 @@ const execFileAsync = promisify(execFile);
  * exercised through a provisioning, which is how a mapping that reported a mistyped `--repo` as "git
  * is not installed" stayed green.
  *
- * The timeout has no test here. Proving it fires means waiting out GIT_TIMEOUT_MS, and making it
- * injectable to avoid that would add a configuration point nothing needs — the same trade
- * `process-probe.ts` makes for its own bound.
+ * The timeout is tested here too, which it was not while proving it fired meant waiting out
+ * GIT_TIMEOUT_MS: `createGitRunner` takes the bound as a defaulted parameter, so the test below
+ * builds one with 50ms and a `sh` that sleeps. The configuration point that trade was declining is a
+ * default argument, and it bought the branch a test and a gate anchor.
  */
 const directories: string[] = [];
 
@@ -178,6 +179,46 @@ describe("running git", () => {
     expect(message).not.toMatch(/not installed|could not be run|was killed by/);
   });
 
+  /**
+   * The `cwd` in these three messages is the one value in them awcli did not construct.
+   *
+   * `binary`, the argv and a signal name all went through `printable` and the directory did not, so
+   * the sentence hardened everything except the part that came from outside: a directory name may
+   * hold any byte but NUL and `/`, and `git rev-parse --show-toplevel` — which is where
+   * `workspace.ts` gets the value it passes here — hands the repository root back byte for byte. An
+   * ESC in it repaints the terminal line explaining why git had just been killed, and a U+202E
+   * reverses the rest of it. Sanitising by delegation is not sanitising, which is what this holds.
+   *
+   * Both of the throwing branches are checked, because the fix was three interpolations and a test on
+   * one of them proves nothing about the other two. The escape is asserted absent by code point
+   * rather than by rendering, and the `?` is asserted present so that a bound that merely truncated
+   * the path away would not pass.
+   */
+  it("does not carry a terminal escape out of a repository's own directory name", async () => {
+    const parent = await directory();
+    const hostile = join(parent, "repo-\u001b-and-\u202e");
+    await mkdir(hostile);
+
+    const impatient = createGitRunner("sh", 50);
+    const timedOut = await impatient(["-c", "sleep 5"], hostile).then(
+      (outcome) => outcome,
+      (error: unknown) => error,
+    );
+    const killed = createGitRunner("sh");
+    const signalled = await killed(["-c", "kill -TERM $$"], hostile).then(
+      (outcome) => outcome,
+      (error: unknown) => error,
+    );
+
+    for (const thrown of [timedOut, signalled]) {
+      expect(thrown).toBeInstanceOf(Error);
+      const message = thrown instanceof Error ? thrown.message : "";
+      expect(message).not.toContain("\u001b");
+      expect(message).not.toContain("\u202e");
+      expect(message).toContain("?");
+    }
+  });
+
   /** A `cwd` that exists and is a file answers the same way: there is no directory to run in. */
   it("treats a file where a directory should be as no directory", async () => {
     const cwd = await directory();
@@ -203,8 +244,14 @@ const REDIRECTING = [
   "GIT_OBJECT_DIRECTORY",
   "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   "GIT_NAMESPACE",
-  "GIT_CEILING_DIRECTORIES",
   "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+  // Where git resolves `git-<subcommand>`, so a directory an attacker controls is an executable of
+  // theirs running with the operator's identity. It was missing from the module's list and from
+  // this one while the module's own stated rule described it exactly. Inert today only because
+  // every command awcli runs is a builtin, which this variable cannot reach — measured on git 2.55
+  // with a `git-worktree` script of my own on that path, where `git worktree list` still ran the
+  // builtin. A fact about today's call sites, and AWCLI-14 adds more of them.
+  "GIT_EXEC_PATH",
   "GIT_CONFIG",
   "GIT_CONFIG_COUNT",
   "GIT_CONFIG_KEY_0",
@@ -213,15 +260,30 @@ const REDIRECTING = [
 ] as const;
 
 /**
- * The two that were being stripped by the prefix rule and should not be.
+ * The three that were being stripped and should not be.
  *
- * They point the other way from the injectors: `/dev/null` in either is how a caller runs git
- * *without* the operator's or the machine's configuration, so removing them handed that
- * configuration back — undoing a hardening the caller had asked for, and making this very suite
- * non-hermetic about the code under test while looking hermetic. Asserted positively, because a
- * decision to pass something through is only a decision if something watches it.
+ * `GIT_CEILING_DIRECTORIES` belongs here on the list's own rule: it stops git walking up past the
+ * directories it names, so stripping it lets awcli's git discover a repository *above* the one the
+ * operator's environment had fenced off. Restricting is not redirecting.
+ *
+ * The two config variables do not, and the reason recorded for them was false — corrected in the
+ * module and corrected here, because a reason restated in two files is what a maintainer trims a
+ * list by. `GIT_CONFIG_GLOBAL=<file>` names a config file git then reads, so it *injects*
+ * configuration exactly as `GIT_CONFIG_PARAMETERS` does: measured on git 2.55, it set
+ * `core.hooksPath` and a `filter.<n>.smudge` supplied only through it executed during a
+ * `worktree add`. What is true is the narrower thing: `/dev/null` in either is how a caller runs git
+ * *without* the operator's or the machine's configuration, so a `startsWith("GIT_CONFIG")` rule
+ * undid a hardening the caller had asked for and made this very suite non-hermetic about the code
+ * under test while looking hermetic. They are passed through because awcli deliberately runs the
+ * operator's git and the environment awcli was started with is a trusted input on this build — not
+ * because they cannot inject. Asserted positively, because a decision to pass something through is
+ * only a decision if something watches it.
  */
-const PASSED_THROUGH = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"] as const;
+const PASSED_THROUGH = [
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CEILING_DIRECTORIES",
+] as const;
 
 /** Sets variables for the length of one call and puts the environment back however it ends. */
 async function withEnvironment<T>(

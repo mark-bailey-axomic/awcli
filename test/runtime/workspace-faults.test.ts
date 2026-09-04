@@ -19,6 +19,7 @@ import {
   worktreesRoot,
 } from "../../src/runtime/run-identity.js";
 import {
+  GIT_MAX_BUFFER,
   systemGitRunner,
   type GitOutcome,
   type GitRunner,
@@ -28,6 +29,7 @@ import {
   repository,
   isWorktreeAdd,
   branches,
+  git,
   TRIAGE,
   consented,
   track,
@@ -112,6 +114,53 @@ describe("what provisioning throws rather than refuses", () => {
     ).rejects.toThrow(/unable to read packed-refs/);
 
     // Nothing was provisioned on the strength of an answer awcli never got.
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+    expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
+  });
+
+  /**
+   * The same query not answering at all, rather than answering non-zero.
+   *
+   * The sibling above stages an exit status, and that is only half of "awcli could not get an
+   * answer": the runner also *rejects* — for a git that has gone, for a `cwd` that has, for the 120s
+   * timeout, and for an answer past `GIT_MAX_BUFFER`. The last is reachable here rather than
+   * hypothetical, because this is the one query awcli deliberately runs without a pattern: measured
+   * on git 2.55, 20,001 packed refs answer in 728,906 bytes, so at ~36 bytes a ref the 16MB bound
+   * arrives at around 460,000 branches. Not an exposure — prior reviews recorded it as one — but on
+   * such a repository the operator got the runner's sentence about bytes rather than the fault awcli
+   * writes for a collision query it could not run, which is the sentence that says what awcli could
+   * not tell and about which branch.
+   */
+  it("throws its own sentence when the collision query does not answer at all", async () => {
+    const repositoryPath = await repository();
+    const oversized: GitRunner = async (args, cwd) => {
+      if (args[0] === "for-each-ref") {
+        throw new Error(
+          `git for-each-ref --format=%(refname) refs/heads printed more than ${GIT_MAX_BUFFER} bytes in ${repositoryPath}, which is more than awcli reads from one git invocation.`,
+        );
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: oversized,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    const message = thrown instanceof Error ? thrown.message : "";
+    // awcli's own sentence, naming what it could not tell and which branch it is about — with the
+    // runner's line carried inside it rather than instead of it.
+    expect(message).toContain("could not list the branches");
+    expect(message).toContain("awcli/triage/main");
+    expect(message).toContain("more than awcli reads");
+    // And the cause survives, which is how a caller gets at the original.
+    expect(thrown instanceof Error ? thrown.cause : undefined).toBeInstanceOf(Error);
+    // Nothing was provisioned, exactly as for the exit-status half.
     expect(await branches(repositoryPath)).toEqual(["main"]);
     expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
   });
@@ -376,6 +425,55 @@ describe("faults the operator cannot choose differently", () => {
     expect(message).toContain("outside");
     expect(message).toContain(target);
   });
+
+  /**
+   * The same escape, with the destination named to repaint the operator's terminal.
+   *
+   * This fault is the one message in the module whose content an attacker is *guaranteed* to reach:
+   * it fires only because a symlink was planted, and what it quotes is the link's destination — a
+   * filename, which may hold any byte but NUL and `/`. So the adversary picks ESC and U+202E: the
+   * first repaints the screen over the fault (a fake "provisioned" line above it), the second
+   * reverses the rendering of everything after it, and the operator reads a line awcli never emitted.
+   * Every other foreign value in this module goes through `printable` — the collision's ref, the live
+   * branch, git's own stderr, the occupied and collision targets. This one did not, for four rounds,
+   * on the path where it matters most.
+   */
+  it("does not carry an escape or a bidi override out of the link destination into the fault", async () => {
+    const repositoryPath = await repository();
+    const outside = await mkdtemp(join(tmpdir(), "awcli-workspace-hostile-"));
+    track(outside);
+    // Reversed on purpose: rendered through the override this reads as though awcli said it did
+    // nothing, which is the point of the class rather than a flourish.
+    const elsewhere = join(outside, "\u001b[31mSAFE\u202egnihton-did-ilcwa");
+    await mkdir(elsewhere, { recursive: true });
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const redirecting: GitRunner = async (args, cwd) => {
+      if (isWorktreeAdd(args)) {
+        await rm(target, { recursive: true, force: true });
+        await symlink(elsewhere, target);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: redirecting,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("outside");
+    // Still says where it went — that path is the operator's only lead on what was planted, so
+    // sanitising is not dropping it.
+    expect(message).toContain("gnihton-did-ilcwa");
+    expect(message).not.toContain("\u001b");
+    expect(message).not.toContain("\u202e");
+  });
   /**
    * The same escape one level up, which the boundary check used to pass.
    *
@@ -433,6 +531,16 @@ describe("faults the operator cannot choose differently", () => {
    * checks the whole tree out over `<repo>/somewhere-else` while `WorkspaceHandle.dir` and the BR-015
    * sentence both name `.awcli/run/worktrees/<run>/<slot>`. "Inside the repository" is not the
    * property this module promises; "inside the runtime directory" is.
+   *
+   * It is also where the *leftovers* are asserted, because this is the one failure exit reached after
+   * a `git worktree add` that succeeded: the branch is cut and git has the working copy registered,
+   * nothing catches, and the fault used to say only "nothing was removed" — true of the target and
+   * silent about both. Asserted against git rather than against the prose: `git branch --list` and
+   * `git worktree list --porcelain` are asked what is actually there, and then the message is
+   * required to name them. Without that pair the leak had no test at all, on the path where the
+   * operator meets it four steps later as an `occupied` refusal over a link, an `unregistered`
+   * answer about a registration that does exist, and a `git branch -d` naming a working copy at a
+   * path they have never seen.
    */
   it("throws when the working copy landed inside the repository but outside the runtime directory", async () => {
     const repositoryPath = await repository();
@@ -458,7 +566,21 @@ describe("faults the operator cannot choose differently", () => {
     );
 
     expect(thrown).toBeInstanceOf(Error);
-    expect(thrown instanceof Error ? thrown.message : "").toContain("outside");
+    const message = thrown instanceof Error ? thrown.message : "";
+    expect(message).toContain("outside");
+
+    // The two leftovers, from git and not from the sentence: the branch awcli cut is still a ref,
+    // and git still has a working copy registered — at the link's destination, which is why the
+    // next run is told there is nothing at the path awcli names.
+    expect(await branches(repositoryPath)).toContain("awcli/triage/main");
+    const registered = await git(repositoryPath, "worktree", "list", "--porcelain");
+    expect(registered).toContain(await realpath(inside));
+
+    // And the fault names both of them, with a command for each. Neither is "may exist": the cut
+    // and the add both exited zero on this path.
+    expect(message).toContain("awcli/triage/main");
+    expect(message).toContain("git worktree list");
+    expect(message).toContain("git branch --list awcli/triage/main");
   });
 
   /**
@@ -495,6 +617,63 @@ describe("faults the operator cannot choose differently", () => {
     expect(thrown instanceof Error ? thrown.message : "").toContain("outside");
     // Not a `realpath` that failed: the path resolves, it is simply not inside the boundary.
     expect(await realpath(sibling)).toBeTruthy();
+  });
+
+  /**
+   * A link that redirects *within* the worktrees root, which the prefix test could not see.
+   *
+   * The boundary check closed five escapes and this was the sixth case: a link at `worktrees/<run>`
+   * pointing at `worktrees/<other>` resolves to a path that still starts with the boundary, so
+   * `placed.startsWith(boundary + sep)` was satisfied while `handle.dir` reported
+   * `.awcli/run/worktrees/<run>/<slot>` and the working copy sat at
+   * `.awcli/run/worktrees/<other>/<slot>`. Nothing leaves the repository, which is why it is the
+   * mildest of the six — but the property the guard states is that "the path awcli checked and the
+   * path git uses are the same path", and a fault channel that exists to catch that mismatch did not
+   * fire for a mismatch that landed inside. Equality is what fires for both; a prefix cannot.
+   *
+   * Asserted with the real destination, so the test is about where the working copy went rather than
+   * about the wording: the `<other>` leaf holds a checkout and the `<run>` leaf does not exist as a
+   * real directory at all.
+   */
+  it("throws when the working copy landed in another run's directory inside the boundary", async () => {
+    const repositoryPath = await repository();
+    const mine = join(worktreesRoot(repositoryPath), "triage");
+    const other = join(worktreesRoot(repositoryPath), "elsewhere");
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    const redirecting: GitRunner = async (args, cwd) => {
+      if (isWorktreeAdd(args)) {
+        // awcli has made `worktrees/triage/main`; this puts a link where the run directory was.
+        await rm(mine, { recursive: true, force: true });
+        await mkdir(other, { recursive: true });
+        await symlink(other, mine);
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const thrown = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: redirecting,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(thrown).toBeInstanceOf(Error);
+    const message = thrown instanceof Error ? thrown.message : "";
+    // The mismatch is real: the checkout is under `elsewhere`, and the path awcli would have
+    // reported resolves there rather than to itself.
+    expect(existsSync(join(other, "main", ".git"))).toBe(true);
+    expect(await realpath(target)).toBe(join(other, "main"));
+    // Still inside the worktrees root, which is what the prefix test accepted.
+    expect(await realpath(target)).toContain(
+      await realpath(worktreesRoot(repositoryPath)),
+    );
+    // And the fault names both paths, because "it is not where awcli put it" is only actionable
+    // with the two of them side by side.
+    expect(message).toContain(join(other, "main"));
+    expect(message).toContain("where awcli expected");
   });
 
   /**

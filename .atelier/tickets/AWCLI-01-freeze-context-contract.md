@@ -72,4 +72,9 @@ does not own.
 ## Dependencies
 
 **Blocked by:** AWCLI-00
-**Blocks:** AWCLI-02, AWCLI-05, AWCLI-15, AWCLI-26
+**Blocks:** AWCLI-02, AWCLI-05, AWCLI-15, AWCLI-19, AWCLI-23, AWCLI-24, AWCLI-25, AWCLI-26
+
+Eight rather than the four this line carried. AWCLI-19, AWCLI-23, AWCLI-24 and AWCLI-25 have all
+named AWCLI-01 as a blocker since they were written, and this line was never updated: it is the
+reverse of every other ticket's *Blocked by*, so it is derived rather than declared, and nothing
+read it until `verify-spec-invariants.sh` check 13a did.

@@ -6,14 +6,17 @@ import { DisposalStack } from "../../src/runtime/disposal.js";
 import { DEFAULT_SLOT, worktreePath } from "../../src/runtime/run-identity.js";
 import { systemGitRunner, type GitRunner } from "../../src/runtime/git-process.js";
 import { acquireWorkspace, resolveWorkspaceChoice } from "../../src/runtime/workspace.js";
+import { PRINTABLE_LIMIT } from "../../src/runtime/printable.js";
 import {
   git,
   repository,
   repositoryWithASpaceInItsPath,
+  repositoryWithAnUnshowablePath,
   isWorktreeAdd,
   branches,
   shell,
   worktreeCount,
+  runName,
   TRIAGE,
 } from "./workspace-support.js";
 
@@ -50,6 +53,9 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(outcome.kind).toBe("branch-exists");
     // Named as the operator spelled it: it is their branch, and they have to find it.
     expect(outcome.message).toContain("awcli/Triage");
+    // `awcli/<run>` blocks this run and no other, so a different --name is a remedy — which is the
+    // difference `detail` carries out to a caller instead of leaving it to be read off the prose.
+    expect(outcome.detail).toEqual({ kind: "branch-exists", collision: "prefix" });
     expect(await branches(repositoryPath)).toEqual(["awcli/Triage", "main"]);
   });
 
@@ -82,6 +88,10 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(outcome.message).toContain("AWCLI");
     // And *not* offered a different --name, because a ref at the namespace root blocks every branch
     // under `awcli/` whatever the run is called. See the sibling test below for the split.
+    //
+    // The one collision shape with no remedy in a different run name, and the only one a consumer
+    // has to treat differently — which is the whole reason `detail` carries it.
+    expect(outcome.detail).toEqual({ kind: "branch-exists", collision: "namespace" });
     expect(await branches(repositoryPath)).toEqual(["AWCLI", "main"]);
   });
 
@@ -139,6 +149,9 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(asked.filter(isWorktreeAdd)).toEqual([]);
     expect(existsSync(join(repositoryPath, ".awcli", "run", "worktrees"))).toBe(false);
     expect(outcome.message).toContain("awcli/triage/main");
+    // The shape a caller acts on: this run's own branch, which AWCLI-14 reattaches to and which the
+    // other three shapes are not. Read from the field rather than from the sentence.
+    expect(outcome.detail).toEqual({ kind: "branch-exists", collision: "same" });
     expect((await git(repositoryPath, "rev-parse", "awcli/triage/main")).trim()).toBe(
       before,
     );
@@ -159,6 +172,29 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     ).rejects.toThrow(/is not a working tree/);
     expect(outcome.message).not.toContain("git worktree remove");
     expect(outcome.message).toContain("git branch -d awcli/triage/main");
+
+    // The second escape, which is the one that touches nothing already on disk: the same run under a
+    // different name derives a different branch and a different directory, so it needs no delete at
+    // all. Asserted here because nothing did — the sentence offering it could be dropped from this
+    // refusal with every suite green, and the gate mutation that was supposed to watch it had
+    // drifted onto the *namespace* refusal's copy of the same clause (see the note in
+    // `verify-workspace-gate.sh`). Run rather than string-matched, for this file's usual reason: an
+    // offer of a remedy is only worth making if taking it works.
+    expect(outcome.message).toContain("--name");
+    const elsewhere = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: runName("nightly"),
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(elsewhere.ok).toBe(true);
+    if (elsewhere.ok) {
+      expect(elsewhere.workspace.branch).toBe("awcli/nightly/main");
+      // And the branch this run was refused over is untouched by the run that got past it.
+      expect((await git(repositoryPath, "rev-parse", "awcli/triage/main")).trim()).toBe(
+        before,
+      );
+    }
+
     // And what it does advise clears the way, run verbatim out of the message.
     await git(repositoryPath, "branch", "-d", "awcli/triage/main");
     const second = await acquireWorkspace(new DisposalStack(), {
@@ -211,13 +247,158 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     // branch can go too. Run verbatim out of the message, so wording that drifts from git's own
     // vocabulary fails here rather than in someone's terminal.
     expect(second.message).toContain(`git worktree remove '${target}'`);
-    // And the delete it names after that removal refuses rather than discards — see the sibling test
-    // above, which asserts that against a branch that has an agent's commit on it.
+    // And the delete it names after that removal refuses rather than discards. Named rather than
+    // pointed at by direction, because the direction was wrong and a reader following it found
+    // nothing: `advises a branch deletion that refuses rather than one that destroys the commits`,
+    // below, is what runs `-d` against a branch carrying an agent's commit. Nothing above this test
+    // does — every earlier one cuts the branch at HEAD, and the one that deletes it with `-d`
+    // succeeds precisely because it is merged.
     expect(second.message).toContain("git branch -d awcli/triage/main");
     expect(second.message).not.toContain("git branch -D");
+    expect(second.message).toMatch(/refuses while the branch holds/);
+    // And no unlock in front of the removal: this registration is not locked, the removal below runs
+    // as printed, and `git worktree unlock` on an unlocked registration exits 1. The locked variant
+    // — which is what this module's own killed add leaves behind — is the test after this one.
+    expect(second.message).not.toContain("git worktree unlock");
     await git(repositoryPath, "worktree", "remove", target);
     await git(repositoryPath, "branch", "-d", "awcli/triage/main");
     expect(await branches(repositoryPath)).toEqual(["main"]);
+  });
+
+  /**
+   * The same sequence when the registration holding the branch is *locked*, where it stops one
+   * command short.
+   *
+   * This is the leftover this module's own failed-add path can produce, met one run later: a
+   * `git worktree add` killed part-way leaves the registration marked `locked initializing`, and
+   * whoever tidied up deleted the directory. The registration goes on holding the branch, so the
+   * refusal is `branch-exists` and the sibling arm's advice is exactly right except that it does not
+   * run — `git worktree remove` exits 128 on a locked registration, `--force` exits 128 too, and
+   * `git worktree prune` leaves the entry listed even with its directory gone. All measured on git
+   * 2.55, and all three run here, because the arm above names `prune` as the thing that clears every
+   * stale registration at once and that claim is true only of the unlocked ones.
+   */
+  it("names the unlock when a locked registration is what still holds the branch", async () => {
+    const repositoryPath = await repository();
+    const first = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const target = first.workspace.dir;
+    await git(repositoryPath, "worktree", "lock", "--reason", "initializing", target);
+    await rm(target, { recursive: true, force: true });
+
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.kind).toBe("branch-exists");
+    expect(second.detail).toEqual({ kind: "branch-exists", collision: "same" });
+
+    // What the operator would try first, and what git says to each.
+    await expect(
+      git(repositoryPath, "branch", "-d", "awcli/triage/main"),
+    ).rejects.toThrow(/used by worktree/);
+    await expect(git(repositoryPath, "worktree", "remove", target)).rejects.toThrow(
+      /cannot remove a locked working tree/,
+    );
+    await git(repositoryPath, "worktree", "prune");
+    expect(await worktreeCount(repositoryPath)).toBe(2);
+
+    // So the refusal names the unlock in front of the removal, and says which lock it is looking at
+    // — this one is git's own word for an add that never finished, not an operator's hold.
+    expect(second.message).toContain('locked with the reason "initializing"');
+    expect(second.message).toContain(`git worktree unlock '${target}'`);
+    expect(second.message).toContain("git branch -d awcli/triage/main");
+    expect(second.message).not.toContain("git branch -D");
+
+    // Run verbatim out of the message, in the order it gives them, through a shell.
+    const unlock = /"(git worktree unlock [^"]+)"/.exec(second.message)?.[1];
+    const remove = /"(git worktree remove '[^"]+)"/.exec(second.message)?.[1];
+    expect(unlock).toBeDefined();
+    expect(remove).toBeDefined();
+    await shell(repositoryPath, unlock ?? "");
+    await shell(repositoryPath, remove ?? "");
+    await git(repositoryPath, "branch", "-d", "awcli/triage/main");
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+    const third = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(third.ok).toBe(true);
+  });
+
+  /**
+   * The same sequence on the branch it is actually written for, which does not clear the run name.
+   *
+   * Both tests that run the two-step remedy verbatim use a branch nothing has committed to, where
+   * `-d` and `-D` behave identically — so the swap from one to the other went in under a green suite
+   * that could not tell them apart. The state the refusal exists for is the other one: a finished run
+   * left the branch, and the commits on it are what this module calls the deliverable. Run verbatim
+   * there, the sequence clears the working copy and then stops, because `-d` refuses an unmerged
+   * branch, and the run name stays unusable until the operator insists with the form git itself
+   * prints. That is the intended outcome rather than a gap — awcli must not be the thing that
+   * discards the commits — so it is recorded here, against git, in the order an operator meets it.
+   */
+  it("says so when the advised sequence stops at a branch that carries the run's work", async () => {
+    const repositoryPath = await repository();
+    const first = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const target = first.workspace.dir;
+    // The agent's work, and then the operator tidies the directory away the way anyone would —
+    // leaving git's registration, which is what makes this the `registered` arm.
+    await git(target, "commit", "--allow-empty", "-qm", "the agent's work");
+    const delivered = (
+      await git(repositoryPath, "rev-parse", "awcli/triage/main")
+    ).trim();
+    await rm(target, { recursive: true, force: true });
+
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.kind).toBe("branch-exists");
+    expect(second.message).toContain(`git worktree remove '${target}'`);
+    expect(second.message).toContain("git branch -d awcli/triage/main");
+    expect(second.message).not.toContain("git branch -D");
+    // The sentence says the delete refuses and why, which is the whole of what the operator needs
+    // for the step that is about to fail on them.
+    expect(second.message).toMatch(/refuses while the branch holds/);
+
+    // Step one works, on a directory that has already gone.
+    await git(repositoryPath, "worktree", "remove", target);
+    // Step two refuses, and the commits are still there afterwards.
+    await expect(
+      git(repositoryPath, "branch", "-d", "awcli/triage/main"),
+    ).rejects.toThrow(/not fully merged/);
+    expect((await git(repositoryPath, "rev-parse", "awcli/triage/main")).trim()).toBe(
+      delivered,
+    );
+    // So the run name is still refused: the sequence is not a recovery for this state, and nothing
+    // in awcli pretends otherwise.
+    const third = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(third.ok).toBe(false);
+    if (third.ok) return;
+    expect(third.kind).toBe("branch-exists");
   });
 
   /**
@@ -262,6 +443,10 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(second.kind).toBe("branch-exists");
     expect(second.message).toContain("git branch -d awcli/triage/main");
     expect(second.message).not.toContain("git branch -D");
+    // The refusal below is the ordinary case, not the exotic one, so the sentence has to name it:
+    // the message asserted flatly that the command "deletes it" and accounted only for a working
+    // copy holding the branch — which `git worktree list` answers and this state is not.
+    expect(second.message).toMatch(/refuses while the branch holds/);
 
     // git refuses, tells them why, and the commit is still there afterwards.
     await expect(
@@ -273,15 +458,58 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
   });
 
   /**
+   * The branch already there while git cannot say what holds it.
+   *
+   * `worktreeRegistration` has three answers and the third is the honest one: `git worktree list
+   * --porcelain` is asked through the *raw* runner, which throws for a timeout and for an answer
+   * larger than awcli reads, so "awcli could not ask" is a state the message has to have wording for.
+   * Both confident arms had a test and a gate mutation; this one had neither, and the `-D` that the
+   * whole class was moved off could be put back on it with the suite green. It is the same gap the
+   * occupied path closed one refusal earlier (workspace-preflight.test.ts) — a run whose git call
+   * cannot be answered still gets a remedy, and the remedy still refuses rather than discards.
+   */
+  it("still names a branch delete that refuses when git could not say what holds the branch", async () => {
+    const repositoryPath = await repository();
+    await git(repositoryPath, "branch", "awcli/triage/main");
+    const stalling: GitRunner = async (args, cwd) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        throw new Error(
+          "git worktree list --porcelain did not finish within 120000ms in " + cwd,
+        );
+      }
+      return systemGitRunner(args, cwd);
+    };
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+      git: stalling,
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("branch-exists");
+    // Both remedies named and neither claimed, and it says which of the two it could not tell.
+    expect(outcome.message).toContain("git branch -d awcli/triage/main");
+    expect(outcome.message).not.toContain("git branch -D");
+    expect(outcome.message).toContain("git worktree remove");
+    expect(outcome.message).toContain("could not ask git");
+    // The delete refuses rather than discards, said here as on the two arms git could answer for.
+    expect(outcome.message).toMatch(/refuses while the branch holds/);
+  });
+
+  /**
    * The losing side of two acquisitions of one run and slot, discovered at the *branch* site.
    *
    * `occupiedMessage` learned this lesson and `collisionMessage` did not: a loser reaches whichever
-   * site the scheduling gives it, and cutting the branch in its own call (review round 3) moved the
-   * winner's ref creation to immediately after its `mkdir` — a much wider window than the old
-   * `worktree add -b`, which cut the branch and checked out in one call. So the loser's collision
-   * query now routinely sees a branch that a live run cut a moment ago, and the remedy it was handed
-   * was `git worktree remove '<the winner's working copy>'` followed by a delete of the winner's
-   * branch, with the confident wording of a settled world.
+   * site the scheduling gives it. The window is not something the round-3 split created — `-b`
+   * published the ref before it validated the target, so the winner's branch was visible for the
+   * whole of its checkout under the combined form too; the split adds the gap between two processes
+   * at the front of it. Either way the loser's collision query routinely sees a branch that a live
+   * run cut a moment ago, and the remedy it was handed was `git worktree remove '<the winner's
+   * working copy>'` followed by a delete of the winner's branch, with the confident wording of a
+   * settled world.
    *
    * The evidence that tells the two apart is awcli's own `lstat`: the loser reached this site
    * *because* nothing was at the target when it looked, and a winner whose branch exists has already
@@ -362,6 +590,45 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     },
   );
 
+  /**
+   * A colliding branch name long enough that `printable`'s own default would truncate it.
+   *
+   * The three non-`same` arms interpolate the ref into "so rename or delete it", and `short()` was
+   * calling `printable` with no limit — `PRINTABLE_LIMIT`, 64, which is sized for a hostname. A run
+   * name may be 64 characters (`MAX_NAME_LENGTH`), so the `prefix` collision ref `awcli/<run>`
+   * passes 64 at a 59-character run name and the operator was handed a branch name with an ellipsis
+   * in the middle of it, followed by an instruction to act on it. It is the defect `shellPath` and
+   * `COMMAND_PATH_LIMIT` were introduced to fix for paths, one field over.
+   *
+   * The name is asserted against git rather than against the sentence: the ref lifted out of the
+   * message has to be one git resolves. A truncated one does not, which is the whole finding.
+   */
+  it("names a long colliding branch in full, so the ref it prints is one git resolves", async () => {
+    const repositoryPath = await repository();
+    const longRun = runName(`triage-${"n".repeat(52)}`);
+    expect(longRun).toHaveLength(59);
+    const blocking = `awcli/${longRun}`;
+    expect(blocking.length).toBeGreaterThan(PRINTABLE_LIMIT);
+    await git(repositoryPath, "branch", blocking);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: longRun,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("branch-exists");
+    expect(outcome.detail).toEqual({ kind: "branch-exists", collision: "prefix" });
+    // Lifted out of the sentence the way an operator would read it off, and resolved by git.
+    const named = /the branch (\S+) already exists/.exec(outcome.message)?.[1];
+    expect(named).toBe(blocking);
+    expect(
+      (await git(repositoryPath, "rev-parse", "--verify", `refs/heads/${named}`)).trim(),
+    ).toBe((await git(repositoryPath, "rev-parse", "HEAD")).trim());
+  });
+
   it("refuses when a branch beneath the one it would cut blocks it", async () => {
     const repositoryPath = await repository();
     await git(repositoryPath, "branch", "awcli/triage/main/deeper");
@@ -376,6 +643,7 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     if (outcome.ok) return;
     expect(outcome.kind).toBe("branch-exists");
     expect(outcome.message).toContain("awcli/triage/main/deeper");
+    expect(outcome.detail).toEqual({ kind: "branch-exists", collision: "below" });
   });
 
   /**
@@ -443,5 +711,59 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(quoted).toBeDefined();
     await shell(repositoryPath, quoted ?? "");
     expect(await worktreeCount(repositoryPath)).toBe(1);
+  });
+
+  /**
+   * The case the quoting cannot rescue, and the sentence that is honest about it.
+   *
+   * `shellPath` runs the path through `printable` *before* quoting it, and `printable` maps a control
+   * character to `?` — which is itself a legal filename character. So on a repository whose root
+   * carries a newline the printed remedy is not a command that fails to parse; it is a command that
+   * parses, addresses a directory that does not exist, and exits 128 naming a path the operator has
+   * never seen. Quoting the raw path instead would put the control character in the refusal, which is
+   * what `printable` exists to stop, so the remedy cannot be made copyable and the message says so.
+   *
+   * Both halves are asserted, and the first is what makes the second necessary: the command lifted
+   * out of the sentence is *run*, the way the spaced-path test above runs its own, and it has to fail
+   * — otherwise there is nothing here to warn about.
+   */
+  it("says the printed path is not the real one when the repository path cannot be shown", async () => {
+    const repositoryPath = await repositoryWithAnUnshowablePath();
+    expect(repositoryPath).toContain("\n");
+    const first = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.kind).toBe("occupied");
+
+    // The newline is gone from the message, which is the sanitising working, and the `?` it left
+    // behind is what makes the remedy wrong rather than unparseable.
+    expect(outcome.message).not.toContain("two\nlines");
+    expect(outcome.message).toContain("two?lines");
+
+    // Run exactly as an operator would paste it: git parses it and refuses, because that path is
+    // not the working copy.
+    const quoted = /"(git worktree remove [^"]+)"/.exec(outcome.message)?.[1];
+    expect(quoted).toBeDefined();
+    const ran = await shell(repositoryPath, quoted ?? "").then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(ran).toBeInstanceOf(Error);
+    expect(await worktreeCount(repositoryPath)).toBe(2);
+
+    // So the message says what happened and names the command that prints the real bytes.
+    expect(outcome.message).toContain('copy the real one out of "git worktree list"');
   });
 });

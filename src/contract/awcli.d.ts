@@ -124,9 +124,15 @@ interface SchemaApi {
  * default path, and an operator who reads "sandbox" will assume otherwise (BR-015).
  *
  * Nothing a workflow can pass selects the workspace axis, and that is deliberate. The live
- * checkout is opted into by the operator on the command line (`awcli run --live-checkout`), never
- * by the workflow: BR-014 requires the person whose uncommitted work is at stake to be the one
+ * checkout will be opted into by the operator on the command line (`awcli run --live-checkout`),
+ * never by the workflow: BR-014 requires the person whose uncommitted work is at stake to be the one
  * asking, and it keeps one workflow file portable across both modes.
+ *
+ * Future tense, and it is the declaration that most needs it: this file is what a workflow author
+ * reads, so a sentence in the present tense here is a command line they will try. Read against the
+ * build that ships this declaration — `src/cli.ts` recognises `--version`, `--help` and `-h`, and
+ * answers everything else, `awcli run` included, with `unknown command 'run'` and the REFUSED exit
+ * code. The three tickets named below are where the tense changes.
  *
  * The flag is spelled `--live-checkout`, which is what LIVE_CHECKOUT_FLAG in
  * src/runtime/workspace.ts refuses on and what every refusal message names. This line said
@@ -134,8 +140,9 @@ interface SchemaApi {
  * Two spellings of one operator-facing string is the kind of drift a frozen surface exists to
  * prevent, so both were reconciled to the one the code ships. It also said AWCLI-13 implements
  * the flag, which that ticket's own Out of Scope contradicts. Three tickets stand behind it:
- * AWCLI-13 resolves the choice and provisions what it names, AWCLI-20 parses the flag off
- * `awcli run`, AWCLI-21 states the answer in the run's output. None of the three adds anything
+ * AWCLI-13 resolves the choice and provisions what it names — that half is built — while AWCLI-20
+ * will parse the flag off `awcli run` and AWCLI-21 will state the answer in the run's output. None
+ * of the three adds anything
  * here — this is a comment, and BR-033 admits only additive changes to what is declared below.
  *
  * Both unions are closed, and stay closed. ADR-0003 defines exactly two values per axis, so a
@@ -164,7 +171,13 @@ interface Isolation {
   readonly workspace: "liveTree" | "worktree";
   /** Only container is a machine boundary. host reaches the filesystem and network. */
   readonly target: "host" | "container";
-  /** One line for the log, naming what is and is not protected (BR-015). */
+  /**
+   * A short paragraph for the run header, naming what is and is not protected (BR-015).
+   *
+   * "One line" is what this said, and the producing module measures a few hundred characters per axis
+   * — see `WorkspaceIsolation.description`, which records why. A short per-call form is AWCLI-21's,
+   * which has both call sites in hand. A comment, so BR-033's additive-only rule does not bite.
+   */
   readonly description: string;
 }
 
@@ -362,10 +375,13 @@ interface ProjectPaths {
  * Facts about the repository, from its committed configuration (BR-006).
  *
  * The fixed fields are present because the repository's configuration is required to declare
- * all five: `awcli init` writes them, and the gate chain refuses the run at startup naming any
- * the configuration lacks — before the lock, the working copy, or any agent. That refusal is
+ * all five: `awcli init` will write them, and the gate chain will refuse the run at startup naming
+ * any the configuration lacks — before the lock, the working copy, or any agent. That refusal is
  * what makes the type honest, and it is the only mechanism that keeps BR-006's promise of
- * refusing before any side effect.
+ * refusing before any side effect. Future tense for the same reason as the `--live-checkout`
+ * sentence above, and measured the same way: `src/cli.ts` on this build knows `--version`, `--help`
+ * and `-h`, so `awcli init` is answered `unknown command 'init'` and REFUSED. AWCLI-06 owns the gate
+ * chain that refuses, and `awcli init` itself is WB-14's — AWCLI-22, whose Contracts column names it.
  *
  * custom carries no such guarantee: it is the operator's own convention, so its values stay
  * string | undefined whatever compiler flags the author happens to have on.
