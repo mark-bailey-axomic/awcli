@@ -34,12 +34,12 @@ the design had left unowned, which AWCLI-23, AWCLI-24 and AWCLI-25 had been deli
 above them. The units carry those tickets' own estimates unchanged, so the ticket total did not move
 and the six points they contribute are no longer extra to the design.
 
-Every one of the 79 BDD scenarios appears as an acceptance criterion on exactly one ticket.
+Every one of the 80 BDD scenarios appears as an acceptance criterion on exactly one ticket.
 Acceptance criteria written in *italics* are scenario names from
 [`../design/agentic-workflow-cli-bdd.feature`](../design/agentic-workflow-cli-bdd.feature) —
 those are the tests, verbatim.
 
-**Fifty-nine of those scenarios are PM-approved; twenty are not yet.** The rules and the feature
+**Fifty-nine of those scenarios are PM-approved; twenty-one are not yet.** The rules and the feature
 file were approved on 2026-08-24 at 37 rules and 60 scenarios, and were amended during PR #8
 (AWCLI-01) review rounds 2, 3 and 4: three rules added and six of the thirty-seven rewritten,
 eighteen scenarios added and one of the sixty rewritten. PR #15 (AWCLI-13) then rewrote a seventh,
@@ -47,8 +47,12 @@ BR-036, whose Exceptions now carry the failed-add branch rollback that ticket's 
 in a later round widened BR-014's Exceptions and added the nineteenth scenario — *A second agent is
 refused my live checkout rather than sharing it* — for a refusal the code shipped and no rule,
 scenario or criterion had declared. BR-014 was already one of the seven, so that round moves the
-scenario counts and not the rule counts. So 30 of the 40 rules and 59 of the 79 scenarios stand as
-approved, and 10 rules and 20 scenarios are pending.
+scenario counts and not the rule counts. The round after found the same gap around the refusal for a
+git awcli cannot run at all, and closing it moves both: **BR-002 is the eighth rewritten**, widened
+to say that awcli establishes a target is a repository by asking git, and the twentieth scenario —
+*A git that cannot be started is refused with the reason, not with install advice* — declares it.
+BR-002 was still approved as written, so it leaves the approved rules. So 29 of the 40 rules and 59
+of the 80 scenarios stand as approved, and 11 rules and 21 scenarios are pending.
 
 A rewritten scenario is not an approved one, which is the arithmetic this paragraph used to get
 wrong: it said sixty were approved two sentences after saying three had been rewritten. It is also

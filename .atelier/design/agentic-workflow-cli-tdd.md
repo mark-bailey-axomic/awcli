@@ -338,6 +338,7 @@ text, `usage` possibly unknown (ADR-0004).
   - [ ] *The default protects my checkout* / *Working on the live checkout requires asking for it*
   - [ ] *Parallel agents never share a working copy*
   - [ ] *A second agent is refused my live checkout rather than sharing it*
+  - [ ] *A git that cannot be started is refused with the reason, not with install advice*
   - [ ] *Resuming a run reattaches the branch it already had*
   - [ ] *Resuming restores the work and says what it inherited*
   - [ ] *Starting fresh discards state and working copies together*
@@ -472,8 +473,8 @@ with them; no ticket estimate changed.
 
 | Type | Path | Purpose |
 |---|---|---|
-| bdd | design/agentic-workflow-cli-bdd.feature | 78 scenarios, every rule tagged — 59 approved, 19 pending re-approval |
-| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 30 approved, 10 pending re-approval |
+| bdd | design/agentic-workflow-cli-bdd.feature | 80 scenarios, every rule tagged — 59 approved, 21 pending re-approval |
+| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 29 approved, 11 pending re-approval |
 | context | context/agentic-workflow-cli-prd-draft.md | Source PRD (13 P0 / 7 P1 / 5 P2) |
 | context | context/agentic-workflow-cli-grill-brief.md | 13 architecture decisions and their rationale |
 | flows | design/agentic-workflow-cli-flows.md | 7 diagrams |

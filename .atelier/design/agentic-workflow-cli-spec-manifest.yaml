@@ -25,6 +25,11 @@ metadata:
   # scenario or criterion declared — so `amended` moves again, and the
   # scenario counts below move with it. BR-014 was already among the
   # rewritten, so the rule counts do not.
+  # Round 9 found the second refusal in that state — a git that is present and
+  # could not be started, which had no test, no gate mutation and no mention in
+  # the corpus — and widened BR-002 to own it, with a scenario. Unlike round 8's
+  # it moves both sets of counts below: BR-002 was still approved as written, so
+  # it leaves the approved rules, and the scenario is the twentieth added.
   # `updated` tracks this file; `amended` tracks the corpus it describes.
   amended: "2026-09-04"
   amendments_status: pending-pm-re-approval
@@ -34,16 +39,18 @@ requirements:
     source: file
     path: design/agentic-workflow-cli-rules.md
     items: []
-    # Approved 2026-08-24 at 37 rules; three added and seven of the thirty-seven
-    # rewritten since, pending PM re-approval — so 30 approved / 10 pending. The
+    # Approved 2026-08-24 at 37 rules; three added and eight of the thirty-seven
+    # rewritten since, pending PM re-approval — so 29 approved / 11 pending. The
     # seventh is BR-036, whose Exceptions gained the failed-add branch rollback
-    # in PR #15. The second passes over BR-038 and BR-039 are rewrites of rules
-    # added in the same PR and are inside the three added, not additional to them.
+    # in PR #15; the eighth is BR-002, widened in that PR's ninth round to own
+    # the refusal for a git awcli cannot run at all, which no rule had claimed.
+    # The second passes over BR-038 and BR-039 are rewrites of rules added in the
+    # same PR and are inside the three added, not additional to them.
     # Provenance: the rules file's `## Amendments`.
     status: approved-with-pending-amendments
     approved_baseline_count: 37
-    approved_unchanged_count: 30
-    pending_count: 10
+    approved_unchanged_count: 29
+    pending_count: 11
     count: 40
     categories:
       - environment-preconditions
@@ -57,16 +64,18 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    # Approved 2026-08-24 at 60; nineteen added since, and one of the sixty
-    # rewritten — so 59 approved / 20 pending. Three further rewrites were of
-    # scenarios added earlier in the same PR and are inside the nineteen, not
+    # Approved 2026-08-24 at 60; twenty added since, and one of the sixty
+    # rewritten — so 59 approved / 21 pending. Three further rewrites were of
+    # scenarios added earlier in the same PR and are inside the twenty, not
     # additional to them. The nineteenth is BR-013's second scenario, added in
-    # PR #15 round 8 to declare the live-checkout refusal the code already had.
+    # PR #15 round 8 to declare the live-checkout refusal the code already had;
+    # the twentieth is BR-002's second, added in round 9 for the git-not-started
+    # refusal that was in the same state.
     status: approved-with-pending-amendments
     approved_baseline_count: 60
     approved_unchanged_count: 59
-    pending_count: 20
-    count: 79
+    pending_count: 21
+    count: 80
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7

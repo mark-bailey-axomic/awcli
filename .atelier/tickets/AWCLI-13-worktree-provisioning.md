@@ -95,6 +95,20 @@ deterministic so a resumed run can find what it made, and so an operator can rec
       repository — so both of them reach this refusal, and it names whichever holds the
       checkout. Ticked because all four steps run here: nothing on the command line is needed
       to establish them, unlike the criterion above.
+- [x] Scenario: *A git that cannot be started is refused with the reason, not with install advice*.
+      Carried here rather than on AWCLI-06, which owns BR-002's other scenario, because the
+      preflight that raises this is in this unit and nothing on the command line is needed to reach
+      it. The refusal is `git-not-started`, split from `git-unavailable` because the remedies are
+      disjoint: git is on the machine and could not be started for that one call, so "install git, or
+      put it on the PATH" is advice that cannot be taken. It shipped with no test, no gate mutation
+      and no mention in the corpus — the only one of the eleven refusal kinds at zero on all three —
+      and the sentence it produced ended on the errno while the union's own docblock says every one
+      of these is the operator's to fix. Both are closed: the arm is asserted by kind, by the errno,
+      by the sibling's remedy being absent — a test reading only the errno stays green with the
+      two arms merged back, because the other sentence interpolates the same reason — and by the one
+      instruction true of `EACCES`, `EAGAIN` and `EMFILE` alike, which is to clear what the code
+      names and run again. Three gate mutations watch it: the guard forced false, the kind folded
+      back into the sibling, and the remedy dropped.
 - [x] Branch names for the same run name and slot are identical across invocations.
 - [x] Provisioning asks git a fixed number of questions, whatever the repository holds, and adds one
       working tree rather than a second repository. The bounded-cost requirement above had no
@@ -143,13 +157,14 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 
 ## Notes
 
-Four rows of the `## Amendments` section in
+Several rows of the `## Amendments` section in
 [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md) move through
-this ticket; several rows share their date, so each is cited by its subject rather than by its
+this ticket; several rows also share their date, so each is cited by its subject rather than by its
 position or by a count of them. This sentence said *two* while it was being written in the same
-commit as the third and fourth, three lines above the clause warning against citing rows by count —
-which is the class of defect five of the last six review rounds have found, and the reason the four
-are listed rather than totalled.
+commit as the third and fourth, and *four* while later rounds took it past that — three lines above
+the clause warning against citing rows by count, which is the class of defect five of the last six
+review rounds have found. So they are listed by subject and not totalled at all: a total here goes
+stale on the next remediation row, and did, twice.
 
 The `--live-checkout` row re-owns the flag onto AWCLI-20 and the run's isolation line onto
 AWCLI-21, and unticks the scenario criterion above. The BR-030 row records that the third
@@ -171,6 +186,14 @@ discarded a commit landing on the branch inside the add's own window. The delete
 sha as the ref's expected old value, which makes the precondition a check. Only BR-036's Exceptions
 and the Constraint above moved — no statement, no scenario, and no count, BR-036 being already among
 the rules pending re-approval.
+
+The `git-not-started` row is the one that moves both sets of counts, and it is why the criterion for
+*A git that cannot be started is refused with the reason, not with install advice* sits above. The
+refusal for a git that is present and could not be started had shipped with nothing declaring it
+anywhere — the second refusal in this PR found in that state, after
+`live-checkout-already-held` — so BR-002 is widened to own it and a scenario is added. BR-002 was
+still approved as written, so it leaves the approved rules: 29 approved, 11 pending, and 21 pending
+scenarios of 80 on disk. The ticket totals are untouched.
 
 ## Dependencies
 

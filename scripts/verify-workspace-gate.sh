@@ -51,7 +51,7 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 159 `expect_red` below plus that final run come to ~29 minutes by that
+# — so ~11.5s each. The 162 `expect_red` below plus that final run come to ~29 minutes by that
 # product, and the whole chain has since been timed at **40m33s end-to-end** — measured by review
 # run 8, not here. The per-mutation figure reproduces; the product is the thing that is wrong, and it
 # is ~45% low because parallel efficiency decays over the run — from 223% early to 139% late — as the
@@ -89,7 +89,11 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 # PATH entry resolving out of the working directory reaches the child. Run 9's sustain added two on
 # the one delete this module performs: that it is still the ref the cut made *at delete time*, which
 # the docblock beside it had asserted and nothing checked, and — the version a reviewer would not
-# flag on sight — that the sha is actually passed rather than the ref named on its own. The total grows
+# flag on sight — that the sha is actually passed rather than the ref named on its own. It added three
+# more on the preflight arm for a git that is present and could not be started: of the eleven refusal
+# kinds that was the only one no test asserted anywhere, so the guard, its kind and the remedy it
+# ended without were all unwatched — one mutation each, and the kind one is what catches the arm being
+# folded back into the sibling whose remedy cannot be taken. The total grows
 # with every mutation added, which is the right trade and is why the per-mutation figure is quoted.
 #
 # Named in full rather than by glob so that a new file has to be added here deliberately: a suite this
@@ -543,6 +547,27 @@ expect_red "a refused slot is not echoed back unfiltered" src/runtime/run-identi
 expect_red "a machine with no git is told so" src/runtime/workspace.ts \
   's/  if \(inside\.kind === "unavailable"\) \{/  if (false) {/'
 
+# And the arm beside it, which shipped with nothing watching it at all: of the eleven refusal kinds
+# `git-not-started` was the only one no test asserted, so this guard could be deleted with all ten
+# suites green. What deleting it produces is worse than the wrong refusal, and measured rather than
+# assumed: `not-started` falls through every arm below to the exit-code test — a string errno is not
+# zero — so the `not-a-repository` refusal is raised for it, and that sentence reads `inside.stderr`,
+# which this shape does not carry. The acquisition dies in `gitComplaint` with a bare
+# `Cannot read properties of undefined`. An operator-fixable refusal becomes a stack trace.
+expect_red "a git that could not be started for this call is refused, not read as a bad repository" \
+  src/runtime/workspace.ts \
+  's/  if \(inside\.kind === "not-started"\) \{/  if (false) {/'
+
+# And the same criterion from the side the guard cannot reach: the arm kept and its *kind* folded
+# back into the sibling it was split out of. This is the version a reviewer would not flag on sight —
+# the check is there, the errno still reaches the operator, and `unavailable`'s sentence interpolates
+# the same `reason`, so any test reading only the errno stays green while the remedy handed over is
+# "install git, or put it on the PATH" on a machine where git is already working. The kind is the
+# channel the remedy travels on, which is why it is the thing asserted. Anchored on the `refuse(` line
+# with it, because `"git-not-started"` on its own is the union member three hundred lines above.
+expect_red "a git that is there is not reported as a machine with no git" src/runtime/workspace.ts \
+  's/    refuse\(\n      "git-not-started",/    refuse(\n      "git-unavailable",/'
+
 # The not-a-repository check dropped, so a directory that is not a repository falls through to the
 # next question. That used to be the HEAD query, and the operator was sent to make a commit in a
 # directory git knows nothing about; since the root lookup landed between the two it is now the
@@ -591,6 +616,14 @@ expect_red "the detached-head refusal names both remedies" src/runtime/workspace
 # git in /opt/homebrew/bin and a stripped PATH — which is what a launchd agent or a hook hands awcli.
 expect_red "the git-unavailable refusal says how to fix it" src/runtime/workspace.ts \
   's/ Install git, or put it on the PATH awcli is run with\.//'
+
+# And the sibling arm's remedy, which is the one that had none: it ended on the errno, describing a
+# machine out of processes rather than telling the operator to do anything, while the union it belongs
+# to says every one of these is theirs to fix. The clause dropped here is the whole of what awcli can
+# stand behind — awcli cannot tell an unenterable directory from an exhausted machine, so it names
+# what the code names and asks for another run — and dropping it is exactly how the arm shipped.
+expect_red "the git-not-started refusal ends in an instruction, not in a diagnosis" src/runtime/workspace.ts \
+  's/ Clear what that code names[^`]*run again\.//'
 
 # A mistyped `--repo`, with the half that tells the operator awcli never reached git removed. That
 # clause is the difference between "your path is wrong" and "your git is broken", and it is the whole

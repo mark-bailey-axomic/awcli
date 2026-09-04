@@ -307,6 +307,65 @@ describe("what provisioning refuses rather than does: the repository itself", ()
   });
 
   /**
+   * The other arm of the same split, which was the one refusal kind no test asserted at all.
+   *
+   * `not-started` was carved out of `unavailable` because the remedies are disjoint: git is on the
+   * machine and could not be started for *this* call — `EACCES` on a repository directory awcli
+   * cannot enter, `EAGAIN` or `EMFILE` on a machine out of processes or descriptors — so "install
+   * git, or put it on the PATH" is advice that cannot be taken on a machine where git already
+   * works. Of the eleven `WorkspaceRefusalKind` members this was the only one at zero assertions,
+   * so the guard above could be deleted and every suite stayed green. What deleting it produces is
+   * measured rather than assumed: this shape falls through every arm to the exit-code test — a
+   * string errno is not zero — so the `not-a-repository` refusal is raised for it, and that sentence
+   * reads a `stderr` this shape does not carry. The acquisition dies inside `gitComplaint` with a
+   * bare `Cannot read properties of undefined`, so what the missing guard costs is not the wrong
+   * refusal but a stack trace where an operator-fixable sentence belongs.
+   *
+   * The *negative* is what carries this test. A version asserting only the errno would stay green
+   * with the two arms merged back into one, because `unavailable`'s sentence interpolates the same
+   * `reason`: "EACCES" would still be in the message while the kind and the remedy were both the
+   * wrong one, and the operator would be told to install a git they have. What only the negative
+   * and the kind can see is that the install-git remedy is *absent* — and the kind is asserted
+   * because the kind is the channel the remedy travels on, not decoration on the sentence.
+   *
+   * The remedy clause is asserted too. Every other arm in this module ends in an instruction, which
+   * is what the union's own docblock claims of all of them, and this one used to end descriptively
+   * on the errno. It closes at the width awcli can stand behind — act on what the code names, then
+   * run again — because nothing here can tell an unenterable directory from an exhausted machine.
+   *
+   * Both axes, because the refusal is raised in `sharedPreflight`, which serves both of them.
+   */
+  it("refuses a git that is there and could not be started, without advising an install", async () => {
+    const repositoryPath = await repository();
+    const blocked: GitRunner = async () => ({
+      kind: "not-started",
+      code: "EACCES",
+      reason: "git could not be started in /repo (EACCES)",
+    });
+
+    for (const choice of [resolveWorkspaceChoice({}), consented()]) {
+      const outcome = await acquireWorkspace(new DisposalStack(), {
+        repositoryPath,
+        runName: TRIAGE,
+        choice,
+        git: blocked,
+      });
+
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) return;
+      expect(outcome.kind).toBe("git-not-started");
+      // The errno, which is the whole of what awcli knows about why this call did not start.
+      expect(outcome.message).toContain("EACCES");
+      // And not the sibling's remedy, which is the entire point of the split.
+      expect(outcome.message).not.toContain("Install git");
+      // The imperative the union's docblock claims of every one of these kinds.
+      expect(outcome.message).toContain("and run again");
+      // The run this was refused for, which travels on the refusal for the log and the run record.
+      expect(outcome.run).toBe(TRIAGE);
+    }
+  });
+
+  /**
    * `WorkspaceHandle.dir` is documented absolute, and `worktreePath` joins rather than resolves — so
    * a relative repository path would hand `ctx.fs` and `ctx.exec` a path to resolve again against
    * whatever their working directory happens to be, and hand `git worktree add` a target argument

@@ -932,10 +932,15 @@ async function sharedPreflight(
   if (inside.kind === "not-started") {
     refuse(
       "git-not-started",
-      // Named without a remedy of awcli's own beyond the errno, because the errno is the remedy:
-      // EACCES is a directory the operator cannot enter, EAGAIN and EMFILE a machine out of
-      // processes or descriptors, and awcli cannot tell which of those the operator can fix.
-      `awcli cannot provision a working copy: ${inside.reason}. git is on this machine — it could not be started for this call, and the code in brackets is the reason the operating system gave. A permissions error names a directory awcli cannot enter; EAGAIN or EMFILE names a machine out of processes or file descriptors.`,
+      // The errno is the diagnosis and awcli cannot narrow it: EACCES is a directory the operator
+      // cannot enter, EAGAIN and EMFILE a machine out of processes or descriptors, and nothing here
+      // can tell which of those it is. That is a reason to write the remedy at the width awcli can
+      // stand behind, not a reason to leave the sentence descriptive — `WorkspaceRefusalKind` says
+      // every one of these is the operator's to fix, and this was the one arm that ended without
+      // telling them to do anything about it. So it closes on the single instruction true of all
+      // three errnos: clear what the code names, then run again. No fix awcli cannot identify is
+      // claimed, and the refusal stops contradicting the union it is a member of.
+      `awcli cannot provision a working copy: ${inside.reason}. git is on this machine — it could not be started for this call, and the code in brackets is the reason the operating system gave. A permissions error names a directory awcli cannot enter; EAGAIN or EMFILE names a machine out of processes or file descriptors. Clear what that code names — awcli's reach into the directory, or the machine's supply of processes and descriptors — and run again.`,
     );
   }
   if (inside.kind === "unavailable") {

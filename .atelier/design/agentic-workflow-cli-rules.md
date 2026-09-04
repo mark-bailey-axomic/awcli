@@ -6,8 +6,8 @@ approved: 2026-08-24
 approved_baseline: 37 rules
 amended: 2026-09-04
 amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4; PR #15 (AWCLI-13) review rounds 6, 7, 8 and 9
-approved_unchanged: 30 rules
-pending_reapproval: 10 rules (BR-038, BR-039, BR-040 added; BR-006, BR-008, BR-012, BR-014, BR-025, BR-028, BR-036 rewritten)
+approved_unchanged: 29 rules
+pending_reapproval: 11 rules (BR-038, BR-039, BR-040 added; BR-002, BR-006, BR-008, BR-012, BR-014, BR-025, BR-028, BR-036 rewritten)
 date: 2026-08-24
 source: .atelier/context/agentic-workflow-cli-prd-draft.md
 rules: 40
@@ -47,13 +47,24 @@ there; failing at startup with a route forward beats failing later inside a cont
 **Example.** On Windows: *"awcli does not run on native Windows. Install and run it inside WSL2, keeping
 your clones in the WSL2 filesystem."*
 
-### BR-002 — A target must be a git repository
+### BR-002 — A target must be a git repository, and awcli must be able to run git
 **Statement.** awcli refuses to run against a directory that is not a git repository, suggesting
-`git init`.
+`git init`. It establishes that by asking git, so it refuses on the same terms when it cannot run git
+at all — and the refusal says which of the two it met: a git that is not there, which the operator
+installs or puts on the PATH, or a git that is there and could not be started for this call, where
+what the operator acts on is the reason the operating system gave.
 **Rationale.** Isolation and "what did this run change?" are both promises that only git can keep.
+The two no-git refusals are one precondition and two disjoint remedies, which is why the refusal has
+to tell them apart: advising an install on a machine where git already works is advice that cannot be
+taken. Nor can awcli narrow the second case further — a spawn that fails on permissions and one that
+fails on a machine out of processes or descriptors are the same refusal from here — so it names what
+the errno names and asks for another run, rather than inventing a fix it cannot stand behind.
 **Actors.** Operator.
-**Exceptions.** None. There is no reduced-isolation fallback.
-**Example.** Pointing a run at `~/scratch` (no git) refuses; after `git init` it proceeds.
+**Exceptions.** None. There is no reduced-isolation fallback, and no fallback for a git awcli cannot
+run.
+**Example.** Pointing a run at `~/scratch` (no git) refuses; after `git init` it proceeds. On a
+repository directory awcli cannot enter, git is never started at all: the refusal carries `EACCES`
+rather than telling the operator to install the git they already have.
 
 ### BR-003 — The repo's required version range must include the running awcli
 **Statement.** A project declares a version range; awcli refuses to run when its own version falls
@@ -568,7 +579,7 @@ behaves as it will in earnest.
 ## Amendments since approval
 
 This file was approved on **2026-08-24** with **37 rules**, against a feature file of **60
-scenarios**. It now carries **40 rules** and **79 scenarios**. Everything in the table below was
+scenarios**. It now carries **40 rules** and **80 scenarios**. Everything in the table below was
 added or rewritten *after* that approval, during review of PR #8 (AWCLI-01, freezing the `ctx`
 contract) and of PR #15 (AWCLI-13, worktree provisioning), and **none of it has been through a PM
 approval gate**. The 2026-08-28 and 2026-09-01 rows are PR #15's, and every one of those is a
@@ -588,7 +599,12 @@ scenario counts do. The BR-036 rollback row carrying the same date is a fourth k
 Exceptions of a rule that is *already* in the rewritten set, turning that carve-out's precondition
 from something the rule asserted into something the code proves — so nothing at all moves with it,
 neither rule nor scenario nor ticket total, and the row says so explicitly rather than leaving a
-reader to infer it. Rows sharing a date are cited by their subject rather than by their position,
+reader to infer it. The `git-not-started` row is a fifth kind, and the first of PR #15's rows to move
+both columns at once: it widens BR-002, which was still approved *as written*, so that rule leaves
+the approved set — 29 approved and 11 pending — and it adds the scenario that declares the refusal,
+so the scenarios go to 80 on disk and 21 pending. Both together is not new to this file — PR #8's
+BR-008 row did the same — only new to this PR, whose rows until now moved one column or neither.
+Rows sharing a date are cited by their subject rather than by their position,
 because a count of them goes stale on the next remediation row and this one did: three were written,
 and run 3's own remediation added two more carrying the same date. The front matter says so rather than
 continuing to assert an unqualified approval. This section exists so that a reader can tell
@@ -633,24 +649,25 @@ the two paragraphs above and the table below now account for.
 | 2026-09-04 | **`core.hooksPath` does not govern `core.fsmonitor`, and BR-015's sentence was false while it did not.** The module docblock had recorded `core.fsmonitor` as a route and then dismissed it as "named here for completeness", having deferred the content filters beside it to AWCLI-19. It is not the same class as those. Measured on git 2.55 with `core.hooksPath` pinned to awcli's exact value, a `core.fsmonitor` marker script ran twice during `-c status.showUntrackedFiles=normal status --porcelain` and twice again during `git worktree add`; with `-c core.fsmonitor=` on the same argv it ran neither time. The config lands in the shared `.git/config`, which an agent reaches from inside any slot with a plain `git config core.fsmonitor '<cmd>'` — so one command from one slot bought host execution under the operator's identity on every later `dirty()` and every later provisioning, of any run. That is a command planted *inside* the boundary and executed outside it, which is the direction BR-015 says must never happen, and while it was open `describe`'s "awcli ran none of the repository's git hooks" was false in the tense it is written in. Unlike the filters it closes for free — an fsmonitor is a performance cache and git falls back to scanning — so it is closed here rather than deferred, and it leaves AWCLI-19's residual about the filters and them only. **BR-013 also gains the only enforcement the live-checkout axis can have**: it reads "Exceptions. None.", the worktree axis satisfies it by construction because path and branch are pure functions of run and slot, and the live checkout has one directory on one branch whatever the slot is called — so `--live-checkout` plus two slots handed two agents the same tree silently. A second concurrent slot is now a refusal. **No rule text and no scenario changed; the counts stay at 40 rules and 78 scenarios, 30 approved and 10 pending, and at 30 tickets and 75 points.** | Run 7 of PR #15 (AWCLI-13). Recorded because both halves are a security property the artifacts asserted and the code did not have — the first was reproduced against real git, and the second is a rule whose "Exceptions. None." nothing had ever tested on the axis that cannot meet it for free. |
 | 2026-09-04 | **The live-checkout refusal was declared by nothing, and BR-014's opt-in did not say what it stops short of.** The row above added `live-checkout-already-held` — the refusal that holds BR-013 on the one axis that cannot meet it by construction — and recorded in as many words that no scenario changed. Nothing else declared it either: no rule named it, no acceptance criterion claimed it, and the only scenario tagged @BR-013 is about the worktree axis, where the rule holds for free. So the corpus asserted a refusal a reader consulting it could not find, and an operator meeting it was refused a combination BR-014's Exceptions read as granting outright. Both halves are closed here. **A scenario is added** — *A second agent is refused my live checkout rather than sharing it*, tagged @BR-013 and carried as an acceptance criterion on AWCLI-13, which owns the mechanism. **BR-014's Exceptions are widened** to say that the opt-in grants awcli the checkout and not the sharing of it, and that what bounds it is BR-013's "Exceptions. None."; BR-014 is already one of the seven rewritten, so the rule counts do not move with this. **The enforcement was keyed wrong besides, and is re-cut with it**: the claim was held per repository *and run name*, while BR-011 says runs with different names may execute concurrently against the same repository — so two differently-named runs under `--live-checkout` shared one tree on one branch with nothing refusing, and the run lock the deferral leaned on is itself per name (BR-010) and closes none of it. The claim is now on the repository alone and the refusal names the run holding it, and the residual — a second awcli *process* on the same checkout, which neither a process-local claim nor a per-name lock covers — is stated where the claim is taken rather than deferred to something that does not cover it. A claim leaked on every failed open besides, so one detached head refused every later live acquisition in the process, naming a run that was not running; it is given back on every exit from the open that is not a working copy. **The scenario counts move: nineteen added since approval, 20 pending, 79 on disk. No rule was added and none left the approved thirty, so the rules stay at 40, 30 approved and 10 pending, and the ticket totals stay at 30 tickets and 75 points.** | Run 8 of PR #15 (AWCLI-13). Filed against the spec rather than the code: the refusal is right and BR-013 is why, but a rule whose enforcement no scenario and no criterion names is a rule nothing watches, and this one had shipped that way one round earlier. |
 | 2026-09-04 | **BR-036's rollback carve-out rested on a precondition nothing checked, and the delete now enforces it.** The Exceptions justify removing awcli's own branch after a failed working-copy creation by that branch carrying no commits. `undoOwnBranch` ran `git branch -D`, and `-D` deletes wherever the ref points *at delete time* — while the window between cutting the branch and the rollback is the whole of the working-copy creation, up to the 120s git bound, with an agent's own commit the ordinary thing that lands on such a ref. So the rule's central justification was an assertion, and the one module whose headline property is that provisioning is never destructive would have destroyed a commit that landed in that window and reported a successful rollback. Measured on git 2.55: `git branch -D` on a ref that has moved off the cut commit exits 0 and prints `(was <B>)`, while `git update-ref -d <ref> <A>` on the same ref exits 1 with `cannot lock ref '<ref>': is at <B> but expected <A>` and leaves the ref and its commits alone — comparing under the ref lock rather than as a check-then-use pair. awcli's delete is that form now, so the carve-out's precondition is *enforced* rather than assumed, and a branch awcli therefore declines to remove is reported to the operator with what it may now carry. Statement, rationale, actors and example are untouched; only Exceptions moved. **BR-036 is already one of the seven rewritten and pending re-approval, so no count moves** — not the rules, not the scenarios, not the ticket totals. AWCLI-13's Constraints restated to match. | Run 9 of PR #15 (AWCLI-13). A blocking security finding against the run-6 row's own carve-out: the rollback argument was sound and its precondition was never checked. |
+| 2026-09-04 | **The `git-not-started` refusal was declared by nothing, and it was the one refusal whose sentence denied the claim its own union makes.** Two rounds ago the spawn errno was split in two: a git that is not there keeps `git-unavailable` and its install-or-PATH remedy, and a git that is there and could not be started for *this* call became `git-not-started`, because telling an operator whose git works to install git is advice that cannot be taken. The split was right and nothing declared the second half. Verified by exhaustive grep: `git-not-started` occurred exactly twice in the tree, both of them production code — no test asserted it, no gate mutation watched it, and no rule, scenario or acceptance criterion named it anywhere. It was the only one of the eleven refusal kinds at zero on every one of those, so the guard could be deleted and every suite stayed green; deleted, the shape falls through to the `not-a-repository` refusal, whose sentence reads a `stderr` this shape does not carry, and the acquisition dies in `gitComplaint` with a bare `Cannot read properties of undefined`. That is the same shape run 8 was blocked for on `live-checkout-already-held`, one commit earlier and left standing. **BR-002 is widened to own it**, because it is the rule that already says awcli will not proceed without git as its route to the repository — it now says that awcli establishes that *by asking git*, so a git it cannot run at all is refused on the same terms, and that the refusal distinguishes the two cases because their remedies are disjoint. **A scenario is added** — *A git that cannot be started is refused with the reason, not with install advice* — carried as an acceptance criterion on AWCLI-13, which owns the preflight that raises it. **And the refusal's own sentence is corrected in the same round**: `WorkspaceRefusalKind` records that every one of these is the operator's to fix, every other arm ends in an instruction, and this one ended descriptively on the errno while its own comment conceded that awcli cannot tell which of `EACCES`, `EAGAIN` and `EMFILE` the operator can act on. The width awcli cannot narrow is a reason to write the remedy at that width, not a reason to write none: it now closes on the one instruction true of all three — clear what the code names, then run again. **Both counts move with this row, which no earlier PR #15 row has done — PR #8's BR-008 row did, so it is this PR that is the first here and not this file.** BR-002 was still approved as written, so widening it takes it out of the approved set: 8 of the approved 37 rewritten, 29 still approved, 11 rules pending. The scenario is the twentieth added since approval, so 21 scenarios pending and 80 on disk. The ticket totals are untouched at 30 tickets and 75 points. | Run 9 of PR #15 (AWCLI-13). A blocking spec-compliance finding, escalated from run 8's medium on the same subject: a refusal the corpus does not declare is a refusal no reviewer can check and no reader can find, and this one had also spent two rounds contradicting the union it is a member of. |
 
-**What re-approval would have to cover — 10 rules and 20 scenarios:**
+**What re-approval would have to cover — 11 rules and 21 scenarios:**
 
 | | Rules | Scenarios |
 |---|---|---|
 | Approved 2026-08-24 | 37 | 60 |
-| Added since | 3 — BR-038, BR-039, BR-040 | 19 |
-| Of the approved, rewritten | 7 — BR-006, BR-008, BR-012, BR-014, BR-025, BR-028, BR-036 | 1 — *Working on the live checkout requires asking for it* |
-| **Still approved as written** | **30** | **59** |
-| **Pending re-approval** | **10** | **20** |
-| Now on disk | 40 | 79 |
+| Added since | 3 — BR-038, BR-039, BR-040 | 20 |
+| Of the approved, rewritten | 8 — BR-002, BR-006, BR-008, BR-012, BR-014, BR-025, BR-028, BR-036 | 1 — *Working on the live checkout requires asking for it* |
+| **Still approved as written** | **29** | **59** |
+| **Pending re-approval** | **11** | **21** |
+| Now on disk | 40 | 80 |
 
 The two columns are counted the same way, and the way matters, because the obvious arithmetic
 double-counts. A rule or scenario **added** during these rounds and then **rewritten** during a later
 one has never been through a gate at all: it is one pending item, not one added plus one rewritten.
 Two rules (BR-038, BR-039) and three scenarios (all three BR-039's) are in that position, and they
 are counted once, inside the added row. A rewritten item that *was* approved is different — it
-leaves the approved count and joins the pending one, which is why 30 and 59 are not 37 and 60.
+leaves the approved count and joins the pending one, which is why 29 and 59 are not 37 and 60.
 
 Until re-approval happens, this file is amended-but-not-re-approved, and the tickets derived from it
 inherit that status.

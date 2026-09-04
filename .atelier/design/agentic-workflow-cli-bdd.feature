@@ -4,21 +4,24 @@
 # approved: 2026-08-24
 # approved_baseline: 60 scenarios
 # amended: 2026-09-04
-# amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4; PR #15 (AWCLI-13) review round 8
-# scenarios: 79
+# amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4; PR #15 (AWCLI-13) review rounds 8 and 9
+# scenarios: 80
 # source: agentic-workflow-cli-rules.md
 # Each scenario is tagged with the business rule it verifies.
 #
 # ─── Amendments since approval ─────────────────────────────────────────────────
-# Approved 2026-08-24 with 60 scenarios; now 79. Nineteen were added after
+# Approved 2026-08-24 with 60 scenarios; now 80. Twenty were added after
 # approval and one of the sixty was rewritten, so the honest split is
-# 59 approved / 20 pending — none of the twenty through a PM approval gate.
+# 59 approved / 21 pending — none of the twenty-one through a PM approval
+# gate.
 #
-# Three more scenarios were rewritten, and they are not part of that nineteen
+# Three more scenarios were rewritten, and they are not part of the added set
 # twice over: all three are BR-039 scenarios added earlier in this same PR, so
-# they were never approved and are already counted among the eighteen added. A
-# rewritten scenario is not an approved one, and a scenario added and then
-# rewritten before any gate is still just one pending scenario.
+# they were never approved and are already counted among the ones added. Said
+# without a count of the added, which this sentence carried twice and which was
+# wrong both times a later round added one. A rewritten scenario is not an
+# approved one, and a scenario added and then rewritten before any gate is
+# still just one pending scenario.
 #
 # The rules file's `## Amendments` section is the authority on what changed and
 # why; this block records only which scenarios moved.
@@ -78,6 +81,18 @@
 #              refusal can hold the rule. BR-014's Exceptions were widened in
 #              the same round to say that the operator's opt-in grants the
 #              checkout and not the sharing of it.
+#
+# Added, run 9 of PR #15 (the second refusal that had shipped undeclared):
+#   BR-002 x1  A git that cannot be started is refused with the reason, not
+#              with install advice — a git that is present and could not be
+#              started for this call was split out of "no git on this machine"
+#              two rounds earlier, because the install-or-PATH remedy cannot be
+#              taken on a machine where git already works. Of the eleven
+#              refusal kinds it was the only one with no test, no gate mutation
+#              and no mention in this corpus. BR-002 is widened in the same
+#              round to say that awcli establishes a target is a repository by
+#              asking git, so a git it cannot run at all is refused on the same
+#              terms, and that the refusal distinguishes the two cases.
 # ───────────────────────────────────────────────────────────────────────────────
 
 Feature: Running agentic workflows from a global command-line tool
@@ -105,6 +120,16 @@ Feature: Running agentic workflows from a global command-line tool
     When I run the "triage" workflow against it
     Then the run is refused
     And I am told the target must be a repository, and how to make it one
+
+  @BR-002
+  Scenario: A git that cannot be started is refused with the reason, not with install advice
+    Given git is on this machine
+    And it cannot be started for the call awcli has to make
+    When awcli tries to provision a working copy
+    Then the run is refused
+    And the refusal carries the reason the operating system gave
+    And I am not told to install git or to put it on the PATH
+    And I am told to clear what that reason names and run again
 
   @BR-003
   Scenario: An awcli older than the repository requires is refused
