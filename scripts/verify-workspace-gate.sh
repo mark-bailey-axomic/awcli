@@ -51,7 +51,7 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 162 `expect_red` below plus that final run come to ~29 minutes by that
+# — so ~11.5s each. The 163 `expect_red` below plus that final run come to ~29 minutes by that
 # product, and the whole chain has since been timed at **40m33s end-to-end** — measured by review
 # run 8, not here. The per-mutation figure reproduces; the product is the thing that is wrong, and it
 # is ~45% low because parallel efficiency decays over the run — from 223% early to 139% late — as the
@@ -93,8 +93,13 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 # more on the preflight arm for a git that is present and could not be started: of the eleven refusal
 # kinds that was the only one no test asserted anywhere, so the guard, its kind and the remedy it
 # ended without were all unwatched — one mutation each, and the kind one is what catches the arm being
-# folded back into the sibling whose remedy cannot be taken. The total grows
-# with every mutation added, which is the right trade and is why the per-mutation figure is quoted.
+# folded back into the sibling whose remedy cannot be taken. And one on the exclusivity of the BR-015
+# sentence, where the mutation is the wording that shipped for four rounds rather than a plausible
+# wrong one: it called the working copy "the one thing this run adds", where three things are added
+# and none removed, so the carve-out anchor beside it stays green against it — that one still names
+# `.awcli/run/` and still keeps the promise. One anchor was re-cut with it, onto the widened clause.
+# The total grows with every mutation added, which is the right trade and is why the per-mutation
+# figure is quoted.
 #
 # Named in full rather than by glob so that a new file has to be added here deliberately: a suite this
 # gate does not run is a mutation it cannot see.
@@ -166,7 +171,19 @@ expect_red "the live-checkout choice is stated in the isolation awcli reports" s
 # a run does leave an untracked directory there — so a mutation that keeps the promise and drops the
 # carve-out is the plausible wrong version, not a strawman.
 expect_red "the worktree isolation names what it protects and the bound on it" src/runtime/workspace.ts \
-  's/your own checkout, its branch and its uncommitted changes are untouched — the one thing this run adds to your checkout is the working copy itself, under \.awcli\/run\/ — and awcli/your own checkout keeps its uncommitted changes, and awcli/'
+  's/your own checkout, its branch and its uncommitted changes are untouched — this run adds three things to your repository and removes none of them when it ends: the working copy under \.awcli\/run\/, the branch it is on, which awcli cut for this run, and git.s registration of that working copy — and awcli/your own checkout keeps its uncommitted changes, and awcli/'
+
+# And the exclusive version of that same bound, which is how it shipped for four rounds: "the one
+# thing this run adds to your checkout is the working copy itself". A provisioning adds three things
+# and keeps all three — the working copy, the branch awcli cut, and git's registration of it — and
+# the module's own failure path enumerates the last two as certain rather than possible. So this
+# mutation is not a strawman but the previous wording, and the red is what the carve-out assertion
+# alone could not give: it still names `.awcli/run/` and still keeps the promise, so the mutation
+# above stays green against it. The two leftovers are what the *next* run refuses over, which is why
+# an operator reading the exclusive version is refused `branch-exists` over something they were told
+# was never added.
+expect_red "the worktree isolation names everything the run leaves behind, not the working copy alone" src/runtime/workspace.ts \
+  's/this run adds three things to your repository and removes none of them when it ends: the working copy under \.awcli\/run\/, the branch it is on, which awcli cut for this run, and git.s registration of that working copy/the one thing this run adds to your checkout is the working copy itself, under .awcli\/run\//'
 
 # And the hooks clause, with the residual it carries. Hooks resolve through the *common* git dir, so
 # an agent in one slot writes a hook the next acquisition of any run would run on the host; awcli says

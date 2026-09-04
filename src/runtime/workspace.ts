@@ -2418,10 +2418,30 @@ function handle(
  * unqualified, and the BR-030 amendment exists because it was not true — a run leaves an untracked
  * directory there, and AWCLI-13's own non-functional criterion was rewritten to carve it out. The
  * carve-out reached the ticket, the rules file and the test; this is the one string an operator ever
- * reads, so it is the place it most needed to land. What it
- * must not do is state the *other* axis's answer. The filesystem outside the repository, the network
- * and this machine's credentials named as reachable are all properties of running on the host, and
- * this type carries no execution target — deliberately, for the reason `WorkspaceIsolation` gives.
+ * reads, so it is the place it most needed to land.
+ *
+ * That clause is an *enumeration* now, and what was corrected is its exclusivity rather than the
+ * `.awcli/run/` it already named. It read "the one thing this run adds to your checkout is the
+ * working copy itself", and a successful provisioning adds three things: the working copy, the branch
+ * `awcli/<run>/<slot>` cut against the repository, and git's registration of that working copy in the
+ * shared git dir. All three outlive the run — the disposition is `preserve`, `release` is inert on
+ * disk, and collection is AWCLI-22's, asked for and never automatic (BR-021, BR-036) — and
+ * `assertInsideRuntimeDirectory`'s fault already enumerates the last two and calls them "certain
+ * rather than possible", so the success path was refuting the failure path in the same file. There
+ * was a defensible reading, which is why this is a re-cut and not a deletion: the claim was scoped to
+ * "your *checkout*", and the branch lands in the repository's refs and the registration in the shared
+ * git dir rather than in the working tree. But nobody reads a terminal that finely, and those two
+ * leftovers are exactly what the *next* run refuses over — `branch-exists` names the branch,
+ * `occupied` hands over a `git worktree remove` — so the sentence promised that nothing else was
+ * added and then refused the operator over the things it had not mentioned. The scope is stated now
+ * rather than implied ("to your repository", against a checkout that is untouched), all three are
+ * named, and awcli's not removing them is said in the same breath, because "adds" without that is
+ * the reading an operator has to be wrong about only once.
+ *
+ * What the sentence must not do is state the *other* axis's answer. The filesystem outside the
+ * repository, the network and this machine's credentials named as reachable are all properties of
+ * running on the host, and this type carries no execution target — deliberately, for the reason
+ * `WorkspaceIsolation` gives.
  * The BR-015 scenario that wants that sentence is scoped to an agent running *without a container*,
  * and a worktree composed with one (AWCLI-19) would reuse this description to tell the operator their
  * credentials are reachable inside a container that blocks them. So each axis says its own half, and
@@ -2459,7 +2479,7 @@ function describe(workspace: WorkspaceAxis, dir: string, branch: string): string
   const on = printable(branch, PATH_LIMIT);
   return workspace === "liveTree"
     ? `Working directly in your own checkout at ${where}, on your branch ${on}, because this run was given ${LIVE_CHECKOUT_FLAG}: uncommitted changes there are an agent's to change, and nothing about the working copy protects them. What an agent can touch beyond your checkout is settled by where this run executes, not by the working copy it was given.`
-    : `Working in a worktree at ${where}, on the branch ${on}: your own checkout, its branch and its uncommitted changes are untouched — the one thing this run adds to your checkout is the working copy itself, under .awcli/run/ — and awcli ran none of the repository's git hooks to make it, though git still runs any content filter the repository configures, both to make this working copy and to read it. That is the whole of what a working copy protects: it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
+    : `Working in a worktree at ${where}, on the branch ${on}: your own checkout, its branch and its uncommitted changes are untouched — this run adds three things to your repository and removes none of them when it ends: the working copy under .awcli/run/, the branch it is on, which awcli cut for this run, and git's registration of that working copy — and awcli ran none of the repository's git hooks to make it, though git still runs any content filter the repository configures, both to make this working copy and to read it. That is the whole of what a working copy protects: it is not a boundary around the machine, and what an agent can touch beyond this directory is settled by where this run executes, not by the working copy it was given.`;
 }
 
 /**

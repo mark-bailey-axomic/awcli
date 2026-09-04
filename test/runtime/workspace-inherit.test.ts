@@ -351,6 +351,20 @@ describe("what the isolation awcli reports says, and what it leaves to others", 
     if (axis === "worktree") {
       expect(description).toMatch(/untouched/);
       expect(description).toMatch(/\.awcli\/run\//);
+      // And the *other two* things a successful provisioning leaves in the repository, which the
+      // exclusive version of this clause denied: it called the working copy "the one thing this run
+      // adds to your checkout", while the branch awcli cut for it and git's registration of it both
+      // outlive the run — the disposition is `preserve`, `release` is inert on disk, and collection
+      // is AWCLI-22's, asked for and never automatic. The module's own failure path already
+      // enumerated the same two and called them "certain rather than possible", so the success path
+      // was refuting the failure path four hundred lines away. Operational rather than tidy: both
+      // leftovers are what the *next* run refuses over, so an operator who believed the old sentence
+      // meets `branch-exists`, or an `occupied` whose remedy is a `git worktree remove`, for things
+      // they were told were never added. Asserted here because on this sentence the promise and its
+      // bound are one claim (BR-015), which is the same reason the carve-out above is asserted.
+      expect(description).toMatch(/three things/);
+      expect(description).toMatch(/removes none of them/);
+      expect(description).toMatch(/git's registration/);
       expect(description).toMatch(/none of the repository's git hooks/);
       // The bound on that clause: `NO_HOOKS` buys no hook, not "no code from the repository".
       expect(description).toMatch(/content filter/);
