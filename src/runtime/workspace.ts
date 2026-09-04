@@ -544,8 +544,9 @@ export async function acquireWorkspace(
     validated === undefined || !validated.ok ? DEFAULT_SLOT : validated.slot;
 
   // The live checkout this acquisition claimed, if it claimed one — read by `release` and by nothing
-  // else. `undefined` for every worktree acquisition, which claims nothing here.
-  let held: string | undefined;
+  // else. `undefined` for every worktree acquisition, which claims nothing here. Not named `held`,
+  // because `release`'s own gate mutation binds a `WorkspaceHandle` by that name.
+  let liveClaim: string | undefined;
 
   // The refusal travels on the error and nowhere else. `open` either returns a handle or throws,
   // there is no third channel through the stack, and `DisposalStack.acquire` rethrows what `open`
@@ -621,7 +622,7 @@ export async function acquireWorkspace(
         );
       }
       liveCheckoutsHeld.add(key);
-      held = key;
+      liveClaim = key;
       return await openLiveTree(git, root, slot, refuse);
     },
     // Nothing *on disk*. A working copy is preserved, so there is nothing to undo — and for a live
@@ -632,9 +633,9 @@ export async function acquireWorkspace(
     // not the tree and not on disk: holding it past release would make BR-013's rule about
     // *concurrent* agents into a rule about the whole life of a process.
     release: () => {
-      if (held !== undefined) {
-        liveCheckoutsHeld.delete(held);
-        held = undefined;
+      if (liveClaim !== undefined) {
+        liveCheckoutsHeld.delete(liveClaim);
+        liveClaim = undefined;
       }
     },
   };

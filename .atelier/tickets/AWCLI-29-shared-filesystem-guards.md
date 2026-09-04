@@ -68,11 +68,21 @@ anchors on a line that still exists, in a different file.
   same actor for the same reason, so it gets the same maker — or, if that is declined, Out of Scope
   says so and why, because a known divergence left unnamed is one that gets rediscovered.
 
-- Move `workspace.ts`'s refusal-message layer out with them, or say here why not. Measured at run 6,
-  when the file stood at 1637 lines, of which 957 were comment and 613 code, and the message layer —
-  `shellPath`, the two limits, `WorktreeRegistration`/`worktreeRegistration`, `canonicalPath`,
-  `Occupancy`, `TargetClaim`, `occupiedRefusal`, `BranchCollision`/`branchCollision`,
-  `collisionMessage`, `describe` — was 396 of those lines and 125 of the code. It is the seam with the
+- Move `workspace.ts`'s refusal-message layer out with them, or say here why not. Re-measured at run
+  7, on the commit that carries this sentence: the file is **2470 lines — 1597 comment, 796 code, 77
+  blank** — and the message layer — `shellPath`, `unshowablePathNote`, the two limits,
+  `WorktreeRegistration`/`worktreeRegistration`, `canonicalPath`, `Occupancy`, `TargetClaim`,
+  `occupiedRefusal`, `BranchCollision`/`branchCollision`, `collisionMessage`, `describe` — is **600
+  of those lines and 169 of the code**, each definition counted with the docblock above it.
+
+  The figure it replaces was wrong twice over and is worth recording rather than quietly
+  overwritten, because it is the number an implementer sizes this extraction by. It read "1637
+  lines, of which 957 were comment and 613 code": 957 + 613 is 1570, so the sentence's two halves
+  described different files, and no commit in history matches 1637 either — the parent of the commit
+  that introduced the number was 1570, and that commit itself grew the file well past it. Run 6
+  raised it and it was not fixed. The three figures now sum, so the same class of error cannot recur
+  silently; they are a snapshot of one commit and the file only grows, so treat them as a floor. It
+  is the seam with the
   most prose per line of code, it is where the last four review rounds found the most defects, and it
   needs nothing from the provisioning path but a `GitRunner` and four strings. The reason it belongs
   *here* rather than in a ticket of its own is the cost of the move: both extractions re-anchor

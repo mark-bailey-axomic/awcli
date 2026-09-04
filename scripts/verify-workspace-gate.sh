@@ -51,7 +51,7 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 146 `expect_red` below plus that final run therefore come to ~28 minutes,
+# — so ~11.5s each. The 151 `expect_red` below plus that final run therefore come to ~28 minutes,
 # which is arithmetic and not a measurement: nothing here has timed the whole chain, and the earlier
 # "15m37s wall … at 100 `expect_red`" implied one. Run 6 took the count from 100 to 136 in four
 # batches — the registration answers, the refusal `detail` and the failed-add residual in the first;
@@ -70,7 +70,13 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 # cause the raced refusal asserted, where the errno establishes a window and not who filled it, and
 # — one per branch a test can reach — the `cwd` these messages left unsanitised while sanitising the
 # binary, the argv and the signal beside it. Three more were re-cut for the same reason as the round
-# before: the two remedies whose trailing prose changed, and the raced sentence itself.
+# before: the two remedies whose trailing prose changed, and the raced sentence itself. Run 7 added
+# five, three of them security properties the artifacts asserted and the code did not have: the
+# `core.fsmonitor` route `core.hooksPath` does not govern, BR-013's "Exceptions. None." on the one
+# axis that cannot meet it by construction, and the axis being read once so a getter cannot answer
+# the consent check and the dispatch differently — plus git's locale, which this repository reads,
+# and the spawn errno that told an operator to install a git they already had. One more was re-cut:
+# the axis dispatch, whose ternary stopped existing when the read was made single.
 # The total grows with
 # every mutation added, which is the right trade and is why the per-mutation figure is the one quoted.
 #
@@ -87,8 +93,14 @@ mutation_gate_init \
 # The dispatch goes to the live checkout whichever axis was chosen — the condition dropped rather
 # than inverted, which is the same end state either way. Every worktree assertion in the suite has a
 # directory and a branch to look at — it is just the operator's own.
+#
+# Re-cut in run 7, onto the guard clause the dispatch became. It used to match the ternary
+# `return choice.workspace === "liveTree"`, which stopped existing when the axis was made a single
+# read: `choice.workspace` was being read once for the consent check and again here, and a getter
+# answered the two differently. Re-cut onto the narrowest expression of the same defect — the one
+# comparison that decides the axis — rather than re-matching the new shape whole.
 expect_red "The default protects my checkout" src/runtime/workspace.ts \
-  's/      return choice\.workspace === "liveTree"/      return true/'
+  's/      if \(!wantsLiveTree\) \{/      if (false) \{/'
 
 # The resolver defaults to the live checkout, so nothing has to be passed to get it. The whole
 # design rests on the safe choice being the one you reach by asking for nothing.
@@ -104,8 +116,11 @@ expect_red "the handle reports the working copy's own directory" src/runtime/wor
 # ── Scenario: Working on the live checkout requires asking for it ────────────────────────────
 # The consent check is gone: anyone naming the axis gets the operator's checkout. This is the state
 # the code is in before BR-014 is thought about at all.
+# Re-cut in run 7: the narrowing `&&` this matched was two reads of a caller-supplied object either
+# side of an await, and became one destructure. Same defect, narrowest expression — the consent
+# comparison forced true.
 expect_red "the live checkout requires the operator's consent" src/runtime/workspace.ts \
-  's/      if \(choice\.workspace === "liveTree" && choice\.consent !== OPERATOR_CONSENT\) \{/      if (false) {/'
+  's/      if \(wantsLiveTree && consent !== OPERATOR_CONSENT\) \{/      if (false) {/'
 
 # Consent checked by truthiness rather than by identity — which is what a `boolean` or a
 # structurally-typed marker degrades to. `{}` cast to the consent type is truthy, so a workflow or a
@@ -209,8 +224,12 @@ expect_red "the working copy is preserved on release, not destroyed" src/runtime
 # And the disposition honoured in deed as well as in the report: a release that removes the tree.
 # For a live checkout this is the operator's own checkout being deleted by a run ending normally,
 # which is the single worst thing this file could do.
+# Re-cut in run 7: `release` stopped being an empty body when it took on dropping awcli's in-memory
+# claim on the live checkout (BR-013). The mutation is unchanged in substance — a release that
+# removes the tree — and is now spliced in ahead of that claim drop rather than replacing an empty
+# body, so it still tests the disposition being honoured in deed.
 expect_red "releasing a working copy does nothing to it on disk" src/runtime/workspace.ts \
-  's/    release: \(\) => \{\},/    release: async (held: WorkspaceHandle) => {\n      await (await import("node:fs\/promises")).rm(held.dir, { recursive: true, force: true });\n    },/'
+  's/    release: \(\) => \{\n      if \(liveClaim !== undefined\) \{\n        liveCheckoutsHeld\.delete\(liveClaim\);\n        liveClaim = undefined;\n      \}\n    \},/    release: async (held: WorkspaceHandle) => {\n      await (await import("node:fs\/promises")).rm(held.dir, { recursive: true, force: true });\n    },/'
 
 # ── Provisioning is never destructive ───────────────────────────────────────────────────────
 # The obvious way to make provisioning "just work": clear whatever is in the way. What is in the way
@@ -1247,5 +1266,52 @@ expect_red "a hostile directory name is sanitised in the timeout message" src/ru
 
 expect_red "a hostile directory name is sanitised in the signal message" src/runtime/git-process.ts \
   's/ in \$\{printable\(cwd, CWD_LIMIT\)\}\. Something outside awcli stopped it/ in \$\{cwd\}. Something outside awcli stopped it/'
+
+# ── core.fsmonitor is not a hook, and core.hooksPath does not govern it ─────────────────────
+# The route the module docblock had recorded and then dismissed as "named here for completeness".
+# Measured on git 2.55 with the hooks path pinned to awcli's exact value: a `core.fsmonitor` marker
+# script ran twice during `status --porcelain` and twice during `worktree add`, and neither time with
+# `-c core.fsmonitor=` on the same argv. It lands in the shared `.git/config`, so one `git config`
+# from inside any slot bought host execution on every later `dirty()` and every later provisioning of
+# any run — planted inside the boundary, executed outside it. Unlike the content filters it closes
+# for free, an fsmonitor being a cache git falls back from.
+expect_red "the repository's core.fsmonitor does not run, hooks path notwithstanding" src/runtime/workspace.ts \
+  's/  "-c",\n  "core.fsmonitor=",\n\];/];/'
+
+# ── BR-013 on the axis that cannot satisfy it by construction ───────────────────────────────
+# Two slots on the worktree axis are two directories on two branches, both pure functions of run and
+# slot. The live checkout is one directory on one branch whatever the slot is called, so only a
+# refusal can hold "concurrently-running agents each receive their own working copy on their own
+# branch. Exceptions. None." Every consented() call site in the suite used one slot, so nothing had
+# asked for the second.
+expect_red "a second concurrent slot on the live checkout is refused, not shared" src/runtime/workspace.ts \
+  's/      if \(liveCheckoutsHeld\.has\(key\)\) \{/      if (false) \{/'
+
+# ── The axis is read once, not once per decision ────────────────────────────────────────────
+# `choice` is caller-supplied and `workspace`/`consent` were read once for the consent check and
+# again for the dispatch, with `sharedPreflight`'s awaits in between. A getter answers the two reads
+# differently: the check saw "worktree" and skipped itself, the dispatch saw "liveTree" and opened the
+# operator's checkout. Nothing is forged but the axis, and the token is never consulted — so the
+# identity check that the impostor list proves sound was simply bypassed around.
+expect_red "the workspace axis is read once, so it cannot change under the consent check" src/runtime/workspace.ts \
+  's/      const wantsLiveTree = workspace === "liveTree";/      const wantsLiveTree = choice.workspace === "liveTree";/'
+
+# ── git's locale is fixed, because this module reads git's prose ────────────────────────────
+# `gitComplaint` picks the line beginning `fatal:` or `error:`, and those prefixes translate — under
+# `LC_ALL=de_DE.UTF-8` git says `schwerwiegend:` and the complaint quoted to the operator became the
+# last line of whatever git printed. Pinned on the child rather than in the suite: a suite-level pin
+# stays green while the product is wrong. It also removes the gate's own worst failure mode, where a
+# locale-red suite makes every step here report `ok` and fail ~28 minutes later as "already broken".
+expect_red "git is given a fixed locale rather than the operator's" src/runtime/git-process.ts \
+  's/  environment\.LC_ALL = "C";\n  environment\.LANGUAGE = "";\n//'
+
+# ── A directory git cannot start in is not a machine without git ────────────────────────────
+# EACCES on a mode-000 repository directory fell through to `unavailable`, which `workspace.ts`
+# renders as "install git, or put it on the PATH" — advice that cannot work, on a machine where git is
+# present. EAGAIN and EMFILE arrived the same way. The `isDirectory` probe cannot separate them
+# because `stat` on mode-000 succeeds, so the errno is carried out instead. Mutated by widening the
+# ENOENT arm to swallow every errno, which is the shape the defect actually had.
+expect_red "a git that could not be started here is not reported as a git that is missing" src/runtime/git-process.ts \
+  's/      if \(failure\.code === "ENOENT"\) \{/      if (typeof failure.code === "string") \{/'
 
 mutation_gate_finish "each workspace criterion has a test that fails when it is broken"

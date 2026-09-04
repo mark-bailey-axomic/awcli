@@ -127,10 +127,14 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 
 ## Notes
 
-Two rows of the `## Amendments` section in
+Four rows of the `## Amendments` section in
 [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md) move through
 this ticket; several rows share their date, so each is cited by its subject rather than by its
-position or by a count of them.
+position or by a count of them. This sentence said *two* while it was being written in the same
+commit as the third and fourth, three lines above the clause warning against citing rows by count —
+which is the class of defect five of the last six review rounds have found, and the reason the four
+are listed rather than totalled.
+
 The `--live-checkout` row re-owns the flag onto AWCLI-20 and the run's isolation line onto
 AWCLI-21, and unticks the scenario criterion above. The BR-030 row records that the third
 non-functional criterion was reconciled with BR-030 — it read "nothing is written to the operator's
@@ -138,6 +142,12 @@ checkout when isolation is in effect" and now carves out `.awcli/run/`, because 
 mutable run data beneath one runtime directory and that directory is inside the repository. The
 carve-out was written after the code that needed it, which is why it is recorded rather than left as
 an in-place rewrite. No rule and no scenario text changed for either.
+
+The BR-036 row moves the failed-add branch rollback into that rule's Exceptions, so the Constraints
+below cite BR-036 rather than standing in for it. The wrong-counts row adds the constraint for the
+two message properties the code already had and no ticket stated: a remedy is a command that runs,
+and a fault raised after a successful `git worktree add` names the branch and the registration it
+leaves behind. Both changed this ticket; neither changed a rule or a scenario.
 
 ## Dependencies
 

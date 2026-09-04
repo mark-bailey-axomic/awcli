@@ -147,6 +147,65 @@ describe("what provisioning does not inherit", () => {
   );
 
   /**
+   * `core.fsmonitor`, which `core.hooksPath` does not govern and which ran on the host.
+   *
+   * Not a hook, and that is the whole finding: git resolves `core.fsmonitor` as a command of its own,
+   * from the *shared* `.git/config`, and pinning `core.hooksPath` does nothing to it. Measured on git
+   * 2.55 with the hooks path pinned to exactly awcli's value, a marker script ran twice during
+   * `-c status.showUntrackedFiles=normal status --porcelain` and twice again during
+   * `git worktree add`.
+   *
+   * The exposure is worse than the hooks above rather than equal to them. An agent inside any slot
+   * reaches the shared config with a plain `git config core.fsmonitor <cmd>` — no path knowledge, no
+   * write to `.git/hooks` — and from then on every `dirty()` and every later provisioning, of any
+   * run, executes it under the operator's identity. That is a command planted *inside* the boundary
+   * and executed outside it, which is the BR-015 direction the module docblock says must never
+   * happen, and while it was open `describe`'s "awcli ran none of the repository's git hooks" was
+   * false in the way that matters.
+   *
+   * Both routes are exercised, because they are two argv and one could be fixed alone: the
+   * provisioning, and then a `dirty()` on the handle it returned. Unlike the content filters, closing
+   * this costs nothing — an fsmonitor is a performance cache and git falls back to scanning the
+   * working tree — so the provisioning still has to succeed and `dirty()` still has to answer.
+   */
+  it("does not run the repository's core.fsmonitor, which is not a hook", async () => {
+    const repositoryPath = await repository();
+    const evidence = await mkdtemp(join(tmpdir(), "awcli-workspace-fsmonitor-"));
+    track(evidence);
+    const marker = join(evidence, "fsmonitor-ran");
+    const payload = join(evidence, "payload.sh");
+    // Exits non-zero, which is how a real fsmonitor declines to answer: git falls back to scanning
+    // rather than failing, so a suppressed one and a declining one differ only in the marker.
+    await writeFile(
+      payload,
+      ["#!/bin/sh", `echo ran >> "${marker}"`, "exit 1", ""].join("\n"),
+      "utf8",
+    );
+    await chmod(payload, 0o755);
+    await git(repositoryPath, "config", "core.fsmonitor", payload);
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: resolveWorkspaceChoice({}),
+    });
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    // Route one: the provisioning. It still succeeds, and the branch it cut is there — a provisioning
+    // that failed would satisfy an absent marker for the wrong reason.
+    expect(existsSync(join(outcome.workspace.dir, ".git"))).toBe(true);
+    expect(await branches(repositoryPath)).toEqual(["awcli/triage/main", "main"]);
+    expect(existsSync(marker)).toBe(false);
+
+    // Route two: the handle, for the life of the run. `dirty()` runs `git status`, which is where the
+    // measurement found it running twice.
+    await writeFile(join(outcome.workspace.dir, "untracked"), "x", "utf8");
+    expect(await outcome.workspace.dirty()).toBe(true);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  /**
    * The hook the *handle* could reach, which is a different exposure from the two above.
    *
    * They cover provisioning — one mutating call each, both of them over before an agent has run.

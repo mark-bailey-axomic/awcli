@@ -203,6 +203,115 @@ describe("provisioning a working copy", () => {
   });
 
   /**
+   * BR-013 on the live checkout, which is the one axis that cannot satisfy it by construction.
+   *
+   * "Concurrently-running agents each receive their own working copy on their own branch.
+   * Exceptions. None." The worktree axis holds that for free — the path and the branch are both pure
+   * functions of run and slot, so two slots are two directories on two branches. The live checkout
+   * has one directory and one branch whatever the slot is called, so `--live-checkout` plus two
+   * slots handed two agents the same tree and the same branch with nothing refusing and nothing
+   * recorded. Only a refusal can hold the rule there, and every `consented()` call site in this
+   * suite used a single slot, so nothing had ever asked for the second.
+   *
+   * The release is asserted too, because the rule is about *concurrent* agents: a run that has
+   * finished with the checkout must be able to take it again, or holding it once would forbid it for
+   * the life of the process.
+   */
+  it("refuses a second concurrent slot on the live checkout rather than sharing it", async () => {
+    const repositoryPath = await repository();
+    const before = await checkout(repositoryPath);
+
+    const stack = new DisposalStack();
+    const first = await acquireWorkspace(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+      slot: "reviewer",
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.workspace.dir).toBe(repositoryPath);
+
+    // A different slot, same run, while the first is still held. This is the acquisition that used to
+    // succeed and hand back the identical dir and branch.
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+      slot: "builder",
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.kind).toBe("live-checkout-already-held");
+    expect(second.slot).toBe("builder");
+    // The remedy has to be one that works: a worktree each, or one after another.
+    expect(second.message).toContain(LIVE_CHECKOUT_FLAG);
+    // And nothing was done to the operator's checkout on the way to refusing.
+    expect(await checkout(repositoryPath)).toEqual(before);
+    expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+
+    // Released, the checkout is available again — the rule is about concurrency, not about the
+    // process.
+    await stack.unwind();
+    const third = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+      slot: "builder",
+    });
+    expect(third.ok).toBe(true);
+  });
+
+  /**
+   * The consent that was read twice, either side of an await, off an object the caller supplies.
+   *
+   * The identity check on the token is sound and the impostor list above proves it. This is the other
+   * half: `choice.workspace` and `choice.consent` were each read once for the consent check and again
+   * for the dispatch, with `sharedPreflight`'s awaits in between. A `choice` whose `workspace` is a
+   * getter answers the check and the dispatch differently — so the check saw `"worktree"`, skipped
+   * itself as not applicable, and the dispatch then saw `"liveTree"` and opened the operator's
+   * checkout. No token is forged; the forged value is the axis, and the token is simply never
+   * consulted.
+   *
+   * The getter here counts its reads and flips after the first, which is the minimum an attacker
+   * needs and also the shape an ordinary object mutated by a concurrent turn would have.
+   */
+  it("cannot be talked into the live checkout by a choice that changes under it", async () => {
+    const repositoryPath = await repository();
+    const before = await checkout(repositoryPath);
+    let reads = 0;
+    const shifty = {
+      get workspace() {
+        reads += 1;
+        return reads === 1 ? "worktree" : "liveTree";
+      },
+    } as unknown as Parameters<typeof acquireWorkspace>[1]["choice"];
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: shifty,
+    });
+
+    // Whatever it decides, it must not be "the operator's checkout without consent". One read means
+    // one decision, so this provisions a worktree — the value the first and only read gave.
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.workspace.dir).not.toBe(repositoryPath);
+    expect(outcome.workspace.isolation.workspace).toBe("worktree");
+    // The operator's checkout was not the thing handed out, which is the property the double read
+    // broke. Its branch and head rather than a deep compare: provisioning a worktree legitimately
+    // adds `.awcli/run` under the repository, so the entries are *expected* to differ here — what
+    // must not have moved is the checkout itself.
+    const after = await checkout(repositoryPath);
+    expect(after.branch).toBe(before.branch);
+    expect(after.head).toBe(before.head);
+    // And the axis really was consulted once. Two reads is the defect, whichever way it then went.
+    expect(reads).toBe(1);
+  });
+
+  /**
    * The other half of the same scenario: the workflow has no channel to this choice at all.
    *
    * BR-014 puts the opt-in on the command line because the person whose uncommitted work is at

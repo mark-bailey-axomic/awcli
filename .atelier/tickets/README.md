@@ -22,7 +22,7 @@ exclusion into a tracked file so each tool that walks the tree stops keeping its
 populates the manifest's empty traceability so a renamed scenario cannot silently lose its test;
 AWCLI-29 extracts the six filesystem guards that `run-lock.ts` and `workspace.ts` each carry a copy
 of, which have drifted once already and are drifting again, and — since PR #15's sixth review round —
-`workspace.ts`'s refusal-message layer with them, which was 396 lines of the file when run 6 measured
+`workspace.ts`'s refusal-message layer with them, which was 600 lines of the file when run 7 measured
 it and is the seam four review rounds found the most defects in. That widening is what took it from 2 points to 3: the two
 moves re-anchor `verify-workspace-gate.sh` and doing them together re-anchors it once. Counting them
 against the design's 62 would suggest the breakdown had underestimated the product, and it had
