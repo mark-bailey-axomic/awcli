@@ -165,13 +165,28 @@ contracts:
           params: ""
           returns: "Promise<void>"
     - class: Workspace
+      # A free function rather than a port object, and this entry now describes what
+      # ships instead of what was designed — see the 2026-09-04 row in the rules file's
+      # `## Amendments`. `acquireWorkspace` registers its own release on the
+      # `DisposalStack` it is handed (ADR-0001) with disposition `preserve`, so there is
+      # no `release(preserve: true)` for a caller to invoke: the release takes no
+      # argument and is inert on disk. A condition the operator can fix comes back as a
+      # refusal rather than a throw, which is why the return is a discriminated outcome
+      # and not a handle. The refusal channel is declared surface, so adding a `kind` is
+      # a change to this entry: invalid-slot, live-checkout-not-consented,
+      # git-unavailable, git-not-started, live-checkout-already-held, not-a-repository,
+      # no-commit, no-working-tree, detached-head, branch-exists, occupied — eleven,
+      # with `detail` carrying the finer answer behind `occupied` and `branch-exists`.
       methods:
-        - name: acquire
-          params: "run, slot"
-          returns: "Promise<WorkspaceHandle>"
-        - name: release
-          params: "preserve: true"
-          returns: "Promise<void>"
+        - name: acquireWorkspace
+          params: "stack: DisposalStack, request: WorkspaceRequest  # { repositoryPath, runName, slot?, choice, git? }"
+          returns: "Promise<WorkspaceOutcome>  # { ok: true, workspace: WorkspaceHandle } | WorkspaceRefusal { ok: false, kind, detail?, run, slot, message }"
+        - name: head
+          params: ""
+          returns: "Promise<string>  # on WorkspaceHandle, beside the fields dir, branch, slot, isolation"
+        - name: dirty
+          params: ""
+          returns: "Promise<boolean>  # on WorkspaceHandle"
     - class: Clock
       methods:
         - name: now

@@ -213,7 +213,7 @@ text, `usage` possibly unknown (ADR-0004).
 |---|---|
 | `AgentDriver` | `start(prompt, target, opts) → AgentHandle`; `AgentHandle.output(): AsyncIterable<string>`; `wait(): Promise<Exit>`; `kill(): Promise<void>` |
 | `ExecTarget` | `exec(cmd, opts) → Promise<ExecResult>`; `available(): Promise<boolean>`; `dispose(): Promise<void>` |
-| `Workspace` | `acquire(run, slot) → Promise<WorkspaceHandle>`; `WorkspaceHandle.dir`, `.branch`, `.head()`, `.dirty()`; `release(preserve: true)` |
+| `Workspace` | `acquireWorkspace(stack, request) → Promise<WorkspaceOutcome>` — a free function, not a port object: it registers its own release on the `DisposalStack` it is handed (ADR-0001, disposition `preserve`), so there is no `release(preserve: true)` to call and the release takes no argument and is inert on disk. `WorkspaceRequest`: `{ repositoryPath, runName, slot?, choice, git? }`. `WorkspaceOutcome`: `{ ok: true, workspace: WorkspaceHandle }` \| `WorkspaceRefusal` `{ ok: false, kind, detail?, run, slot, message }` — a condition the operator can fix is refused rather than thrown, and the refusal channel is declared surface: `kind` is one of eleven — `invalid-slot`, `live-checkout-not-consented`, `git-unavailable`, `git-not-started`, `live-checkout-already-held`, `not-a-repository`, `no-commit`, `no-working-tree`, `detached-head`, `branch-exists`, `occupied` — with `detail` carrying the finer answer behind `occupied` and `branch-exists`. `WorkspaceHandle.dir`, `.branch`, `.slot`, `.isolation`, `.head()`, `.dirty()` |
 | `Store` | `loadState(run)`, `saveState(run, data)` (atomic), `appendRecord(run, entry)`, `acquireLock(run)`, `reclaimIfStale(run)`, `logStream(run, agent)` |
 | `Clock` | `now()`, `elapsed(since)`, `deadline(duration)` |
 
