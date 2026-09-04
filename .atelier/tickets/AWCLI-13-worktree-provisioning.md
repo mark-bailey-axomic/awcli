@@ -21,7 +21,10 @@ deterministic so a resumed run can find what it made, and so an operator can rec
 - Default to an isolated working copy per run, cut on a deterministic branch name.
 - Require an explicit opt-in from the operator, on the command line, to work on the live
   checkout; a workflow cannot request it. Refuse to work there silently.
-- Give each parallel slot its own working copy, so no two agents share one.
+- Give each parallel slot its own working copy, so no two agents share one. On the live
+  checkout, where there is one working copy however many ask for it, refuse the second
+  concurrent acquisition instead — naming the run that holds it. The operator's opt-in grants
+  awcli the checkout (BR-014); it does not grant two agents a share of it (BR-013).
 - Return the current working copy's directory, branch, head and dirty state as a `WorkspaceHandle`.
 - Register each working copy for release, with preservation of its branch.
 
@@ -79,6 +82,15 @@ deterministic so a resumed run can find what it made, and so an operator can rec
       parses only `--version` and `--help`, and nothing prints `WorkspaceIsolation.description`.
       Tick it when AWCLI-20 and AWCLI-21 have landed and the whole scenario has been run.
 - [x] Scenario: *Parallel agents never share a working copy*.
+- [x] Scenario: *A second agent is refused my live checkout rather than sharing it*. The rule's
+      other half, on the axis that cannot satisfy it by construction: a worktree's path and
+      branch are pure functions of run and slot, so two slots are two working copies for free,
+      while the live checkout is one directory on one branch whatever asks for it. Only a
+      refusal can hold BR-013 there. The claim is keyed on the repository and not on the run,
+      because BR-011 permits differently-named runs to execute concurrently against one
+      repository — so both of them reach this refusal, and it names whichever holds the
+      checkout. Ticked because all four steps run here: nothing on the command line is needed
+      to establish them, unlike the criterion above.
 - [x] Branch names for the same run name and slot are identical across invocations.
 - [x] Provisioning asks git a fixed number of questions, whatever the repository holds, and adds one
       working tree rather than a second repository. The bounded-cost requirement above had no

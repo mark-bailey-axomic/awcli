@@ -3,16 +3,16 @@
 # status: Amended since approval — amendments pending PM re-approval
 # approved: 2026-08-24
 # approved_baseline: 60 scenarios
-# amended: 2026-08-26
-# amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4
-# scenarios: 78
+# amended: 2026-09-04
+# amended_in: PR #8 (AWCLI-01) review rounds 2, 3 and 4; PR #15 (AWCLI-13) review round 8
+# scenarios: 79
 # source: agentic-workflow-cli-rules.md
 # Each scenario is tagged with the business rule it verifies.
 #
 # ─── Amendments since approval ─────────────────────────────────────────────────
-# Approved 2026-08-24 with 60 scenarios; now 78. Eighteen were added after
+# Approved 2026-08-24 with 60 scenarios; now 79. Nineteen were added after
 # approval and one of the sixty was rewritten, so the honest split is
-# 59 approved / 19 pending — none of the nineteen through a PM approval gate.
+# 59 approved / 20 pending — none of the twenty through a PM approval gate.
 #
 # Three more scenarios were rewritten, and they are not part of that nineteen
 # twice over: all three are BR-039 scenarios added earlier in this same PR, so
@@ -69,6 +69,15 @@
 #                asking by name answers. The third could not otherwise be
 #                asserted at all: with nothing handed over, "the record holds
 #                everything my own environment held" has no subject.
+#
+# Added, run 8 of PR #15 (the refusal that had shipped undeclared):
+#   BR-013 x1  A second agent is refused my live checkout rather than sharing
+#              it — the code refuses this and no scenario said so. BR-013
+#              records "Exceptions. None." and the worktree axis meets it by
+#              construction, so the live checkout is the one axis where only a
+#              refusal can hold the rule. BR-014's Exceptions were widened in
+#              the same round to say that the operator's opt-in grants the
+#              checkout and not the sharing of it.
 # ───────────────────────────────────────────────────────────────────────────────
 
 Feature: Running agentic workflows from a global command-line tool
@@ -252,6 +261,15 @@ Feature: Running agentic workflows from a global command-line tool
     When they run
     Then each agent has its own working copy on its own branch
     And no agent observes another's changes
+
+  @BR-013
+  Scenario: A second agent is refused my live checkout rather than sharing it
+    Given I have asked for my live checkout myself
+    And an agent is already working in it
+    When a second agent asks for a working copy while the first is still working
+    Then the second agent is refused
+    And the refusal names the run already working in my checkout
+    And my uncommitted changes and current branch are untouched
 
   # ─── Isolation and safety ───
 

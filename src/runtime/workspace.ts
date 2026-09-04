@@ -341,6 +341,15 @@ export type WorkspaceRefusalKind =
    * whatever the slot is called, so nothing but a refusal can hold the rule there. Without it,
    * `--live-checkout` plus two slots handed two agents the same tree and the same branch, silently,
    * which is the exact sharing BR-013 exists to forbid.
+   *
+   * Two slots of one run is only half of it. BR-011 permits runs with different names to execute
+   * concurrently against the same repository, so two such runs both asking for the live checkout is
+   * the ordinary case and not a corner: they reach this refusal too, and the message names whichever
+   * of them holds it.
+   *
+   * This is not awcli second-guessing BR-014's opt-in. That exception grants awcli the operator's
+   * checkout to work in; it grants nothing about how many agents work in it at once, which is
+   * BR-013's subject and carries "Exceptions. None."
    */
   | "live-checkout-already-held"
   /** The path awcli was pointed at is not a git repository. */
@@ -616,18 +625,43 @@ export async function acquireWorkspace(
         return await openWorktree(git, root, runName, slot, head, refuse);
       }
       // BR-013, which the live checkout cannot satisfy by construction the way the worktree axis
-      // does. Claimed after the preflight because `root` is what the key is built from, and before
-      // `openLiveTree` so that a refused second slot reads no branch and touches nothing.
-      const key = `${root}\u0000${runName}`;
+      // does. Claimed after the preflight because the root git reported is the whole of the key, and
+      // before `openLiveTree` so that a refused second slot reads no branch and touches nothing.
+      //
+      // The run name is deliberately no part of the key, and was until this was re-cut. BR-011 says
+      // in as many words that runs with different names may execute concurrently against the same
+      // repository, so two names on one checkout is the ordinary case rather than the odd one — and
+      // while the name was in the key, both of those runs were let in, to one tree on one branch,
+      // which is the sharing BR-013 grants no exception to. The key is held in a binding rather than
+      // spelled at each of its three uses so the test, the claim and the release cannot come apart.
+      //
+      // What this does not cover, said plainly rather than deferred to a lock that does not cover it
+      // either: a second awcli *process* on the same checkout. A map in this process cannot see one,
+      // and AWCLI-07's run lock is per name — `.awcli/run/<runName>/lock`, BR-010 — so it refuses a
+      // second run of the same name and lets a differently-named one straight through. Two processes
+      // under this flag on one checkout therefore still share it. Closing that needs a lock on the
+      // checkout itself, which nothing here is.
+      const key = root;
       if (liveCheckoutsHeld.has(key)) {
         refuse(
           "live-checkout-already-held",
-          `awcli will not give the "${slot}" slot your checkout at ${printable(root, PATH_LIMIT)} for the "${runName}" run: this run already has it, and a checkout is one working copy on one branch however many slots ask for it. Two agents in there would overwrite each other's work with no record of which result is which, so awcli refuses rather than sharing it. Nothing was provisioned and your checkout is untouched. Run the agents that need their own working copy without ${LIVE_CHECKOUT_FLAG} — awcli provisions each a worktree of its own — or run them one after another.`,
+          `awcli will not give the "${slot}" slot your checkout at ${printable(root, PATH_LIMIT)} for the "${runName}" run: ${holderPhrase(liveCheckoutsHeld.get(key))} has it, and a checkout is one working copy on one branch however many slots or runs ask for it. Two agents in there would overwrite each other's work with no record of which result is which, so awcli refuses rather than sharing it. ${LIVE_CHECKOUT_FLAG} is the operator's opt-in to awcli working in the checkout at all (BR-014); it is not an opt-in to two agents working in it at once, which is BR-013 and has no exception. Nothing was provisioned and your checkout is untouched. Run the agents that need their own working copy without ${LIVE_CHECKOUT_FLAG} — awcli provisions each a worktree of its own — or run them one after another.`,
         );
       }
-      liveCheckoutsHeld.add(key);
+      liveCheckoutsHeld.set(key, runName);
       liveClaim = key;
-      return await openLiveTree(git, root, slot, refuse);
+      try {
+        return await openLiveTree(git, root, slot, refuse);
+      } catch (error) {
+        // Every exit from the open that is not a handle gives the claim back, and it has to happen
+        // here because nothing else can: `DisposalStack` splices a failed `open` out of its entries,
+        // so `release` is never called for one (disposal.ts). Without this, a single `detached-head`
+        // refusal held the checkout for the rest of the process, and every later live acquisition
+        // was refused — naming, as the run that holds it, a run that is not running.
+        liveCheckoutsHeld.delete(key);
+        liveClaim = undefined;
+        throw error;
+      }
     },
     // Nothing *on disk*. A working copy is preserved, so there is nothing to undo — and for a live
     // checkout this is the whole point: releasing it must not touch the operator's tree in any way at
@@ -793,18 +827,43 @@ const NO_HOOKS: readonly string[] = [
 ];
 
 /**
- * The live checkouts held right now, keyed by repository root and run.
+ * The live checkouts held right now: each one keyed on the repository it is, and carrying the name
+ * of the run holding it.
  *
  * Module scope because that is the scope of the thing it protects: `ctx.sandbox` hands a workflow
  * several slots inside one run in one process, so two `sandbox()` calls under `--live-checkout` are
- * two acquisitions in *this* process and a set here sees both. It is not a lock and does not pretend
- * to be one — a second awcli process on the same checkout is AWCLI-07's run lock, not this.
+ * two acquisitions in *this* process and a map here sees both.
  *
- * Keyed on the root git reported rather than on the path the caller passed, so two spellings of one
- * checkout are one entry. Released on `release`, which keeps the rule about *concurrent* agents and
- * lets a run that has finished with the checkout take it again.
+ * The key is the root git reported and nothing else — not the path the caller passed, so two
+ * spellings of one checkout are one entry, and not the run name either. Keying on the run was this
+ * unit's first cut and it did not hold BR-013: BR-011 states that runs with different names may
+ * execute concurrently against the same repository, so a per-run key admitted the concurrency the
+ * rule forbids in the very case the rules say to expect it.
+ *
+ * The run name is the value because the refusal has to name the holder, and once the key is the root
+ * alone the holder may be a run other than the one being refused.
+ *
+ * It is not a lock and it does not pretend to be one, and the residual is worth stating rather than
+ * handing on: a second awcli *process* on the same checkout is invisible here, and AWCLI-07's run
+ * lock does not cover it either, being per name — so it refuses a second run called `triage` and
+ * lets a run called anything else past. Two processes under `--live-checkout` on one checkout still
+ * share it. Only a lock on the checkout would close that, and this is not one.
+ *
+ * Released on `release`, which keeps the rule about *concurrent* agents and lets a run that has
+ * finished with the checkout take it again — and on every failed open, which `release` never sees.
  */
-const liveCheckoutsHeld = new Set<string>();
+const liveCheckoutsHeld = new Map<string, string>();
+
+/**
+ * Which run holds the live checkout, as the refusal's sentence says it.
+ *
+ * `Map.get` cannot be told what the `has` above it has just decided, so the absent case has to be
+ * written even though the guard makes it unreachable. It is written as a true sentence rather than
+ * falling back to the refused run's own name: a fallback naming the wrong run would put back,
+ * silently and only in the case nobody can reach, the untruth that keying on the run had put there.
+ */
+const holderPhrase = (holder: string | undefined): string =>
+  holder === undefined ? "another run in this process" : `the "${holder}" run`;
 
 /** Thrown out of the acquisition so an operator-fixable condition becomes a refusal, not a throw. */
 class WorkspaceRefusedError extends Error {

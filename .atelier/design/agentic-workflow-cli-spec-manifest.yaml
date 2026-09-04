@@ -20,8 +20,13 @@ metadata:
   # that changed no rule and no scenario, and that one is not. Cited by subject
   # rather than counted, because a count restated here goes stale when a row is
   # added there and this one did.
+  # Round 8 of the same PR then widened BR-014's Exceptions and added a
+  # scenario to BR-013, for a refusal the code had shipped and no rule,
+  # scenario or criterion declared — so `amended` moves again, and the
+  # scenario counts below move with it. BR-014 was already among the
+  # rewritten, so the rule counts do not.
   # `updated` tracks this file; `amended` tracks the corpus it describes.
-  amended: "2026-09-02"
+  amended: "2026-09-04"
   amendments_status: pending-pm-re-approval
 
 requirements:
@@ -52,15 +57,16 @@ requirements:
       - contract-discipline
   scenarios:
     path: design/agentic-workflow-cli-bdd.feature
-    # Approved 2026-08-24 at 60; eighteen added since, and one of the sixty
-    # rewritten — so 59 approved / 19 pending. Three further rewrites were of
-    # scenarios added earlier in the same PR and are inside the eighteen, not
-    # additional to them.
+    # Approved 2026-08-24 at 60; nineteen added since, and one of the sixty
+    # rewritten — so 59 approved / 20 pending. Three further rewrites were of
+    # scenarios added earlier in the same PR and are inside the nineteen, not
+    # additional to them. The nineteenth is BR-013's second scenario, added in
+    # PR #15 round 8 to declare the live-checkout refusal the code already had.
     status: approved-with-pending-amendments
     approved_baseline_count: 60
     approved_unchanged_count: 59
-    pending_count: 19
-    count: 78
+    pending_count: 20
+    count: 79
   flows:
     path: design/agentic-workflow-cli-flows.md
     count: 7

@@ -98,6 +98,53 @@ describe("what provisioning refuses rather than does: the repository itself", ()
   });
 
   /**
+   * The refusal above, and what it left behind.
+   *
+   * BR-013's claim on the live checkout is taken before the branch is read, so that a second slot is
+   * refused without anything being opened. That put the claim on the near side of every exit from
+   * the open that is not a handle — and nothing gave it back: `DisposalStack` splices a failed
+   * `open` out of its entries, so the `release` that drops the claim is never called for one.
+   *
+   * One detached head therefore poisoned the whole process. Every later live acquisition, in any
+   * run, was refused as already held — and told to run the holder's agents differently, naming a run
+   * that was not running. The condition the operator actually had to fix was on a branch they had
+   * already checked out by then.
+   */
+  it("gives the live checkout back when the open refuses, rather than holding it for the process", async () => {
+    const repositoryPath = await repository();
+    await git(
+      repositoryPath,
+      "-c",
+      "advice.detachedHead=false",
+      "checkout",
+      "-q",
+      "--detach",
+    );
+
+    const refused = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+    });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.kind).toBe("detached-head");
+
+    // The operator does what the refusal told them to do.
+    await git(repositoryPath, "checkout", "-q", "main");
+
+    const outcome = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.workspace.dir).toBe(repositoryPath);
+    expect(outcome.workspace.branch).toBe("main");
+  });
+
+  /**
    * A mistyped `--repo`, which used to be reported as a machine with no git.
    *
    * `execFile` raises ENOENT for a missing binary and for a missing `cwd` alike, so the unconditional

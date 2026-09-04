@@ -337,6 +337,7 @@ text, `usage` possibly unknown (ADR-0004).
 - **Acceptance Criteria:**
   - [ ] *The default protects my checkout* / *Working on the live checkout requires asking for it*
   - [ ] *Parallel agents never share a working copy*
+  - [ ] *A second agent is refused my live checkout rather than sharing it*
   - [ ] *Resuming a run reattaches the branch it already had*
   - [ ] *Resuming restores the work and says what it inherited*
   - [ ] *Starting fresh discards state and working copies together*

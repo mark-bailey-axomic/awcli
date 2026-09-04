@@ -19,6 +19,7 @@ import {
   checkout,
   branches,
   TRIAGE,
+  runName,
   consented,
 } from "./workspace-support.js";
 
@@ -259,6 +260,67 @@ describe("provisioning a working copy", () => {
       runName: TRIAGE,
       choice: consented(),
       slot: "builder",
+    });
+    expect(third.ok).toBe(true);
+  });
+
+  /**
+   * A scenario of the feature file's, @BR-013, named verbatim by the it() below.
+   *
+   * The scenario is about a second agent and not about a second *run*, because that is the level an
+   * operator meets it at; the reason it is written as a test about two runs is BR-011, and it is
+   * this. BR-013 read against BR-011, which is the pair the first cut of this guard got wrong. That cut
+   * keyed the claim on the repository *and the run name*, so it caught two slots of one run and let
+   * two runs straight through — and BR-011 says in as many words that "runs with different names may
+   * execute concurrently against the same repository", which makes two names on one checkout the
+   * ordinary case rather than a corner. Two of them under `--live-checkout` shared one tree on one
+   * branch with nothing refusing, which is what BR-013's "Exceptions. None." forbids.
+   *
+   * The run lock the old key leaned on does not cover it either: it is per name
+   * (`.awcli/run/<runName>/lock`, BR-010), so it refuses a second `triage` and lets a `review` past.
+   *
+   * The refusal has to name the holder, and this is the case that made it necessary: the run being
+   * refused is not the run that has it, so "this run already has it" was false exactly here.
+   */
+  it("A second agent is refused my live checkout rather than sharing it", async () => {
+    const repositoryPath = await repository();
+    const before = await checkout(repositoryPath);
+
+    const stack = new DisposalStack();
+    const first = await acquireWorkspace(stack, {
+      repositoryPath,
+      runName: TRIAGE,
+      choice: consented(),
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.workspace.dir).toBe(repositoryPath);
+
+    // A different run, in the same process, while the first still holds the checkout.
+    const second = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: runName("review"),
+      choice: consented(),
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.kind).toBe("live-checkout-already-held");
+    expect(second.run).toBe("review");
+    // Named, because the remedy is one the operator can only act on if they know whose it is.
+    expect(second.message).toContain('the "triage" run has it');
+    // And the opt-in is placed rather than argued with: it grants the checkout, not two agents in it.
+    expect(second.message).toContain("BR-013");
+    // Nothing was done to the operator's checkout on the way to refusing.
+    expect(await checkout(repositoryPath)).toEqual(before);
+    expect(existsSync(join(repositoryPath, ".awcli"))).toBe(false);
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+
+    // Released, the checkout is available to the other run — the rule is about concurrency.
+    await stack.unwind();
+    const third = await acquireWorkspace(new DisposalStack(), {
+      repositoryPath,
+      runName: runName("review"),
+      choice: consented(),
     });
     expect(third.ok).toBe(true);
   });
