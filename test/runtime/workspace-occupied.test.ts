@@ -718,10 +718,12 @@ describe("what provisioning refuses rather than does: something at the target", 
     expect(existsSync(target)).toBe(false);
     expect(await branches(repositoryPath)).toEqual(["main"]);
 
-    // And the fault invents no leftovers to go with it. Both halves of the tidying succeeded here,
-    // and a successful `git branch -D` is proof that no working copy held the ref — so there is
-    // nothing at that path and nothing registered for it, and a sentence naming an unlock and a
-    // forced removal would send the operator hunting for something that is not there.
+    // And the fault invents no leftovers to go with it. Both halves of the tidying succeeded here:
+    // the delete's zero exit proves the ref was still the commitless sha the cut put it at and is
+    // gone, and the `rmdir`'s proves nothing was ever written under the target — which is an add
+    // that registered nothing either, since git registers a working copy at the start of an add and
+    // writes into it. So there is nothing at that path and nothing registered for it, and a sentence
+    // naming an unlock and a forced removal would send the operator hunting for what is not there.
     expect(message).not.toContain("git worktree unlock");
     expect(message).not.toContain("still there");
 
@@ -799,13 +801,26 @@ describe("what provisioning refuses rather than does: something at the target", 
    * with a real add and a real lock, because every claim the fault makes is a claim about what git
    * then refuses.
    *
-   * `undoOwnBranch` clears none of it — `rmdir` exits ENOTEMPTY and `git branch -D` exits 1 naming
-   * the worktree that holds the ref — and both statuses used to be discarded, so what awcli threw
-   * was the raw runner line: it named no leftover and its silence read as a successful tidy-up. The
-   * next invocation of this run and slot was then refused over each leftover in turn, with every
-   * command awcli names anywhere failing: the removal exits 128 on a locked tree, `--force` too, and
-   * `git worktree prune` leaves the entry listed. So the commands this fault names are a different
-   * set from every other message in the module, and they are run here in the order it gives them.
+   * `undoOwnBranch` clears exactly one of the three, and which one moved when the delete stopped
+   * being `git branch -D`. `rmdir` exits ENOTEMPTY either way. The delete now succeeds: nothing has
+   * moved the ref off the sha the cut put it at, and a registration holding a branch does not stop
+   * `git update-ref -d` the way it stops `git branch -D` — measured on git 2.55 with the entry locked
+   * `initializing`, where the `branch -D` exits 1 with `used by worktree at` and the `update-ref -d`
+   * exits 0. So the branch goes back and the registration is what is left, which is the right
+   * division: the branch was awcli's and provably still commitless, and the registration is git's.
+   *
+   * Both statuses used to be discarded, so what awcli threw was the raw runner line: it named no
+   * leftover and its silence read as a successful tidy-up. The next invocation of this run and slot
+   * was then refused over each leftover in turn, with every command awcli names anywhere failing: the
+   * removal exits 128 on a locked tree, `--force` too, and `git worktree prune` leaves the entry
+   * listed. So the commands this fault names are a different set from every other message in the
+   * module, and they are run here in the order it gives them.
+   *
+   * The removal it names is the forced one here, and that is a consequence of the delete rather than
+   * a preference: with the ref gone git lists the registration with a null `HEAD`, so plain
+   * `git worktree remove` has nothing to compare the tree against and exits 128 with `contains
+   * modified or untracked files, use --force to delete it`. Measured on git 2.55 after the unlock:
+   * plain `remove` exits 128, `remove -f` exits 0, and `remove -f -f` exits 0 in one step.
    */
   it("names what a killed add left behind, and the commands that clear it", async () => {
     const repositoryPath = await repository();
@@ -832,14 +847,19 @@ describe("what provisioning refuses rather than does: something at the target", 
     const message = thrown instanceof Error ? thrown.message : "";
     // git's own line survives, because it is the only thing that says what happened.
     expect(message).toContain("killed by SIGKILL");
-    // And the three leftovers are named rather than left for the next run to discover.
+    // And the two leftovers are named rather than left for the next run to discover.
     expect(message).toContain(target);
-    expect(message).toContain("awcli/triage/main");
     expect(message).toContain("git worktree list");
-    // Not a claim that awcli put anything back: it put back neither.
-    expect(message).toContain("could not put back either");
+    // The branch went back, and the directory did not, so the fault has to say it that way round —
+    // a discarded exit status produces the reverse, and either reversal sends the operator hunting.
+    expect(message).toContain("deleted the branch it had cut");
+    expect(message).toContain("could not remove");
+    expect(message).not.toContain("could not put back either");
     expect(existsSync(target)).toBe(true);
-    expect(await branches(repositoryPath)).toEqual(["awcli/triage/main", "main"]);
+    expect(await branches(repositoryPath)).toEqual(["main"]);
+    // And with the ref gone the registration dangles, which is why the removal named below is the
+    // forced one: git has no HEAD to compare the part-checked-out tree against.
+    expect(await worktreeCount(repositoryPath)).toBe(2);
 
     // The commands every other refusal in this module names, and what git does with them here.
     await expect(git(repositoryPath, "worktree", "remove", target)).rejects.toThrow(
@@ -848,9 +868,6 @@ describe("what provisioning refuses rather than does: something at the target", 
     await expect(
       git(repositoryPath, "worktree", "remove", "--force", target),
     ).rejects.toThrow(/cannot remove a locked working tree/);
-    await expect(
-      git(repositoryPath, "branch", "-d", "awcli/triage/main"),
-    ).rejects.toThrow(/used by worktree at/);
     // `prune` is the command the sibling refusals offer for a stale registration, and it is the
     // reason the unlock has to be named here at all: it leaves a locked entry listed, so it cannot
     // be the whole remedy on this path.
@@ -859,17 +876,17 @@ describe("what provisioning refuses rather than does: something at the target", 
 
     // Then the sequence it does name, lifted out of the sentence and run by a shell in that order.
     const unlock = /"(git worktree unlock [^"]+)"/.exec(message)?.[1];
-    const remove = /"(git worktree remove '[^"]+)"/.exec(message)?.[1];
+    const remove = /"(git worktree remove -f '[^"]+)"/.exec(message)?.[1];
     expect(unlock).toBeDefined();
     expect(remove).toBeDefined();
     await shell(repositoryPath, unlock ?? "");
     await shell(repositoryPath, remove ?? "");
-    // The delete the residual names, before it is run: the same unwatched-literal hole as the locked
-    // refusal above, on the one message in the module that is a *fault* rather than a refusal — and
-    // the state it is written for is a killed add, whose branch may already carry an agent's commits.
-    expect(message).toContain("git branch -d awcli/triage/main");
+    // And no branch delete is offered, because there is no branch left to delete: awcli's own delete
+    // is conditioned on the sha it cut, so a zero exit means the ref is gone. Naming `git branch -d`
+    // here would be the same invented leftover the residual's three arms exist to stop — and no
+    // message here offers `-D` as a command to type, awcli's own delete included.
+    expect(message).not.toContain("git branch -d");
     expect(message).not.toContain("git branch -D");
-    await git(repositoryPath, "branch", "-d", "awcli/triage/main");
     expect(await worktreeCount(repositoryPath)).toBe(1);
 
     // And the run and slot are usable again, which is the whole of what the advice is for.

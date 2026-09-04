@@ -50,31 +50,53 @@ import {
  *     rather than by an intention: the empty directory it created moments earlier when git then
  *     failed (`rmdir` refuses a directory with anything in it, which is what holds it to "empty"),
  *     and the branch its own `git branch` cut when the `git worktree add` after it then failed —
- *     `undoOwnBranch` deletes that one, and the proof is the exit status rather than the ref: git
- *     refuses a name that already exists, so a zero exit from the cut is what establishes that the
- *     ref is awcli's and nobody else's. Reading the sha back could not have established it, which
- *     is why the two calls are split at all; see the note at the call site. Both removals are best
+ *     `undoOwnBranch` deletes that one, on two proofs rather than one. *Ownership* is the cut's exit
+ *     status rather than the ref: git refuses a name that already exists, so a zero exit from the cut
+ *     is what establishes that the ref is awcli's and nobody else's, and reading the sha back could
+ *     not have established it, which is why the two calls are split at all; see the note at the call
+ *     site. *Commitlessness* is the delete itself — `git update-ref -d refs/heads/<b> <sha>` names
+ *     the sha the cut used as the ref's expected old value, and git refuses to remove a ref that is
+ *     at anything else. That half used to be a sentence in this comment rather than a check, and the
+ *     window it was asserted across is the whole of a `git worktree add`: up to the 120s bound, with
+ *     an agent's `git commit` the ordinary thing that lands on such a ref. `git branch -D` deletes
+ *     wherever the ref points *at delete time*, so a commit that landed in the window was destroyed
+ *     by the one module whose stated rule is that provisioning never destroys. Measured on git 2.55:
+ *     `git branch -D` on a ref that has moved off the cut sha exits 0 and reports `(was <B>)`, while
+ *     `git update-ref -d <ref> <A>` on the same ref exits 1 with `cannot lock ref '<ref>': is at <B>
+ *     but expected <A>` and leaves it alone — atomically, under the ref lock, rather than as a
+ *     check-then-use pair something could be raced through. Both removals are best
  *     effort, and the fault names what actually went back rather than implying either did — which
  *     is the honest version of a promise this docblock used to make unconditionally. `Undone` has a
  *     third answer for the delete, because "what went back" is a claim about what git said and the
  *     git-never-ran failure shapes — a git that could not be found, a git that could not be started,
  *     and a repository directory that has gone — are three of the six: see `Undone.branch`. A
- *     `git worktree add` killed by a signal (the OOM case `git-process.ts` documents at length) is
- *     the state where neither works: it leaves a part-checked-out target, a registration git holds
- *     `locked initializing`, and the branch, and in that state `rmdir` fails with ENOTEMPTY and
- *     `git branch -D` exits 1 because a working copy still holds the ref. Measured on git 2.55.
- *     awcli cannot clear a locked registration — `git worktree remove` refuses one, `--force`
- *     included — and does not claim to have; `undoOwnBranch` reports what it managed and the
+ *     `git worktree add` killed by a signal (the OOM case `git-process.ts` documents at length)
+ *     leaves a part-checked-out target, a registration git holds `locked initializing`, and the
+ *     branch — and exactly one of awcli's two removals works there. `rmdir` fails with ENOTEMPTY.
+ *     The delete succeeds, because nothing moved the ref and a registration holding a branch does
+ *     not stop `git update-ref -d` the way it stops `git branch -D`: measured both ways on git 2.55
+ *     with the entry locked `initializing`, where the `branch -D` exits 1 with `cannot delete branch
+ *     '<name>' used by worktree at '<path>'` and the `update-ref -d` exits 0. So the branch goes and
+ *     the registration is what is left; git then lists that entry with a null `HEAD`, which is why
+ *     the residual names the forced removal once the branch has gone — plain `git worktree remove`
+ *     has no HEAD to compare the part-checked-out tree against and exits 128. awcli cannot clear a
+ *     locked registration — `git worktree remove` refuses one, `--force` included — and does not
+ *     claim to have; `undoOwnBranch` reports what it managed and the
  *     message names the leftovers and the commands that do clear them. Leaving that branch
  *     behind is what is destructive: it made the run and slot permanently unusable and told the
  *     operator a branch they had never seen was in the way. Note also that the refusals *advise*
  *     `git worktree remove` and `git branch -d`: what awcli will not do on its own, an operator may
  *     well want to do, and the message's job is to name a command that works — `-d` and never `-D`,
- *     because a refusal is not the place to hand someone a command that discards commits.
+ *     because a refusal is not the place to hand someone a command that discards commits. That is
+ *     now true of awcli's *own* delete as well, which used to be the one `-D` in the file: `-D` is
+ *     in no argv awcli runs, and no message offers it as a command to type — where a message names
+ *     it at all, it is to say that git prints that form itself to insist with.
  *
  * awcli runs none of the repository's *hooks*, on every git call that can run one — four of them
  * today, reaching three hook names between them. `git branch` updates a ref and a ref update runs
- * `reference-transaction`, and so does `undoOwnBranch`'s delete on the failure path; `git worktree
+ * `reference-transaction`, and so does `undoOwnBranch`'s `git update-ref -d` on the failure path —
+ * verified on git 2.55 both ways: it fires the hook's `preparing`, `prepared` and `committed`
+ * phases, and fires nothing under this `core.hooksPath`; `git worktree
  * add` performs a checkout and a checkout runs `post-checkout`; and `dirty()`'s `git status` writes
  * the index whenever it has to refresh stat information, and writing the index runs
  * `post-index-change`. All three hooks resolve through the *shared* git dir and through the shared
@@ -1310,7 +1332,7 @@ async function openWorktree(
     [...NO_HOOKS, "worktree", "add", target, branch],
     repositoryPath,
   ).catch(async (error: unknown) => {
-    const undone = await undoOwnBranch(git, repositoryPath, branch, target);
+    const undone = await undoOwnBranch(git, repositoryPath, branch, head, target);
     // Enriched the way the cut's own catch is, which this handler was not. Three of the shapes that
     // reach it are a git that *ran* — the 120s timeout, an answer past the read bound, and a child
     // killed by a signal, which is the OOM case `git-process.ts` documents at length — and in the
@@ -1320,9 +1342,11 @@ async function openWorktree(
     // and the branch that registration holds. What was rethrown here was the raw runner line — `git
     // worktree add ... was killed by SIGKILL in <cwd>` — which names none of them, and awcli's
     // silence about its own tidying read as a claim that the tidying had worked. It had not: in that
-    // state `rmdir` exits ENOTEMPTY and `git branch -D` exits 1. `undoneResidual` says which of the
-    // two actually went back and names the commands that clear the rest; it says nothing when
-    // nothing is left, which is the ordinary case for the other two shapes.
+    // state `rmdir` exits ENOTEMPTY, and one of the three leftovers does go back — the branch, whose
+    // ref nothing has moved, which `git update-ref -d` removes even while a registration holds it.
+    // `undoneResidual` says which of the two awcli made actually went back and names the commands
+    // that clear the rest; it says nothing when nothing is left, which is the ordinary case for the
+    // other two shapes.
     const residual = undoneResidual(undone, branch, target);
     if (residual === "") throw error;
     // "Part-way through the checkout" only where git ran, which is the cut's own correction one
@@ -1350,8 +1374,11 @@ async function openWorktree(
     // above exited zero, which it does only when it created the ref. The empty directory goes only
     // while it is still empty — `rmdir` is what makes that a property rather than an intention, since
     // it refuses a directory with anything in it, including an add that got far enough to write
-    // something before failing, which is git's to account for and not awcli's to delete.
-    const undone = await undoOwnBranch(git, repositoryPath, branch, target);
+    // something before failing, which is git's to account for and not awcli's to delete. And the
+    // branch goes only while it is still the commitless ref the cut made: `head` is passed through so
+    // the delete can name it as the ref's expected old value, which is what makes *that* half a
+    // property rather than an intention too. See `undoOwnBranch`.
+    const undone = await undoOwnBranch(git, repositoryPath, branch, head, target);
     // Nothing awcli has a sentence for, then. Thrown rather than refused: a refusal claims awcli
     // knows what is wrong and what to do instead, and here it knows neither — but git does, and this
     // is the sentence that carries what it said, which the old `branch-exists` refusal replaced.
@@ -1898,8 +1925,10 @@ async function lateCollision(
  * inspecting the ref afterwards could and could not establish.
  *
  * Deleting a branch awcli cut inside the same failed call is not the destructive behaviour the module
- * docblock forswears; leaving it is. It has no commits on it — it points at the sha the preflight
- * read, moments ago — and left behind it makes the run and slot unusable for good. BR-036's
+ * docblock forswears; leaving it is. It had no commits on it when the cut made it — it points at the
+ * sha the preflight read, moments ago — and left behind it makes the run and slot unusable for good.
+ * That precondition is now *enforced* by the delete rather than asserted here; see the note in the
+ * body, which is where the window between the cut and this call is measured. BR-036's
  * Exceptions carry that carve-out, and the rule is where it belongs: it was written onto AWCLI-13's
  * Constraints and into this comment first, which left the rule a reader consults saying awcli never
  * deletes a branch automatically while this line does, with the reconciliation on a ticket that will
@@ -1913,17 +1942,24 @@ async function lateCollision(
  * What it *managed* comes back, and that is the correction rather than a convenience. Both outcomes
  * used to be discarded — the `rmdir` behind a swallowing `catch` and the delete's exit status not
  * looked at — so the fault the caller then threw said nothing about either and read as though awcli
- * had put everything back. Neither call succeeds in the state that matters. SIGKILL of
+ * had put everything back. Exactly one call succeeds in the state that matters. SIGKILL of
  * `git worktree add` mid-checkout — the OOM killer's own signal, where git's cleanup handler does not
- * run — leaves a part-checked-out target, so `rmdir` exits ENOTEMPTY, and leaves the registration
- * holding the branch, so `git branch -D` exits 1 with `cannot delete branch '<name>' used by worktree
- * at '<path>'`. Both measured on git 2.55, the second with the registration locked, which git counts
- * as holding the ref exactly as an ordinary one does.
+ * run — leaves a part-checked-out target, so `rmdir` exits ENOTEMPTY; the delete goes through,
+ * because nothing has moved the ref and a registration holding a branch does not stop
+ * `git update-ref -d` the way it stops `git branch -D`. Measured both ways on git 2.55 with the
+ * registration locked, which git counts as holding the ref exactly as an ordinary one does: the
+ * `branch -D` exits 1 with `cannot delete branch '<name>' used by worktree at '<path>'`, and the
+ * `update-ref -d` exits 0.
  *
- * The pair of statuses is also what lets the caller claim something rather than hedge everything: a
- * `git branch -D` that *succeeded* is proof that no working copy held the ref, since that is the one
- * reason git refuses one — so with the directory gone too, there is nothing of awcli's left and the
- * fault says nothing about leftovers. See `undoneResidual`.
+ * The pair of statuses is also what lets the caller claim something rather than hedge everything,
+ * and what each half now supports is worth stating exactly. A delete that *succeeded* proves two
+ * things about the ref — it was still the commitless sha the cut put it at, and it is now gone — and
+ * nothing at all about a registration, which is the deduction that went when the verb changed. So
+ * the "say nothing" case rests on the *directory*: git registers a working copy at the start of an
+ * add and writes into it, so a target that was empty enough for `rmdir` is an add that left no
+ * registration either. That is an inference rather than the proof it replaces, which is why
+ * `git worktree list` is the first thing the residual names whenever anything is left at all. See
+ * `undoneResidual`.
  */
 type Undone = {
   /**
@@ -1939,17 +1975,27 @@ type Undone = {
    */
   readonly directory: "removed" | "left-behind";
   /**
-   * What `git branch -D` said about the ref the cut created. Three answers rather than two, because
+   * What awcli's delete said about the ref the cut created. Three answers rather than two, because
    * the residual makes a claim that only one of them supports.
    *
-   * `deleted` is a zero exit. `left-behind` is a git that *ran* and refused, which is the only state
-   * in which "a working copy is still holding the ref" is a deduction rather than a guess — that
-   * being the one reason git refuses this delete. `no-answer` is everything else: git could not be
-   * started, its `cwd` had gone, or the runner gave up on it (the 120s timeout, an answer past the
-   * read bound, a child killed by a signal). In none of those did git say anything about the ref, so
-   * awcli knows neither whether it is there nor whether a command it might name would run.
+   * The delete is `git update-ref -d refs/heads/<branch> <sha>`, naming the sha the cut used, so
+   * every answer here is an answer about a ref awcli can still prove is the commitless one it made.
    *
-   * Collapsing `no-answer` into `left-behind` is how the wrong version of this shipped: on the two
+   * `deleted` is a zero exit, and it says two things: the ref was still at that sha, and it is gone
+   * now. It says nothing about a worktree registration — `git update-ref -d` removes a ref a
+   * registration holds, measured on git 2.55 with the entry locked `initializing`, where
+   * `git branch -D` exits 1 instead. `left-behind` is a git that *ran* and refused, and what that
+   * licenses is that awcli would not delete: the ref is no longer at the sha the cut put it at —
+   * someone has committed on it, or moved it — or git could not lock it. Either way the branch may
+   * carry work now, which is the case the old-value argument exists for, so awcli leaves it. It is
+   * *not* the old deduction that a working copy is holding the ref; that was the one reason
+   * `git branch -D` refused, and it is no longer the command. `no-answer` is everything else: git
+   * could not be started, its `cwd` had gone, or the runner gave up on it (the 120s timeout, an
+   * answer past the read bound, a child killed by a signal). In none of those did git say anything
+   * about the ref, so awcli knows neither whether it is there nor whether a command it might name
+   * would run.
+   *
+   * Collapsing `no-answer` into `left-behind` is how the wrong version of this shipped: on the
    * shapes where git never ran at all, the residual told the operator the branch had survived
    * *because git refused the delete*, and then handed them four git commands to run in a repository
    * the same fault had just said git could not be reached in.
@@ -1961,6 +2007,7 @@ async function undoOwnBranch(
   git: GitRunner,
   repositoryPath: string,
   branch: string,
+  head: string,
   target: string,
 ): Promise<Undone> {
   const directory = await rmdir(target).then(
@@ -1975,14 +2022,35 @@ async function undoOwnBranch(
   // `NO_HOOKS` here too: this is a ref update like the cut it undoes, so it runs
   // `reference-transaction` out of the shared git dir without it — and it runs on the *failure* path,
   // where an operator is already being handed a fault and is least able to account for a hook that
-  // fired. `-D` and not `-d` is deliberate and is the one place in this file where it is: the branch
-  // is provably awcli's own (`git branch` exited zero, which it does only when it created the ref) and
-  // provably commitless (it points at the sha the preflight read moments ago), so there is nothing for
-  // `-d` to protect and its merged-ness check would leave the leak behind on a repository whose HEAD
-  // has moved. Every *operator-facing* remedy names `-d`; see `collisionMessage`.
-  const deleted = await git([...NO_HOOKS, "branch", "-D", branch], repositoryPath).catch(
-    () => undefined,
-  );
+  // fired. Verified on git 2.55 both ways: `git update-ref -d <ref> <sha>` fires the hook's
+  // `preparing`, `prepared` and `committed` phases, and the same call under this `core.hooksPath`
+  // fires nothing.
+  //
+  // `git update-ref -d` with the cut's own sha rather than `git branch -D`, and the sha is the whole
+  // of it. Two things have to hold for a delete with no operator in the loop, and only one of them
+  // was ever checked. The branch is awcli's: `git branch` exited zero, which it does only when it
+  // created the ref. The branch is commitless: this comment used to *assert* that — "it points at the
+  // sha the preflight read moments ago" — and nothing looked. The window between the cut and here is
+  // the whole of a `git worktree add`, up to `GIT_TIMEOUT_MS` of it, and an agent's `git commit` is
+  // the ordinary thing that lands on such a ref. `git branch -D` deletes wherever the ref points *at
+  // delete time* and reports `(was <sha>)` on its way out, so a commit landing in that window was
+  // destroyed by the module whose stated rule is that provisioning never destroys, silently, on its
+  // own cleanup path. `-d` was not the fix either: its merged-ness check answers a question about the
+  // operator's history — it passes for a commitless branch off an unmoved HEAD and refuses one whose
+  // HEAD has moved — rather than about whether this ref is still the one awcli cut.
+  //
+  // The old-value argument turns the assertion into a check, and does it atomically: git compares
+  // under the ref lock, so there is no window of awcli's own between reading the sha and removing the
+  // ref. Measured on git 2.55 — `git update-ref -d refs/heads/b <A>` exits 0 while the ref is at
+  // `<A>`, and exits 1 with `cannot lock ref 'refs/heads/b': is at <B> but expected <A>` once
+  // anything has moved it, leaving the ref and its commits where they are. So a non-zero exit here is
+  // awcli *declining* to delete rather than awcli failing to; see `Undone.branch`. Every
+  // operator-facing remedy names `-d`, and this call was the one `-D` awcli itself ran; there is
+  // now no argv in this module carrying it. See `collisionMessage`.
+  const deleted = await git(
+    [...NO_HOOKS, "update-ref", "-d", `refs/heads/${branch}`, head],
+    repositoryPath,
+  ).catch(() => undefined);
   // The raw runner is used here rather than `run`, so the two no-git outcomes arrive as *values* and
   // can be told from a refusal instead of being flattened into one. That distinction is the whole of
   // why `no-answer` exists: `left-behind` is a claim about what git said, and git that did not run
@@ -2001,29 +2069,44 @@ async function undoOwnBranch(
 /**
  * What awcli did not manage to put back, and the commands that clear what is left.
  *
- * Nothing at all when both went back, which is a claim the pair of statuses supports rather than a
- * hopeful default: git refuses `git branch -D` for a branch a working copy holds, so a delete that
- * exited zero says no registration held this run's ref, and with the directory gone as well there is
- * nothing of awcli's for the operator to find. Saying nothing is then the right answer — a fault
- * that lists three hypothetical leftovers on the ordinary failing-add path buries git's own
- * complaint, which is the sentence the operator actually needs.
+ * Nothing at all when both went back, and what each status supports is where the verb change lands.
+ * A delete that exited zero proves the ref was still the commitless sha the cut put it at and that
+ * it is gone; it proves nothing about a registration, which is what `git branch -D` used to give for
+ * free by refusing one. So the silence rests on the *directory* instead: git registers a working copy
+ * at the start of an add and writes into it, so a target empty enough for `rmdir` is an add that left
+ * no registration either. Weaker than the deduction it replaces, and the right trade — a fault that
+ * lists three hypothetical leftovers on the ordinary failing-add path buries git's own complaint,
+ * which is the sentence the operator actually needs, and `git worktree list` is the first thing named
+ * the moment anything *is* left.
  *
  * And a third answer that is neither: `no-answer` says git never told awcli anything about the ref,
- * so the arm for it claims nothing about why the branch survived and conditions every command on a
- * git that can be run again. The two confident arms are deductions from what git *said* — a refusal
- * means a working copy holds the ref — and applying either to a git that never ran produced a fault
- * asserting three false things and naming four commands that could not be typed.
+ * so the arm for it claims nothing about the branch's fate and conditions every command on a git that
+ * can be run again. The two confident arms are readings of what git *said* about a delete conditioned
+ * on a sha, and applying either to a git that never ran produced a fault asserting three false things
+ * and naming four commands that could not be typed.
+ *
+ * The `left-behind` arms say what awcli knows and no more, which is a better sentence than the one
+ * they replace rather than a weaker one: awcli would not delete that branch, because the ref is no
+ * longer at the sha it cut the branch at, or git could not lock it — so there may be work on it, and
+ * awcli protected it. What they must not say is the old deduction that a working copy is holding the
+ * ref: that was the one reason `git branch -D` refused, and it is no longer the command.
  *
  * When something *is* left, the commands named are the ones that work in that state, and they are
  * not the set every other remedy in this module names. A registration `git worktree add` abandoned is
  * locked with the reason `initializing`, and on a locked registration `git worktree remove` exits 128
  * and so does `--force` — git asks for `-f -f` — while `git worktree prune` leaves the entry listed
  * even once its directory has gone. So `unlock` then `remove`, or `remove -f -f`, is the pair that
- * clears it, and the branch delete only works after that. All measured on git 2.55. Shared by the
- * add's two failure exits because the residual and the next step are the same on both.
+ * clears it. The removal is the forced one where awcli's own delete took the branch, and that is a
+ * consequence of the delete rather than a preference: with the ref gone git lists the entry with a
+ * null `HEAD`, so plain `remove` has nothing to compare the tree against and exits 128 with
+ * `contains modified or untracked files, use --force to delete it`. All measured on git 2.55 —
+ * after the unlock, plain `remove` exits 128, `remove -f` exits 0, `remove -f -f` exits 0 in one
+ * step. Shared by the add's two failure exits because the residual and the next step are the same on
+ * both.
  *
- * `-d` for the branch, as everywhere else operator-facing: awcli's own `-D` is justified where it is
- * used by a proof the operator does not have. And every path goes through `printable`/`shellPath`,
+ * `-d` for the branch, as everywhere else operator-facing, and named only where a branch is actually
+ * left: awcli's own delete is justified where it is used by a proof the operator does not have —
+ * that the ref is still the sha awcli cut it at. And every path goes through `printable`/`shellPath`,
  * because the target is a path and a message is a terminal.
  */
 function undoneResidual(undone: Undone, branch: string, target: string): string {
@@ -2039,10 +2122,10 @@ function undoneResidual(undone: Undone, branch: string, target: string): string 
         ? `awcli removed the directory it had made, but got no answer from git about deleting ${branch}: whatever stopped the add stopped that delete too, so awcli cannot say whether that branch is still there.`
         : `awcli could not account for either of the two things it made: there is something in ${where}, and it got no answer from git about deleting ${branch} — whatever stopped the add stopped that delete too, so it cannot say whether that branch is still there.`
       : undone.directory === "removed"
-        ? `awcli removed the directory it had made, but "git branch -D ${branch}" did not succeed, so that branch is still there.`
+        ? `awcli removed the directory it had made, but did not delete ${branch}: awcli's delete names the sha it cut that branch at, and git refused it — so that ref has moved off that sha, or git could not lock it. Either way there may be work on that branch now, and that is why awcli left it: "git branch --list ${branch}" says it is there and "git log ${branch}" says what is on it.`
         : undone.branch === "deleted"
           ? `awcli deleted the branch it had cut, but could not remove ${where}: there is something in it now, and awcli removes only a directory that is still empty.`
-          : `awcli could not put back either of the two things it made: there is something in ${where}, and ${branch} is still there — which is what git refusing that delete means, because the one reason it refuses is a working copy still holding the ref.`;
+          : `awcli could not put back either of the two things it made: there is something in ${where}, and it did not delete ${branch} — awcli's delete names the sha it cut that branch at, and git refused it, so that ref has moved off that sha or could not be locked. Either way there may be work on that branch now, and awcli will not delete one it cannot prove is still the commitless ref it cut.`;
   // The commands are the same set on all three, and on `no-answer` they are the same set *later*:
   // every one of them is a git invocation, and the state that produced `no-answer` is a git that
   // could not be run — in the `no-such-directory` shape, in a repository that is no longer there. So
@@ -2051,7 +2134,24 @@ function undoneResidual(undone: Undone, branch: string, target: string): string 
   // about has been dealt with, presented as the next thing to type.
   const once =
     undone.branch === "no-answer" ? "Once git can be run in that repository again, " : "";
-  return `${left} ${once}"git worktree list" says whether git also still has a working copy registered at that path. If it has, the entry will be locked with the reason "${INITIALIZING_LOCK}", and a locked one refuses "git worktree remove" and "--force" alike and survives "git worktree prune" even with its directory gone — so "git worktree unlock ${shellPath(target)}" and then "git worktree remove ${shellPath(target)}" is what clears it, or "git worktree remove -f -f ${shellPath(target)}" in one step. Then "git branch -d ${branch}" for the branch, which git refuses while a working copy still holds it.${unshowablePathNote(target)}`;
+  // Forced where awcli's own delete took the branch, for the reason the docblock measures: git lists
+  // a registration whose ref has gone with a null `HEAD`, and plain `remove` then has nothing to
+  // compare the part-checked-out tree against. On the other two answers a ref is still there for git
+  // to resolve that entry's `HEAD` from — `left-behind` means the delete was refused, not that the
+  // branch went — so the unforced form stays the right first thing to type, and it is also the least
+  // destructive default for `no-answer`, where awcli does not know.
+  const removal =
+    undone.branch === "deleted"
+      ? `"git worktree remove -f ${shellPath(target)}"`
+      : `"git worktree remove ${shellPath(target)}"`;
+  // Named only where there is a branch to name. awcli's delete is conditioned on the sha it cut, so a
+  // zero exit means the ref is gone — and sending the operator to `git branch -d` for a branch that
+  // is not there is the same invented leftover the three arms above exist to stop.
+  const thenTheBranch =
+    undone.branch === "deleted"
+      ? ""
+      : ` Then "git branch -d ${branch}" for the branch, which git refuses while a working copy still holds it.`;
+  return `${left} ${once}"git worktree list" says whether git also still has a working copy registered at that path. If it has, the entry will be locked with the reason "${INITIALIZING_LOCK}", and a locked one refuses "git worktree remove" and "--force" alike and survives "git worktree prune" even with its directory gone — so "git worktree unlock ${shellPath(target)}" and then ${removal} is what clears it, or "git worktree remove -f -f ${shellPath(target)}" in one step.${thenTheBranch}${unshowablePathNote(target)}`;
 }
 
 /**
@@ -2122,7 +2222,9 @@ function branchCollision(
  * this refusal is the only cleanup path a run has today, and the operator reading it has not been told
  * whether anything is on that branch. `-d` refuses an unmerged one and prints git's own `-D` hint, so
  * insisting costs one paste and not insisting costs nothing. Reproduced both ways on git 2.55.
- * `undoOwnBranch` still uses `-D`, and says there why that one is not this.
+ * `undoOwnBranch` names neither flag: its delete is `git update-ref -d refs/heads/<b> <sha>`,
+ * conditioned on the sha the cut put the ref at, and it says there why that proof is one an operator
+ * reading this refusal does not have. Nothing in this module now runs `-D` at all.
  *
  * And every sentence naming it says that it refuses, which is the half the swap from `-D` first left
  * behind: the arms asserted flatly that the command "deletes it", and the state this whole refusal

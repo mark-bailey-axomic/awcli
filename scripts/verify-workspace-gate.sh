@@ -51,7 +51,7 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 157 `expect_red` below plus that final run come to ~29 minutes by that
+# — so ~11.5s each. The 159 `expect_red` below plus that final run come to ~29 minutes by that
 # product, and the whole chain has since been timed at **40m33s end-to-end** — measured by review
 # run 8, not here. The per-mutation figure reproduces; the product is the thing that is wrong, and it
 # is ~45% low because parallel efficiency decays over the run — from 223% early to 139% late — as the
@@ -86,7 +86,10 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 # on the git subprocess itself: that a call awcli's own bound ended is a fault however `execFile`
 # settled — the resolve path, which had no anchor because the promisified form gives it nothing to
 # read a kill from — that the giving-up is bounded apart from the call it gives up on, and that no
-# PATH entry resolving out of the working directory reaches the child. The total grows
+# PATH entry resolving out of the working directory reaches the child. Run 9's sustain added two on
+# the one delete this module performs: that it is still the ref the cut made *at delete time*, which
+# the docblock beside it had asserted and nothing checked, and — the version a reviewer would not
+# flag on sight — that the sha is actually passed rather than the ref named on its own. The total grows
 # with every mutation added, which is the right trade and is why the per-mutation figure is quoted.
 #
 # Named in full rather than by glob so that a new file has to be added here deliberately: a suite this
@@ -766,10 +769,12 @@ expect_red "the branch remedy refuses rather than discards, on the arm git could
 expect_red "the occupied remedy refuses rather than discards, on the arm that names the unlock" src/runtime/workspace.ts \
   's/, and "git branch -d \$\{branch\}" the branch, which running this run and slot again/, and "git branch -D \$\{branch\}" the branch, which running this run and slot again/'
 
-# `undoneResidual` is the one message here that is a *fault* rather than a refusal, and the only one
-# whose state is a killed `git worktree add` — so the branch it names may carry an agent's commits
+# `undoneResidual` is the one message here that is a *fault* rather than a refusal, and the arms that
+# reach this sentence are the ones where awcli declined its own delete — so the branch it names is one
+# whose ref has moved off the sha the cut put it at, which is to say it may carry an agent's commits
 # with no working copy left to find them from. It names `-d` for the same reason every refusal does,
-# and `undoOwnBranch`'s own `-D` two functions away is the thing that makes the swap look idiomatic.
+# and the `-D` two functions away that used to make this swap look idiomatic is gone: awcli's own
+# delete carries no `-D` at all now.
 expect_red "the residual after a failed add refuses rather than discards" src/runtime/workspace.ts \
   's/Then "git branch -d \$\{branch\}" for the branch/Then "git branch -D \$\{branch\}" for the branch/'
 
@@ -1027,9 +1032,13 @@ expect_red "provisioning runs no hook for the branch it cuts either" src/runtime
   's/\[\.\.\.NO_HOOKS, "branch", branch, head\]/["branch", branch, head]/'
 
 # And on the tidying after a failed add, which is the third mutating call and the one that runs when
-# the operator is already being handed a fault.
+# the operator is already being handed a fault. `git update-ref` fires `reference-transaction` exactly
+# as `git branch` does — verified on git 2.55, which ran the hook's `preparing`, `prepared` and
+# `committed` phases for a plain `update-ref -d` and ran nothing for the same call under this
+# `core.hooksPath` — so the argument survived the delete's change of verb unchanged. Re-cut onto the
+# new argv rather than deleted.
 expect_red "the branch awcli deletes after a failed add runs no hook either" src/runtime/workspace.ts \
-  's/await git\(\[\.\.\.NO_HOOKS, "branch", "-D", branch\], repositoryPath\)\.catch\(/await git\(\["branch", "-D", branch\], repositoryPath\)\.catch\(/'
+  's/    \[\.\.\.NO_HOOKS, "update-ref", "-d", `refs\/heads\/\$\{branch\}`, head\],/    \["update-ref", "-d", `refs\/heads\/\$\{branch\}`, head\],/'
 
 # The cut's own two guards, which arrived with neither a test nor an anchor while the add's identical
 # pair had both. Deleting either left the whole suite green and leaked awcli's own empty
@@ -1105,38 +1114,64 @@ expect_red "a branch cut awcli has no sentence for carries what git said" src/ru
 # same leak by another route: a commitless branch, at the name this run and slot derive, making the
 # run name unusable on every later invocation until the operator deletes it by hand.
 expect_red "a failed add leaves no branch of awcli's own behind" src/runtime/workspace.ts \
-  's/  const deleted = await git\(\[\.\.\.NO_HOOKS, "branch", "-D", branch\], repositoryPath\)\.catch\(\n    \(\) => undefined,\n  \);/  const deleted = undefined;\n  void branch;/'
+  's/  const deleted = await git\(\n    \[\.\.\.NO_HOOKS, "update-ref", "-d", `refs\/heads\/\$\{branch\}`, head\],\n    repositoryPath,\n  \)\.catch\(\(\) => undefined\);/  const deleted = undefined;\n  void branch;\n  void head;/'
+
+# ── The branch awcli deletes is provably the commitless ref it cut, at delete time ──────────────
+# `git branch -D` restored, which is what this was for five review rounds — and the docblock beside it
+# justified the force-delete by the branch being "provably commitless (it points at the sha the
+# preflight read moments ago)", which nothing checked. `-D` deletes wherever the ref points *at delete
+# time*, and the window between the cut and the tidying is the whole of a `git worktree add`: up to
+# `GIT_TIMEOUT_MS`, with an agent's `git commit` the ordinary thing that lands on such a ref. So the
+# one module whose stated rule is that provisioning is never destructive destroyed commits on its own
+# cleanup path and reported a successful tidy-up. Measured on git 2.55: `git branch -D` on a ref that
+# has moved off the cut sha exits 0 and prints `(was <B>)`, while
+# `git update-ref -d <ref> <A>` on the same ref exits 1 with
+# `cannot lock ref '<ref>': is at <B> but expected <A>` and leaves the ref and its commits alone.
+expect_red "the branch awcli deletes is still the ref it cut, proved at delete time" src/runtime/workspace.ts \
+  's/    \[\.\.\.NO_HOOKS, "update-ref", "-d", `refs\/heads\/\$\{branch\}`, head\],/    \[\.\.\.NO_HOOKS, "branch", "-D", branch\],/'
+
+# And the subtler version, which is the one you get by keeping the verb and dropping the argument:
+# `git update-ref -d <ref>` with no old value removes the ref whatever it is at, so the atomic
+# compare-and-delete becomes an unconditional delete with none of the force-delete's obviousness. The
+# mutation above cannot reach it — that one changes the subcommand, and a reviewer reading this file
+# would flag `-D` on sight where a missing trailing argument reads like an ordinary call.
+expect_red "the branch delete names the sha the cut used, not just the ref" src/runtime/workspace.ts \
+  's/`refs\/heads\/\$\{branch\}`, head\],/`refs\/heads\/\$\{branch\}`\],/'
 
 # And the tidying skipped on the throw rather than the non-zero exit. `run` throws for a git that has
 # gone missing and for a `cwd` that has; the raw runner throws for the timeout, for `maxBuffer`, and
 # for a child killed by a signal. On any of those the target was claimed and nothing put it back, so
 # the next invocation of this run and slot was refused `occupied` over awcli's own empty leftover.
 expect_red "what awcli made goes back when the runner throws, not only when git exits" src/runtime/workspace.ts \
-  's/    const undone = await undoOwnBranch\(git, repositoryPath, branch, target\);\n    \/\/ Enriched the way/    const undone = \{ directory: "removed", branch: "deleted" \} as const;\n    \/\/ Enriched the way/'
+  's/    const undone = await undoOwnBranch\(git, repositoryPath, branch, head, target\);\n    \/\/ Enriched the way/    const undone = \{ directory: "removed", branch: "deleted" \} as const;\n    \/\/ Enriched the way/'
 
 # ── A failed add says what it left behind, and does not invent what it did not ──────────────
 # The raw runner line rethrown, which is what this handler did. Three of the shapes reaching it are a
 # git that *ran*, and the one this module documents at length is a child killed by a signal — the OOM
 # killer's own case, where git's cleanup handler never runs. Measured on git 2.55 by SIGKILLing an
 # add mid-checkout: it leaves a part-checked-out target, a registration git holds `locked
-# initializing`, and the branch that registration holds, and `undoOwnBranch` clears none of the
-# three. The line named none of them either, so the next invocation of this run and slot was refused
+# initializing`, and the branch that registration holds. `undoOwnBranch` clears exactly one of the
+# three — the branch, whose ref nothing has moved, and which `git update-ref -d` removes even while a
+# registration holds it (a `git branch -D` there exits 1; measured both ways). The line named none of
+# them either, so the next invocation of this run and slot was refused
 # over each leftover in turn with every command awcli names anywhere failing.
 expect_red "a killed add names the leftovers it could not put back" src/runtime/workspace.ts \
   's/    if \(residual === ""\) throw error;/    throw error;/'
 
 # And the other direction, which is the reason the residual is computed from the two exit statuses
 # rather than asserted: a fault that lists three hypothetical leftovers on the ordinary failing-add
-# path buries git's own complaint, which is the sentence the operator actually needs. A `git branch
-# -D` that exited zero is proof that no working copy held the ref — that is the one reason git refuses
-# one — so with the directory gone too there is nothing to name.
+# path buries git's own complaint, which is the sentence the operator actually needs. A delete that
+# exited zero proves the ref was still the commitless sha the cut put it at and is now gone, and a
+# `rmdir` that succeeded says nothing was ever written under the target — which is an add that left no
+# registration either, so there is nothing to name.
 expect_red "a failed add that did put everything back names no leftovers" src/runtime/workspace.ts \
   's/  if \(undone\.directory === "removed" && undone\.branch === "deleted"\) return "";/  if (false) return "";/'
 
-# And the delete's exit status discarded, which is how it shipped: `undoOwnBranch` ran `git branch -D`
+# And the delete's exit status discarded, which is how it shipped: `undoOwnBranch` ran its delete
 # behind a swallowing `catch` and never looked at what came back, so the fault could not have said
-# whether the branch went. In the state that matters it does not go — git refuses a delete while a
-# working copy holds the ref, locked or not, measured on git 2.55 — and reporting it as deleted is a
+# whether the branch went. In the state that matters it does not go — a commit landing on the branch
+# inside the add's own window moves the ref off the sha the delete names, and git then refuses under
+# the ref lock, measured on git 2.55 — and reporting it as deleted is a
 # claim about the operator's repository that awcli has no basis for.
 # And the arms collapsed into the worst one, which is the other direction of the same defect:
 # a fault that says awcli put back neither thing when it put back one of them sends the operator

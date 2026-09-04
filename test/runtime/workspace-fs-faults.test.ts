@@ -220,8 +220,8 @@ describe("git that stops answering half way through an acquisition", () => {
    * said `"git branch -D <branch>" did not succeed, so that branch is still there` — three claims,
    * on a shape where git never ran the delete at all: that git answered, that the answer was a
    * refusal, and (through the arm that wording selects) that a working copy is holding the ref,
-   * which is the one reason git refuses this delete. Underneath them came the module's locked-worktree
-   * remedy: `worktree list`, `unlock`, `remove`, `remove -f -f`, `branch -d` — five git invocations
+   * which was then read as the one reason git refuses this delete. Underneath them came the
+   * module's locked-worktree remedy: `worktree list`, `unlock`, `remove`, `remove -f -f`, `branch -d` — five git invocations
    * offered as the next thing to type, in a repository the same fault's first sentence has just said
    * git could not be run in. `Undone.branch`'s third answer is what tells that state from a refusal,
    * so the arm for it claims nothing about why the branch survived and conditions the commands on a
@@ -272,7 +272,7 @@ describe("git that stops answering half way through an acquisition", () => {
     async (scenario) => {
       const repositoryPath = await repository();
       const gone: GitRunner = async (args, cwd): Promise<GitOutcome> =>
-        args.includes("worktree") || args.includes("-D")
+        args.includes("worktree") || args.includes("update-ref")
           ? scenario.answer(cwd)
           : systemGitRunner(args, cwd);
 
@@ -327,9 +327,12 @@ describe("git that stops answering half way through an acquisition", () => {
  * onto a name nothing holds does not fail: every way it does fail is a fault of the machine.
  */
 describe("a branch cut that fails", () => {
-  /** Awcli's own `git branch <name> <sha>`, told apart from `undoOwnBranch`'s delete. */
+  /**
+   * Awcli's own `git branch <name> <sha>`, told apart from `undoOwnBranch`'s delete — which is
+   * `git update-ref -d refs/heads/<name> <sha>` and so carries `-d` where the cut carries nothing.
+   */
   const isTheCut = (args: readonly string[]): boolean =>
-    args.includes("branch") && !args.includes("-D") && !args.includes("-d");
+    args.includes("branch") && !args.includes("-d");
 
   it("carries git's own complaint when git refuses the branch", async () => {
     const repositoryPath = await repository();
@@ -446,6 +449,13 @@ describe("a branch cut that fails", () => {
         .filter((line) => line !== ""),
     ).toEqual(["main"]);
     expect(existsSync(worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT))).toBe(false);
+    // And the residual is empty, so the fault is git's own complaint and nothing else. That is the
+    // half the delete's old-value argument has to leave intact: a delete conditioned on a sha that
+    // never matches would satisfy the moved-ref test below on its own, and would leak awcli's own
+    // commitless branch on every ordinary failing add.
+    expect(message).not.toContain("git worktree list");
+    expect(message).not.toContain("still there");
+    expect(message).not.toContain("did not delete");
   });
 
   /**
@@ -575,6 +585,111 @@ describe("a branch cut that fails", () => {
         .filter((line) => line.length > 0),
     ).toEqual(["awcli/triage/main", "main"]);
     expect(existsSync(worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT))).toBe(false);
+  });
+});
+
+/**
+ * The window between the cut and the tidying, which is the whole of a `git worktree add`.
+ *
+ * `undoOwnBranch` deletes the branch awcli's own failed add cut, with no operator in the loop, and
+ * BR-036's Exceptions carve-out rests on two halves. The branch is awcli's, which the cut's zero exit
+ * proves — git refuses a name that already exists. And it carries no commits, which nothing checked:
+ * the delete was `git branch -D`, and `-D` deletes wherever the ref points *at delete time*. Between
+ * the cut and the delete sits the add, up to `GIT_TIMEOUT_MS` of it, and an agent's `git commit` is
+ * the ordinary thing that lands on such a ref in such a window. So the one module whose stated rule
+ * is that provisioning is never destructive destroyed commits on its own cleanup path, and said
+ * nothing about having done it.
+ *
+ * The delete names the sha the cut used as the ref's expected old value now —
+ * `git update-ref -d refs/heads/<branch> <sha>` — so git compares under the ref lock and refuses
+ * rather than deleting, with no window of awcli's own between the read and the delete. Measured on
+ * git 2.55: `git branch -D` on a moved ref exits 0 and prints `(was <B>)`, while
+ * `git update-ref -d <ref> <A>` on the same ref exits 1 with `cannot lock ref '<ref>': is at <B> but
+ * expected <A>` and leaves both the ref and its commits alone.
+ *
+ * A green-with-`-D` version of this test would have missed the whole of it, because with `-D` the
+ * fault reads as a successful tidy-up: the branch is gone, the commit is gone, and every assertion
+ * that only matched prose would pass. The one that cannot be satisfied by wording is the ref read
+ * back out of the repository, which is why the sha that landed in the window is named exactly rather
+ * than "some branch survived".
+ *
+ * Staged through the `git` seam, because the window cannot be reached against a real add: the cut and
+ * the tidying are consecutive awaits with nothing of a test's between them.
+ */
+describe("a commit landing on the branch while the add is in flight", () => {
+  it("leaves the branch alone rather than discarding the commit on it", async () => {
+    const repositoryPath = await repository();
+    const target = worktreePath(repositoryPath, TRIAGE, DEFAULT_SLOT);
+    let landed: string | undefined;
+    const commitLands: GitRunner = async (args, cwd): Promise<GitOutcome> => {
+      if (!(args.includes("worktree") && args.includes("add"))) {
+        return systemGitRunner(args, cwd);
+      }
+      // An agent's commit on awcli's own branch, built with `commit-tree` rather than by checking
+      // the branch out: what this test needs is that the ref moves off the sha the cut put it at,
+      // and that there is a commit object under it for a `-D` to destroy.
+      const cut = (
+        await git(repositoryPath, "rev-parse", "refs/heads/awcli/triage/main")
+      ).trim();
+      const tree = (await git(repositoryPath, "rev-parse", `${cut}^{tree}`)).trim();
+      landed = (
+        await git(repositoryPath, "commit-tree", tree, "-p", cut, "-m", "an agent's work")
+      ).trim();
+      // With the old value given, so this move is itself proof that the ref was still the cut's.
+      await git(
+        repositoryPath,
+        "update-ref",
+        "refs/heads/awcli/triage/main",
+        landed,
+        cut,
+      );
+      // And then the add fails, which is the only thing that sends awcli to the tidying at all.
+      return {
+        kind: "ran",
+        code: 128,
+        stdout: "",
+        stderr: "fatal: no space left on device\n",
+      };
+    };
+
+    const message = await faultFrom(repositoryPath, commitLands);
+
+    expect(message).toContain("git worktree add exited 128");
+    // The branch is still there, and still at the commit that landed. This is the assertion `-D`
+    // cannot pass: it exits zero, the ref goes, and the commit goes with it.
+    expect(
+      (
+        await git(
+          repositoryPath,
+          "for-each-ref",
+          "--format=%(refname:short)",
+          "refs/heads",
+        )
+      )
+        .split("\n")
+        .filter((line) => line.length > 0),
+    ).toEqual(["awcli/triage/main", "main"]);
+    expect(
+      (await git(repositoryPath, "rev-parse", "refs/heads/awcli/triage/main")).trim(),
+    ).toBe(landed);
+
+    // And the fault says awcli declined the delete and why, which is a better sentence than the one
+    // it replaces: awcli protected their commits rather than merely failing to tidy up.
+    expect(message).toContain("did not delete awcli/triage/main");
+    expect(message).toContain("names the sha it cut that branch at");
+    expect(message).toContain("there may be work on that branch");
+    // Not the deduction the old `-D` wording licensed, which awcli has never established here.
+    expect(message).not.toContain("a working copy still holding the ref");
+    expect(message).not.toContain("deleted the branch it had cut");
+    // The directory half did go back, so the residual names one leftover and not two.
+    expect(existsSync(target)).toBe(false);
+    expect(message).not.toContain("could not put back either");
+    // And the delete it offers for the branch it left is the refusing one. This is the one message
+    // in the module that is a *fault* rather than a refusal, and the branch it names is one that has
+    // just been shown to carry a commit — so `-D` is the last thing to hand an operator here.
+    expect(message).toContain("git worktree list");
+    expect(message).toContain("git branch -d awcli/triage/main");
+    expect(message).not.toContain("git branch -D");
   });
 });
 

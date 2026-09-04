@@ -54,10 +54,14 @@ deterministic so a resumed run can find what it made, and so an operator can rec
   that same attempt. The rule is where that lives — it was written here first, which left the rule a
   reader consults saying awcli never deletes a branch automatically while this code does, and put the
   reconciliation on a ticket that will be closed. What this ticket adds is the part that is about the
-  ticket: awcli's claim on that branch is provable rather than assumed, because `git branch` exits
-  zero only when it created the ref and the ref points at the commit the preflight read moments
-  earlier. Nothing else in provisioning deletes a branch, and no refusal names a delete that
-  discards commits.
+  ticket: *both* preconditions of that carve-out are proved rather than assumed. Ownership, because
+  `git branch` exits zero only when it created the ref. And commitlessness, because the delete is
+  `git update-ref -d refs/heads/<branch> <cut sha>` and git refuses to remove a ref that is at
+  anything else — the ref pointing at the commit the preflight read is a fact about the moment of the
+  cut, and the window before the rollback is the whole of the `git worktree add`, so `git branch -D`
+  would have discarded a commit that landed in it. Nothing else in provisioning deletes a branch, no
+  refusal names a delete that discards commits, and `-D` is in no argv this unit runs and is offered
+  as a command by no message it produces.
 - A message an operator is meant to act on names something that is actually there. Two halves, both
   found by review with nothing stating them: a remedy is a command that *runs*, which is why every
   path in one is shell-quoted and why a path holding a character a terminal will not show is named as
@@ -160,6 +164,13 @@ below cite BR-036 rather than standing in for it. The wrong-counts row adds the 
 two message properties the code already had and no ticket stated: a remedy is a command that runs,
 and a fault raised after a successful `git worktree add` names the branch and the registration it
 leaves behind. Both changed this ticket; neither changed a rule or a scenario.
+
+The 2026-09-04 BR-036 row tightens that same carve-out: its commitless precondition was asserted by
+the rule and by a source comment and checked by nothing, so the rollback's `git branch -D` would have
+discarded a commit landing on the branch inside the add's own window. The delete now names the cut's
+sha as the ref's expected old value, which makes the precondition a check. Only BR-036's Exceptions
+and the Constraint above moved — no statement, no scenario, and no count, BR-036 being already among
+the rules pending re-approval.
 
 ## Dependencies
 
