@@ -227,9 +227,21 @@ describe("git that stops answering half way through an acquisition", () => {
    * so the arm for it claims nothing about why the branch survived and conditions the commands on a
    * git that can be run again.
    *
-   * Both no-git shapes, because they differ in what the *first* sentence says and not in what the
-   * residual may claim — and the second is the one where the false remedy read worst, since the
-   * directory those commands operate in is the one that has gone.
+   * The `unavailable`, `not-started` and `no-such-directory` shapes, a row each, because they differ
+   * in what the *first* sentence says and not in what the residual may claim — and
+   * `no-such-directory` is the one where the false remedy read worst, since the directory those
+   * commands operate in is the one that has gone.
+   *
+   * A row per shape and not per no-git *pair*, for the reason the cut's own table states one handler
+   * along: `not-started` was split out of `unavailable` and this table did not grow with it, so the
+   * add's handler could be made to tell the shapes apart by the prose of the message — the very thing
+   * `GitDidNotRunError` exists to replace — and all ten gate suites stayed green. Measured: with the
+   * handler's `error instanceof GitDidNotRunError` replaced by
+   * `String(error).includes("gone missing") || String(error).includes("no longer there")`, 165
+   * passed. Those are the fragments `run` puts in the `unavailable` and `no-such-directory`
+   * sentences, so a prose test reads correct on exactly the shapes this table used to stage.
+   * `not-started`'s sentence says neither — "git is still on the machine" — so its row is the only
+   * thing that can catch it.
    */
   it.each([
     {
@@ -239,6 +251,16 @@ describe("git that stops answering half way through an acquisition", () => {
         reason: "spawn git ENOENT",
       }),
       quoting: "gone missing",
+    },
+    {
+      shape: "not-started",
+      answer: (_cwd: string): GitOutcome => ({
+        kind: "not-started",
+        reason: "spawn git EACCES",
+        code: "EACCES",
+      }),
+      quoting:
+        "(spawn git EACCES), having already started it once in this repository. git is still on the machine",
     },
     {
       shape: "no-such-directory",

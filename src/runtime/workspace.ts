@@ -1331,8 +1331,11 @@ async function openWorktree(
     // stopped part-way is a state awcli never established. The *residual* stands on all six shapes
     // and is why this handler still says something rather than rethrowing — the cut exited zero, so
     // the branch is certainly there, and `undone` is what says whether the tidying took it back.
-    // Watched by the fs-fault suite's pair of runner-throw tests and by the gate mutation that
-    // collapses the two arms into the confident one.
+    // Watched by the fs-fault suite's runner-throw rows on the `unavailable`, `not-started` and
+    // `no-such-directory` shapes, by the gate mutation that collapses the arms into the confident
+    // one, and by the one that tells the shapes apart by the prose of the message rather than by the
+    // class — which is what the `not-started` row is there for, since the prose of the other two is
+    // what such a test would match.
     const how =
       error instanceof GitDidNotRunError
         ? "and git never started the checkout"
