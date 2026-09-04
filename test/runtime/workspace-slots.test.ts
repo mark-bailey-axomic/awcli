@@ -145,10 +145,11 @@ describe("a run that is already unwinding", () => {
    * One answer for "the run is shutting down", whichever refusal it would otherwise have been.
    *
    * `DisposalStack.acquire` refuses outright once an unwind has begun, so every condition decided
-   * *inside* `open` surfaces as that refusal — but two of the nine used to be decided before the
-   * stack was touched at all, and went on answering. A workflow's in-flight `sandbox({ name:
-   * "Review 1" })` landing after a SIGINT was told its slot name was illegal, implying a workflow
-   * bug, while its sibling `sandbox({ name: "reviewer" })` in the same moment was told the run was
+   * *inside* `open` surfaces as that refusal — but the illegal-slot-name refusal and the
+   * live-checkout-without-consent refusal used to be decided before the stack was touched at all,
+   * and went on answering. A workflow's in-flight `sandbox({ name: "Review 1" })` landing after a
+   * SIGINT was told its slot name was illegal, implying a workflow bug, while its sibling
+   * `sandbox({ name: "reviewer" })` in the same moment was told the run was
    * closing. Nothing is lost by deciding them inside: a failed `open` is spliced out of the stack's
    * entries, so neither appears in the unwind report either way.
    */

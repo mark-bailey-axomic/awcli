@@ -51,9 +51,12 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 #
 # The per-mutation cost is the one worth stating, and it is one of those suite runs plus the restore
 # and the perl: measured 126.6s wall for ten mutations plus the restored green run — eleven suite runs
-# — so ~11.5s each. The 151 `expect_red` below plus that final run therefore come to ~28 minutes,
-# which is arithmetic and not a measurement: nothing here has timed the whole chain, and the earlier
-# "15m37s wall … at 100 `expect_red`" implied one. Run 6 took the count from 100 to 136 in four
+# — so ~11.5s each. The 153 `expect_red` below plus that final run come to ~29 minutes by that
+# product, and the whole chain has since been timed at **40m33s end-to-end** — measured by review
+# run 8, not here. The per-mutation figure reproduces; the product is the thing that is wrong, and it
+# is ~45% low because parallel efficiency decays over the run — from 223% early to 139% late — as the
+# machine heats and the ten workers contend for it. So read ~11.5s as the marginal cost of adding one
+# mutation and ~40 minutes as what the gate actually takes. Run 6 took the count from 100 to 136 in four
 # batches — the registration answers, the refusal `detail` and the failed-add residual in the first;
 # the sanitising, boundary and environment mutations in the second; in the third the commit the cut
 # is taken from, the hooks path, the six refusal remedies, the run a refusal reports, and the two
@@ -76,9 +79,11 @@ source "$REPO_ROOT/scripts/lib/mutation-gate.sh"
 # axis that cannot meet it by construction, and the axis being read once so a getter cannot answer
 # the consent check and the dispatch differently — plus git's locale, which this repository reads,
 # and the spawn errno that told an operator to install a git they already had. One more was re-cut:
-# the axis dispatch, whose ternary stopped existing when the read was made single.
-# The total grows with
-# every mutation added, which is the right trade and is why the per-mutation figure is the one quoted.
+# the axis dispatch, whose ternary stopped existing when the read was made single. Run 8's sustain
+# added two more, both on criteria an existing anchor touched from a side that could not reach them:
+# the `not-started` arm carrying `GitDidNotRunError` rather than the guard being forced false, and
+# what the live-checkout claim is *keyed* on rather than merely that it is checked. The total grows
+# with every mutation added, which is the right trade and is why the per-mutation figure is quoted.
 #
 # Named in full rather than by glob so that a new file has to be added here deliberately: a suite this
 # gate does not run is a mutation it cannot see.
@@ -781,11 +786,16 @@ expect_red "the branch remedy says the delete refuses, not that it deletes" src/
 # ── A branch another run is provisioning onto right now is not cleanup advice ────────────────
 # The second look dropped, which is how this shipped. Cutting the branch in its own call put the
 # winner's ref immediately after its own `mkdir`, so a loser's collision query routinely finds a branch
-# a live run cut a moment ago — and all three remedies below then read as a settled world: remove the
-# working copy at that path, delete that branch. `held === "registered"` is *true* in that state,
-# because the winner has just registered it. Reaching this site means the target was free when awcli
-# looked, and a winner whose branch exists has already created the directory, so something being there
-# now is the evidence — the same class as EEXIST from `mkdir` on the occupied path.
+# a live run cut a moment ago — and every remedy below then reads as cleanup advice: remove the working
+# copy at that path, delete that branch. Not "a settled world", which is what this said and what
+# `workspace.ts` has since retracted at the site itself: two of those remedies hedge, because an
+# `initializing` registration is an add that was killed part-way and a `locked` one is somebody's
+# deliberate lock. The defect is that a *live* winner is answered with any of them: git's own answer
+# for that path is `registered`, and it is *true* — the winner has just registered it, so no arm of
+# the fallback can tell a live provisioning from a leftover. Reaching this site means the target was
+# free when awcli looked, and a winner whose branch exists has already created the directory, so
+# something being there now is the evidence — the same class as EEXIST from `mkdir` on the occupied
+# path.
 expect_red "a branch a run is provisioning onto right now is not sent to git worktree remove" src/runtime/workspace.ts \
   's/    if \(arrived !== undefined\) \{/    if (false) \{/'
 
@@ -1027,7 +1037,7 @@ expect_red "a branch cut the runner threw out of leaves no directory of awcli's 
   's/\)\.catch\(\n    async \(error: unknown\) => \{[\s\S]*?\n    \},\n  \);/);/'
 
 # And the residual that rejection may leave, which the fault used to rethrow silently. Three of the
-# five shapes that reach this handler are a git that *ran* — the timeout, an answer past the read
+# six shapes that reach this handler are a git that *ran* — the timeout, an answer past the read
 # bound, a child killed by a signal — so the ref transaction may have completed before the runner gave
 # up on it. `undoOwnBranch` cannot tidy that: its ownership proof is the zero exit that never arrived.
 # Unsaid, the cost lands on the next invocation of this run and slot, refused `branch-exists` and told
@@ -1035,15 +1045,28 @@ expect_red "a branch cut the runner threw out of leaves no directory of awcli's 
 expect_red "a cut the runner threw out of names the branch it may have left" src/runtime/workspace.ts \
   's/      throw new Error\(\n        `\$\{error instanceof Error \? error\.message : String\(error\)\}[^`]*`,\n        \{ cause: error \},\n      \);/      throw error;/'
 
-# And that residual appended to the two shapes where git never ran, which is how the sentence above
-# shipped. `run` raises `unavailable` and `no-such-directory` itself, and in both no git process ran,
-# so no ref can exist — the produced fault contradicted itself in one breath ("git has gone missing
-# while the run was starting … so that branch may exist") and, on the missing-directory shape, told
-# the operator to run `git branch --list` in a directory the same sentence had just said was gone.
+# And that residual appended to the shapes where git never ran, which is how the sentence above
+# shipped. `run` raises `unavailable`, `not-started` and `no-such-directory` itself, and in none of
+# the three did a git process run, so no ref can exist — the produced fault contradicted itself in one
+# breath ("git has gone missing while the run was starting … so that branch may exist") and, on the
+# missing-directory shape, told the operator to run `git branch --list` in a directory the same
+# sentence had just said was gone.
 # The suite was green over it because the test asserted `toContain("gone missing")` and nothing about
 # what followed, which is the class this whole gate is about.
 expect_red "a cut that never reached git names no branch it might have left" src/runtime/workspace.ts \
   's/      if \(error instanceof GitDidNotRunError\) throw error;/      if (false) throw error;/'
+
+# And the shape that carries the class stripped off one arm rather than the test forced false, which
+# is the same criterion from the side the mutation above cannot reach. `run` raises three faults
+# itself and `not-started` is the newest: git is still on the machine and the spawn failed anyway, on
+# permissions or on a machine out of processes or descriptors. It arrived split out of `unavailable`
+# with no row in the `it.each` that forbids the residual and no anchor here, so demoting it to a plain
+# `Error` — which is precisely how the "that branch may exist … git branch --list" sentence gets
+# appended to a shape where no git process ran — left all ten suites green: 162 passed. Anchored on
+# the two code lines together, because the throw of that class appears three times in the file and the
+# guard line alone is a string a comment could quote.
+expect_red "a cut that could not start git names no branch it might have left" src/runtime/workspace.ts \
+  's/  if \(outcome\.kind === "not-started"\) \{\n    throw new GitDidNotRunError\(/  if (outcome.kind === "not-started") \{\n    throw new Error(/'
 
 # And the same claim on the add's own handler, which is where the sentence is worse hidden: the two
 # tests that stage a vanishing git at the add never see this clause at all, because the tidying
@@ -1118,8 +1141,8 @@ expect_red "the branch awcli could not delete is reported as still there" src/ru
 
 # And the third answer itself, which nothing else here reaches: `no-answer` folded back into
 # `left-behind` is exactly the defect run 6 found — the residual then tells the operator git refused
-# the delete, and hands them the locked-worktree remedy, on the two shapes where git never ran and
-# in one of which the repository directory is the thing that has gone.
+# the delete, and hands them the locked-worktree remedy, on the shapes where git never ran — and on
+# one of those three the repository directory is the thing that has gone.
 expect_red "a git that never answered about the branch is not reported as a refusal" src/runtime/workspace.ts \
   's/        \? "no-answer"/        ? "left-behind"/'
 
@@ -1295,6 +1318,19 @@ expect_red "the repository's core.fsmonitor does not run, hooks path notwithstan
 expect_red "a second concurrent slot on the live checkout is refused, not shared" src/runtime/workspace.ts \
   's/      if \(liveCheckoutsHeld\.has\(key\)\) \{/      if (false) \{/'
 
+# And what the claim is keyed on, which the guard above cannot distinguish: it goes red for a second
+# acquisition of any shape, so it holds "there is a check" and says nothing about what the check is
+# about. The key carried the run's name until this was re-cut, and BR-011 says in as many words that
+# runs with different names may execute concurrently against the same repository — so two names on one
+# checkout is the ordinary case, and while the name was in the key both of those runs were let in, to
+# one tree on one branch, which is the sharing BR-013 grants no exception to. The mutation puts the
+# name back, which is red only on the second run's scenario and green on the second slot's. The
+# dollars are escaped because the harness hands this replacement to perl as a double-quoted string:
+# unescaped, the two interpolations would silently become empty and the suite would go red for the
+# wrong reason. See the note in scripts/lib/mutation-gate.sh.
+expect_red "the live-checkout claim is keyed on the repository, not on the run name" src/runtime/workspace.ts \
+  's/      const key = root;/      const key = `\${root} \${runName}`;/'
+
 # ── The axis is read once, not once per decision ────────────────────────────────────────────
 # `choice` is caller-supplied and `workspace`/`consent` were read once for the consent check and
 # again for the dispatch, with `sharedPreflight`'s awaits in between. A getter answers the two reads
@@ -1309,7 +1345,7 @@ expect_red "the workspace axis is read once, so it cannot change under the conse
 # `LC_ALL=de_DE.UTF-8` git says `schwerwiegend:` and the complaint quoted to the operator became the
 # last line of whatever git printed. Pinned on the child rather than in the suite: a suite-level pin
 # stays green while the product is wrong. It also removes the gate's own worst failure mode, where a
-# locale-red suite makes every step here report `ok` and fail ~28 minutes later as "already broken".
+# locale-red suite makes every step here report `ok` and fail ~40 minutes later as "already broken".
 expect_red "git is given a fixed locale rather than the operator's" src/runtime/git-process.ts \
   's/  environment\.LC_ALL = "C";\n  environment\.LANGUAGE = "";\n//'
 

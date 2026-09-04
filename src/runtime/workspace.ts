@@ -56,8 +56,9 @@ import {
  *     is why the two calls are split at all; see the note at the call site. Both removals are best
  *     effort, and the fault names what actually went back rather than implying either did — which
  *     is the honest version of a promise this docblock used to make unconditionally. `Undone` has a
- *     third answer for the delete, because "what went back" is a claim about what git said and two
- *     of the five failure shapes are a git that never ran: see `Undone.branch`. A
+ *     third answer for the delete, because "what went back" is a claim about what git said and the
+ *     git-never-ran failure shapes — a git that could not be found, a git that could not be started,
+ *     and a repository directory that has gone — are three of the six: see `Undone.branch`. A
  *     `git worktree add` killed by a signal (the OOM case `git-process.ts` documents at length) is
  *     the state where neither works: it leaves a part-checked-out target, a registration git holds
  *     `locked initializing`, and the branch, and in that state `rmdir` fails with ENOTEMPTY and
@@ -576,14 +577,14 @@ export async function acquireWorkspace(
     // its branch carries the commits that are the whole deliverable (BR-021, BR-036).
     disposition: "preserve",
     open: async () => {
-      // Inside `open`, with the seven that need git, and that is the point rather than an accident of
-      // placement. `DisposalStack.acquire` refuses outright once an unwind has begun, so a check
-      // decided *before* it went on answering while the run was shutting down: a workflow's
-      // in-flight `sandbox({ name: "Review 1" })` was told its slot name was illegal — implying a
-      // workflow bug — while its sibling `sandbox({ name: "reviewer" })` was told the run was
-      // closing. One question, two answers, decided by which refusal it would have been. Nothing is
-      // lost by moving them: a failed `open` is spliced out of the stack's entries, so neither shows
-      // up in the unwind report either way (disposal.ts).
+      // Inside `open`, alongside every refusal that needs git — eight of the eleven kinds — and that
+      // is the point rather than an accident of placement. `DisposalStack.acquire` refuses outright
+      // once an unwind has begun, so a check decided *before* it went on answering while the run was
+      // shutting down: a workflow's in-flight `sandbox({ name: "Review 1" })` was told its slot name
+      // was illegal — implying a workflow bug — while its sibling `sandbox({ name: "reviewer" })` was
+      // told the run was closing. One question, two answers, decided by which refusal it would have
+      // been. Nothing is lost by moving them: a failed `open` is spliced out of the stack's entries,
+      // so neither shows up in the unwind report either way (disposal.ts).
       if (validated !== undefined && !validated.ok) {
         throw new WorkspaceRefusedError(invalidSlot(validated));
       }
@@ -1216,17 +1217,19 @@ async function openWorktree(
   const cut = await run(git, [...NO_HOOKS, "branch", branch, head], repositoryPath).catch(
     async (error: unknown) => {
       await rmdir(target).catch(ignoreCleanupFailure);
-      // Only for the shapes where git *ran*, which is the correction rather than a nicety. Five
-      // rejections reach this handler and `run` raises two of them itself — `unavailable` (git could
-      // not be started) and `no-such-directory` (the repository directory has gone) — and in both git
-      // never ran, so no ref can exist and the residual below is a confident sentence about a state
-      // awcli never established. It read worse than merely wrong on the second: it told the operator
-      // to run `git branch --list` in a directory the same sentence has just said is no longer there.
-      // `GitDidNotRunError` is what tells the two apart, by identity rather than by re-inspecting the
+      // Only for the shapes where git *ran*, which is the correction rather than a nicety. Six
+      // rejections reach this handler and `run` raises three of them itself — `unavailable` (git is
+      // not installed, or not on the PATH awcli was given), `not-started` (git is there and the spawn
+      // failed anyway, on permissions or on a machine out of processes) and `no-such-directory` (the
+      // repository directory has gone) — and in all three git never ran, so no ref can exist and the
+      // residual below is a confident sentence about a state awcli never established. It read worse
+      // than merely wrong on the missing-directory shape: it told the operator to run
+      // `git branch --list` in a directory the same sentence has just said is no longer there.
+      // `GitDidNotRunError` is what tells them apart, by identity rather than by re-inspecting the
       // outcome, because the outcome is gone by the time this runs. Watched by the
-      // `{unavailable, no-such-directory}` rows of `a branch cut that fails` in
-      // workspace-fs-faults.test.ts, which assert the residual is absent, and by the gate mutation
-      // that appends it unconditionally.
+      // `{unavailable, not-started, no-such-directory}` rows of `a branch cut that fails` in
+      // workspace-fs-faults.test.ts, which assert the residual is absent, and by the gate mutations
+      // that append it unconditionally and that strip the class off the `not-started` arm.
       if (error instanceof GitDidNotRunError) throw error;
       // The directory goes back and the branch cannot, so the fault says so. The three remaining
       // shapes are a git that ran: the 120s timeout, an answer past the read bound, a child killed by
@@ -1315,12 +1318,13 @@ async function openWorktree(
     const residual = undoneResidual(undone, branch, target);
     if (residual === "") throw error;
     // "Part-way through the checkout" only where git ran, which is the cut's own correction one
-    // handler along: `run` raises `unavailable` and `no-such-directory` itself, and in both no add
-    // process started, so a checkout that stopped part-way is a state awcli never established. The
-    // *residual* stands on all five shapes and is why this handler still says something rather than
-    // rethrowing — the cut exited zero, so the branch is certainly there, and `undone` is what says
-    // whether the tidying took it back. Watched by the fs-fault suite's pair of runner-throw tests
-    // and by the gate mutation that collapses the two arms into the confident one.
+    // handler along: `run` raises the git-never-ran faults itself — `unavailable`, `not-started` and
+    // `no-such-directory` — and in none of the three did an add process start, so a checkout that
+    // stopped part-way is a state awcli never established. The *residual* stands on all six shapes
+    // and is why this handler still says something rather than rethrowing — the cut exited zero, so
+    // the branch is certainly there, and `undone` is what says whether the tidying took it back.
+    // Watched by the fs-fault suite's pair of runner-throw tests and by the gate mutation that
+    // collapses the two arms into the confident one.
     const how =
       error instanceof GitDidNotRunError
         ? "and git never started the checkout"
@@ -2140,21 +2144,25 @@ async function collisionMessage(
     // The evidence is awcli's own `lstat`, asked again. Reaching this site at all means nothing was at
     // the target when awcli looked; a winner whose branch exists has already created that directory,
     // because `mkdir` precedes the cut. So something being there *now* is another writer working right
-    // now — the same class of evidence EEXIST from `mkdir` is on the occupied path, and unlike the
-    // *settled* answers below it is not about a settled world. Not "the three answers below": there
-    // are five, and `initializing` is itself an unsettled one, which is the whole correction
+    // now — the same class of evidence EEXIST from `mkdir` is on the occupied path, and it is
+    // evidence about a live writer, which nothing below it is. What is below it is what git says is
+    // registered at the path, and naming those answers "the settled answers" is retracted:
+    // `initializing` is an add that was killed part-way and `locked` is somebody's deliberate lock,
+    // so neither describes a world that has stopped moving. That is the whole correction
     // `occupiedRefusal` records at the top of its own arm list — the sentence that called git's
     // answer settled was "false, and false in git's favour", and it is what made the registered arm
-    // dangerous. A maintainer who followed this copy would drop the hedging that stops a losing
-    // racer being told to clear a live winner's worktree. Only where awcli has not itself claimed
-    // and released the path (`TargetClaim`), or its own leftover would be read as a racing writer.
+    // dangerous. A maintainer who followed the retracted copy would drop the hedging that stops a
+    // losing racer being told to clear a live winner's worktree. Only where awcli has not itself
+    // claimed and released the path (`TargetClaim`), or its own leftover would be read as a racing
+    // writer.
     //
     // Guarded, for `worktreeRegistration`'s reason: this builds a *refusal*, so it must not throw.
     // `lstatOrMissing` rethrows anything that is not ENOENT — a parent that has gone, a directory
     // that stopped being readable — and an escape from here would replace the refusal and its
-    // remedies with a raw errno. Falling back to the three settled answers is the pre-existing
-    // behaviour, which is the safe direction for a question this one only ever *adds* caution to.
-    // "The settled answers" again, and for the same reason: `initializing` is not one of them.
+    // remedies with a raw errno. Falling back to what git says is registered at the path is the
+    // pre-existing behaviour, which is the safe direction for a question this one only ever *adds*
+    // caution to. Not "the settled answers", for the reason given above: the fallback reaches the
+    // `initializing` arm like any other, and that arm is one of the two that hedge.
     const arrived =
       claim === "untouched"
         ? await lstatOrMissing(target).catch(() => undefined)
@@ -2339,12 +2347,15 @@ function describe(workspace: WorkspaceAxis, dir: string, branch: string): string
 /**
  * A fault `run` raised itself, because git never started.
  *
- * The two shapes it covers — `unavailable` and `no-such-directory` — are the ones where nothing of
- * git's happened, so nothing of git's can have been left behind. That matters one caller along: the
- * branch cut's handler appends a residual about a ref that "may exist", which is true of the three
- * shapes where git *ran* and false of these two. A class rather than a flag on the message, because
- * the outcome that would answer the question is no longer in hand where the distinction is needed,
- * and matching on the prose of a sentence is how the wrong version of this shipped.
+ * The shapes it covers — `unavailable`, `not-started` and `no-such-directory` — are the ones where
+ * nothing of git's happened, so nothing of git's can have been left behind. `not-started` is the
+ * newest of them and arrived split out of `unavailable`: git is on the machine and the spawn failed
+ * anyway, which is still a git that never ran. That matters one caller along: the branch cut's
+ * handler appends a residual about a ref that "may exist", which is true of the shapes where git
+ * *ran* — the timeout, an answer past the read bound, a child killed by a signal — and false of
+ * these. A class rather than a flag on the message, because the outcome that would answer the
+ * question is no longer in hand where the distinction is needed, and matching on the prose of a
+ * sentence is how the wrong version of this shipped.
  */
 class GitDidNotRunError extends Error {
   constructor(message: string) {
@@ -2361,9 +2372,10 @@ class GitDidNotRunError extends Error {
  * and a git that has become unavailable *between* two calls in the same acquisition is a machine
  * changing under a run, which is a fault and not a choice the operator can make differently.
  *
- * Both faults are `GitDidNotRunError`, and that is contract rather than tidiness: they are the two
- * shapes in which no git process ran, which is what lets a caller tell "awcli may have left a ref
- * behind" from "nothing happened". See there.
+ * Every fault this raises is a `GitDidNotRunError`, and that is contract rather than tidiness: the
+ * shapes it raises for — a git it could not find, a git it could not start, and a repository
+ * directory that has gone — are the shapes in which no git process ran, which is what lets a caller
+ * tell "awcli may have left a ref behind" from "nothing happened". See there.
  */
 async function run(
   git: GitRunner,

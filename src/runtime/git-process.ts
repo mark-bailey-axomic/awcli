@@ -80,12 +80,15 @@ const CWD_LIMIT = 256;
 /**
  * What running git produced.
  *
- * Three kinds rather than two, because the third was a lie the first version told. `execFile` raises
- * ENOENT both for a binary it cannot find and for a `cwd` that does not exist, and mapping ENOENT
- * straight to "git is not installed" sent an operator who mistyped `--repo` to install git on a
- * machine that already had it — while making the "not a repository" refusal unreachable by that
- * route entirely. The two are distinguished here, at the only point where the errno and the
- * directory are both in hand.
+ * Four kinds rather than two, and both of the kinds past the second are the same lie caught twice:
+ * an errno turned into a sentence the errno does not support. `execFile` raises ENOENT both for a
+ * binary it cannot find and for a `cwd` that does not exist, and mapping ENOENT straight to "git is
+ * not installed" sent an operator who mistyped `--repo` to install git on a machine that already
+ * had it — while making the "not a repository" refusal unreachable by that route entirely. That is
+ * `no-such-directory`, distinguished here at the only point where the errno and the directory are
+ * both in hand. `not-started` is the same lie one errno over: every spawn failure that was not
+ * ENOENT fell into `unavailable` and drew the same install-git advice, for an `EACCES` on a
+ * directory the operator cannot enter or an `EAGAIN` on a machine out of processes. See that arm.
  */
 export type GitOutcome =
   | {
@@ -247,9 +250,9 @@ function gitEnvironment(): NodeJS.ProcessEnv {
   //
   // Pinned on the child rather than asserted in the suite, because it is the *product* that reads
   // these strings — a suite pinned alone would go green on a machine where awcli was wrong. It also
-  // fixes the gate's worst failure mode: with the suite already red for a locale, all 146
-  // `expect_red` steps report `ok` for the wrong reason and the run only fails ~28 minutes later
-  // with "it was already broken".
+  // fixes the gate's worst failure mode: with the suite already red for a locale, every `expect_red`
+  // step reports `ok` for the wrong reason and the run only fails ~40 minutes later with "it was
+  // already broken".
   //
   // `LC_ALL` because it wins over `LC_MESSAGES` and `LANG` both, and `LANGUAGE` because GNU gettext
   // consults it ahead of either — it is ignored while the locale is `C`, and cleared anyway so that

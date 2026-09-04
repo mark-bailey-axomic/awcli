@@ -460,13 +460,14 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
   /**
    * The branch already there while git cannot say what holds it.
    *
-   * `worktreeRegistration` has three answers and the third is the honest one: `git worktree list
+   * `worktreeRegistration` has an `unknown` answer, and it is the honest one: `git worktree list
    * --porcelain` is asked through the *raw* runner, which throws for a timeout and for an answer
    * larger than awcli reads, so "awcli could not ask" is a state the message has to have wording for.
-   * Both confident arms had a test and a gate mutation; this one had neither, and the `-D` that the
-   * whole class was moved off could be put back on it with the suite green. It is the same gap the
-   * occupied path closed one refusal earlier (workspace-preflight.test.ts) — a run whose git call
-   * cannot be answered still gets a remedy, and the remedy still refuses rather than discards.
+   * The answers git could give had a test and a gate mutation each; this one had neither, and the
+   * `-D` that the whole class was moved off could be put back on it with the suite green. It is the
+   * same gap the occupied path closed one refusal earlier (workspace-preflight.test.ts) — a run
+   * whose git call cannot be answered still gets a remedy, and the remedy still refuses rather than
+   * discards.
    */
   it("still names a branch delete that refuses when git could not say what holds the branch", async () => {
     const repositoryPath = await repository();
@@ -495,7 +496,7 @@ describe("what provisioning refuses rather than does: a branch in the way", () =
     expect(outcome.message).not.toContain("git branch -D");
     expect(outcome.message).toContain("git worktree remove");
     expect(outcome.message).toContain("could not ask git");
-    // The delete refuses rather than discards, said here as on the two arms git could answer for.
+    // The delete refuses rather than discards, said here as on every arm git could answer for.
     expect(outcome.message).toMatch(/refuses while the branch holds/);
   });
 
