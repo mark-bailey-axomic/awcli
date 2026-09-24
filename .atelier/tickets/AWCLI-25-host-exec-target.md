@@ -100,5 +100,5 @@ container is a boundary (BR-015).
 
 ## Dependencies
 
-**Blocked by:** AWCLI-01, AWCLI-13
+**Blocked by:** AWCLI-01, AWCLI-13, AWCLI-14
 **Blocks:** AWCLI-23, AWCLI-24

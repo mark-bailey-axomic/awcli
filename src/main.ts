@@ -9,6 +9,13 @@ try {
   process.exitCode = runCli(process.argv, processIo);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`awcli: ${message}\n`);
+  // Prefixed only when the message does not already name the program. Most faults raised inside
+  // `src/runtime/` open "awcli could not ..." or "awcli cannot ...", which reads correctly on its own
+  // — in a log, in a test, and beside git's own output — and unconditionally prefixing those printed
+  // `awcli: awcli could not create a working copy at ...`. The prefix exists to mark a line on stderr
+  // as awcli's; a line that already says so does not need it twice.
+  process.stderr.write(
+    message.startsWith("awcli") ? `${message}\n` : `awcli: ${message}\n`,
+  );
   process.exitCode = EXIT.FAILED;
 }

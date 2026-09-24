@@ -31,6 +31,10 @@ MG_WORKDIR=""
 MG_EXIT_HOOKS=()
 MG_SUITE_LOG=""
 MG_TEST_TIMEOUT_MS="${MG_TEST_TIMEOUT_MS:-5000}"
+# The hook bound is derived rather than defaulted here, in `mg_run_suite`, because a gate may set
+# `MG_TEST_TIMEOUT_MS` after sourcing this file and because it must never fall below what vitest
+# would have used unprompted. Set this to override it. See `mg_run_suite`.
+MG_HOOK_TIMEOUT_MS="${MG_HOOK_TIMEOUT_MS:-}"
 
 # Where a subject's pristine copy lives, as a path mirroring the subject's own.
 #
@@ -247,8 +251,31 @@ mg_run_suite() {
     echo "      this gate runs instead of vitest." >&2
     exit 1
   fi
+  # `--hookTimeout` as well as `--testTimeout`, which this passed only the latter of. A gate's suites
+  # do their real filesystem work in *hooks* — the workspace suites' `afterEach` removes a git
+  # repository plus a checked-out worktree per test, and their `afterAll` a scratch `HOME` — and a
+  # gate is the slowest context that teardown ever runs in: ten vitest workers contending, once per
+  # mutation. With only the test bound raised to 30s the hook stayed on vitest's 10s default, a third
+  # of it, so the first thing to time out under load would have been the cleanup — a red that fails
+  # the mutation for a reason that says nothing about the criterion, which is exactly what
+  # `MG_TEST_TIMEOUT_MS` exists to prevent. vitest.config.ts sets both for the same reason, so a
+  # timeout means the same thing wherever the suite is run from.
+  #
+  # Never *below* what vitest would have used unprompted, which is the trap in "set them to the same
+  # value": two gates here lower the test bound deliberately — 1500ms for the disposal gate, so an
+  # unbounded-wait mutation is caught quickly rather than sitting on the default — and equalising
+  # would have cut their hook bound from 10s to 1.5s, a tightening no finding asked for and a flake
+  # nobody would attribute to this line. So the hook bound is the larger of the two, computed here
+  # rather than at source time because a gate may set `MG_TEST_TIMEOUT_MS` after sourcing this file
+  # (the disposal gate does).
+  local hook_timeout="${MG_HOOK_TIMEOUT_MS:-}"
+  if [[ -z "$hook_timeout" ]]; then
+    hook_timeout=$((MG_TEST_TIMEOUT_MS > 10000 ? MG_TEST_TIMEOUT_MS : 10000))
+  fi
   # shellcheck disable=SC2086 # MG_SUITE is deliberately word-split: it is a list of spec paths.
-  "$vitest" run $MG_SUITE --testTimeout="$MG_TEST_TIMEOUT_MS" >"$MG_SUITE_LOG" 2>&1
+  "$vitest" run $MG_SUITE \
+    --testTimeout="$MG_TEST_TIMEOUT_MS" \
+    --hookTimeout="$hook_timeout" >"$MG_SUITE_LOG" 2>&1
 }
 
 # Did the suite actually run and report failing tests, or did it fail to run at all?
@@ -376,11 +403,32 @@ mg_mutate() {
 #
 # A few mutations have nothing but a hang to show — removing the acquisition loop's bound, removing
 # the bounded wait a release gets — and those say so at the call site with `expect_red_by_timeout`.
+#
+# Both of vitest's spellings are counted, and the second one is the whole point: a *hook* that runs
+# past its bound reports `Error: Hook timed out in <n>ms.`, not `Test timed out`, while the run
+# summary counts it among the failing tests exactly as an assertion failure would. Measured on this
+# repo's pinned vitest 4.1.11 with `--hookTimeout=300`: a hanging `afterEach` on a passing test gives
+# `× passes, then teardown hangs` and `Tests  1 failed (1)`, and `beforeEach` gives the same shape.
+# So while this counted only `Test timed out`, a red made of nothing but a teardown hang had one
+# failure and zero timeouts, `failures <= timeouts` was false, and the mutation was scored `ok` on
+# the strength of a clock in a hook — the precise red this function exists to refuse, arriving by the
+# one route it could not see. The gate is where that matters most: the workspace suites do their real
+# filesystem work in `afterEach`, and a gate is the slowest context that teardown ever runs in, which
+# is why `mg_run_suite` passes `--hookTimeout` at all. The bound this PR added reduces how often the
+# hang happens; it did nothing for the guard meant to reject it when it does.
+#
+# The two spellings are the whole set, enumerated rather than assumed: `beforeAll` and `afterAll` time
+# out with the same `Hook timed out` wording, and vitest emits no third phrasing for a clock. What
+# those two do differently is where they land — a `beforeAll` or `afterAll` timeout is reported under
+# `Failed Suites` and is *not* in the `Tests ... failed` count, so a log can hold more timeout lines
+# than failures. That direction is deliberately left alone: over-counting can only refuse a red, never
+# accept one, and a refused red stops the gate loudly with the suite tail attached, where the missed
+# hook timeout passed silently.
 mg_suite_only_timed_out() {
   local plain failures timeouts
   plain="$(perl -pe 's/\e\[[0-9;]*[A-Za-z]//g' "$1")"
   failures="$(printf '%s' "$plain" | sed -nE 's/^[[:space:]]*Tests[[:space:]]+.*[^0-9]([0-9]+) failed.*/\1/p' | head -1)"
-  timeouts="$(printf '%s' "$plain" | grep -cE 'Test timed out in [0-9]+ms' || true)"
+  timeouts="$(printf '%s' "$plain" | grep -cE '(Test|Hook) timed out in [0-9]+ms' || true)"
   # No failing count in the summary means the suite did not get as far as running tests, which is a
   # different complaint and `mg_suite_reported_failures` makes it. Otherwise the arithmetic answers
   # both questions at once: with no timeouts at all, no positive failure count is <= 0.
@@ -395,7 +443,7 @@ expect_red() {
 
 # expect_red_by_timeout <criterion> <subject-file> <perl-substitution>...
 #
-# For a mutation whose red *is* a hang. See mg_suite_timed_out.
+# For a mutation whose red *is* a hang. See mg_suite_only_timed_out.
 expect_red_by_timeout() {
   mg_expect_red_inner "yes" "$@"
 }

@@ -26,6 +26,24 @@ describe("making a value from outside awcli safe to print", () => {
     { what: "a byte-order mark", value: "exampl﻿e.com", gone: "﻿" },
     { what: "a word joiner", value: "exampl⁠e.com", gone: "⁠" },
     { what: "an invisible times", value: "exampl⁢e.com", gone: "⁢" },
+    // Render as blank or as nothing without being a control, a bidi mark or a zero-width space, so
+    // the previous pattern let every one of them through — measured, one class at a time, which is
+    // what the module docblock asks of an addition to a blocklist. Written as escapes rather than
+    // literals because a literal of any of them is invisible in this file too.
+    { what: "a soft hyphen", value: "exampl\u00ade.com", gone: "\u00ad" },
+    { what: "a combining grapheme joiner", value: "exampl\u034fe.com", gone: "\u034f" },
+    { what: "a Hangul choseong filler", value: "exampl\u115fe.com", gone: "\u115f" },
+    { what: "a Hangul filler", value: "exampl\u3164e.com", gone: "\u3164" },
+    { what: "a halfwidth Hangul filler", value: "exampl\uffa0e.com", gone: "\uffa0" },
+    { what: "a Khmer inherent vowel", value: "exampl\u17b4e.com", gone: "\u17b4" },
+    { what: "a variation selector", value: "exampl\ufe00e.com", gone: "\ufe00" },
+    // The tags block: 128 code points that render as nothing at all, of which U+E0020-U+E007F are a
+    // shadow ASCII alphabet — so a whole sentence rides inside a value that displays as `example`.
+    // Non-BMP, which is why the pattern carries the `u` flag: without it the range cannot be written
+    // as a range at all.
+    { what: "a language tag", value: "exampl\u{e0001}e.com", gone: "\u{e0001}" },
+    { what: "a tag letter", value: "exampl\u{e0041}e.com", gone: "\u{e0041}" },
+    { what: "a cancel tag", value: "exampl\u{e007f}e.com", gone: "\u{e007f}" },
   ])("takes $what out", ({ value, gone }) => {
     const shown = printable(value);
     expect(shown).not.toContain(gone);
@@ -43,6 +61,31 @@ describe("making a value from outside awcli safe to print", () => {
     "服务器-01",
     "run_2024.06-a",
   ])("leaves %s exactly as it is", (value) => {
+    expect(printable(value)).toBe(value);
+  });
+
+  /**
+   * The widening's own cost, held to the same standard as the widening. Each of these carries a
+   * character adjacent to one of the new ranges and is a name somebody could legitimately have: an
+   * ordinary hyphen next to the soft hyphen, real Hangul syllables next to the fillers, a Khmer word
+   * next to the inherent vowels, an emoji whose variation selector was *not* what made it an emoji,
+   * and three whose variation selector *is* it — U+FE0F, which the range stops one code point short
+   * of on purpose. A range written one code point too wide mangles these, and mangling a value is how
+   * a refusal becomes harder to act on than the escape sequence it was protecting against. The three
+   * VS16 cases are the ones the previous version of this list stepped around: every value in it
+   * carried a character *adjacent* to a new range and none carried a legitimate member of one, so the
+   * widening that mangled `feature/<heart>-love` was watched by a case built from a check mark, which
+   * needs no selector at all.
+   */
+  it.each([
+    "build-server-04",
+    "\ud55c\uad6d\uc5b4-01",
+    "\u1780\u17d2\u1798\u17c1\u179a",
+    "server-\u2713",
+    "feature/\u2764\ufe0f-love",
+    "warn-\u26a0\ufe0f",
+    "\u2b50\ufe0f-star",
+  ])("leaves %s alone, though it sits next to a range that goes", (value) => {
     expect(printable(value)).toBe(value);
   });
 

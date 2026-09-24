@@ -162,6 +162,27 @@ if mg_suite_only_timed_out "$SANDBOX/red.log"; then
   report "a red with no timeout at all was treated as a timeout"
 fi
 
+# And the *hook* spelling, which is the one the guard could not see. vitest reports a hook that runs
+# past its bound as `Error: Hook timed out in <n>ms.` — not `Test timed out` — and counts it among
+# the failing tests exactly as an assertion failure would, so a red made of nothing but a teardown
+# hang had one failure and zero timeouts and was accepted as evidence. Both logs below are the
+# measured shape rather than an invented one: on this repo's pinned vitest 4.1.11 with
+# `--hookTimeout=300`, a hanging `afterEach` over a passing test gives `Tests  1 failed (1)` beside
+# that wording, and the same file run alongside one failing assertion gives `Tests  2 failed (2)`.
+# The gate's own suites do their real filesystem work in `afterEach`, which is why `mg_run_suite`
+# passes `--hookTimeout` at all — so this was the likeliest timeout in the context the guard exists
+# for, arriving by the one route it did not match.
+printf ' Test Files  1 failed (1)\n      Tests  1 failed (1)\nError: Hook timed out in 300ms.\n' \
+  >"$SANDBOX/hook-timeout-only.log"
+printf ' Test Files  2 failed (2)\n      Tests  2 failed (2)\nError: Hook timed out in 300ms.\n' \
+  >"$SANDBOX/hook-timeout-and-failures.log"
+if ! mg_suite_only_timed_out "$SANDBOX/hook-timeout-only.log"; then
+  report "a red whose only failure was a hook timeout was accepted as evidence"
+fi
+if mg_suite_only_timed_out "$SANDBOX/hook-timeout-and-failures.log"; then
+  report "a red with a real failure alongside a hook timeout was rejected"
+fi
+
 # ── A mutation that does not apply exactly once is refused ───────────────────────────────────
 #
 # In a subshell, because mg_mutate exits the script when it refuses — which is the behaviour under
@@ -233,4 +254,4 @@ if ((failed)); then
   exit 1
 fi
 
-echo "PASS: the harness isolates the checkout, inherits the caller's EXIT trap, keeps subjects out of the checkout however they are spelled, restores each from its own backup, refuses a mutation whose subject is missing or that does not apply exactly once or that would silently insert an interpolated replacement, refuses to run a suite nobody named, tells a red that is nothing but a timeout from one with real failures, and tells a suite that went red from one that never ran"
+echo "PASS: the harness isolates the checkout, inherits the caller's EXIT trap, keeps subjects out of the checkout however they are spelled, restores each from its own backup, refuses a mutation whose subject is missing or that does not apply exactly once or that would silently insert an interpolated replacement, refuses to run a suite nobody named, tells a red that is nothing but a timeout from one with real failures in both of vitest's spellings of a timeout, and tells a suite that went red from one that never ran"

@@ -1,6 +1,6 @@
 # AWCLI-14 — [AWCLI] Reuse, resume and fresh start
 
-**Points:** 2 · **Source:** WB-8 (part 2 of 2) · **Status:** Ready
+**Points:** 3 · **Source:** WB-8 (part 2 of 2) · **Status:** Ready
 
 ## Problem / Goal
 
@@ -16,11 +16,28 @@ scales. Fresh start is the escape hatch, and it must discard state and working c
 discarding one without the other leaves an inconsistent run. Branches outlive their run by design
 (ADR-0004): the commits are the deliverable.
 
+This ticket also owns `ctx.git`, the whole of it. AWCLI-13 provisions a working copy and hands back a
+handle carrying `dir`, `branch`, `head` and `dirty`, and constructs no context around one; `GitApi`
+declares `log`, `diff` and `commit` besides, and until the 2026-08-28 `ctx.git` amendment in the
+rules file those three were owned by no ticket at all — owned by nobody *and* consumed by nobody,
+which is what that amendment established when it checked the claim this sentence used to make. It
+said AWCLI-19, AWCLI-23 and AWCLI-25 carried criteria consuming `log`, `diff` and `commit`; no
+acceptance criterion on any ticket consumes `log` or `diff`, and `commit` appears only in AWCLI-23's
+and AWCLI-25's Context prose about hooks. What those three consume is `ctx.git.dir`, which is what
+line 82 below says and what the widening actually rests on. WB-8's Contracts column names `ctx.git`,
+so the member was assigned and
+the two tickets derived from the unit had between them narrowed it away. `supports()` answers per member (BR-033), so
+a half-built `git` lies in one direction or the other — which is why the member is delivered by one
+ticket rather than split again.
+
 ## Requirements
 
 ### Functional
 
 - Reuse the same working copy across iterations of one run rather than reprovisioning.
+- Expose the working copy's directory, branch, head and dirty state to the workflow as `ctx.git`.
+- Build the rest of `ctx.git` with it — `log`, `diff` and `commit` — so the member is whole and
+  `supports("git")` can answer true.
 - On resume of a named run, reattach the existing branch and working copy.
 - Report what a resumed run inherited: branch, head, iteration count and state summary.
 - On an explicit fresh start, discard stored state and working copies together.
@@ -45,13 +62,32 @@ discarding one without the other leaves an inconsistent run. Branches outlive th
 - [ ] Scenario: *Starting fresh discards state and working copies together*.
 - [ ] Scenario: *Branches survive the run that made them*.
 - [ ] A resumed run after a kill reattaches successfully.
+- [ ] `ctx.git` is built end to end — `dir`, `branch`, `head`, `dirty`, `log`, `diff` and `commit` —
+      and `ctx.version.supports("git")` answers true, with the member's entry gone from
+      `DELIVERED_BY` in `src/runtime/context.ts`.
 - [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 
 - Collecting branches on request — AWCLI-22.
+- Provisioning a working copy in the first place, and the refusals that guard it — AWCLI-13.
+
+## Notes
+
+Re-estimated 2 → 3 and widened to own `ctx.git` end to end by the 2026-08-28 `ctx.git` row of
+the `## Amendments` section in [`../design/agentic-workflow-cli-rules.md`](../design/agentic-workflow-cli-rules.md).
+No rule and no scenario changed: the gap was in what the two WB-8 tickets claimed, not in what the
+specification states.
 
 ## Dependencies
 
 **Blocked by:** AWCLI-13
-**Blocks:** AWCLI-22
+**Blocks:** AWCLI-19, AWCLI-22, AWCLI-23, AWCLI-25
+
+The three added here consume `ctx.git.dir` in their acceptance criteria — `ctx.sandbox()` resolving
+to a scope whose `dir` differs from the body's (AWCLI-19), resolution against the directory `dir`
+reports (AWCLI-23), a command's working directory being that same one (AWCLI-25) — and `ctx.git` is
+this ticket's member end to end by the 2026-08-28 `ctx.git` amendment. They named AWCLI-13, which
+builds the `WorkspaceHandle` and constructs no context around one, so the edge pointed at the ticket
+that cannot discharge it. AWCLI-13 stays on their lists as well: it is where the provisioning they
+also rest on lives, and the edge is transitive rather than wrong.

@@ -1,13 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_SLOT,
   RESERVED_RUN_NAMES,
   defaultRunName,
   resolveRunName,
   runLockPath,
   runtimeRoot,
   validateRunName,
+  validateSlotName,
+  workspaceBranch,
+  worktreePath,
   type RunName,
+  type SlotName,
 } from "../../src/runtime/run-identity.js";
+
+/** Through the validator, never a cast: a test that casts would pass with validation removed. */
+function slotName(name: string): SlotName {
+  const result = validateSlotName(name);
+  if (!result.ok) throw new Error(`test used an invalid slot name: ${result.message}`);
+  return result.slot;
+}
 
 describe("naming a run", () => {
   it("takes the name the operator passed", () => {
@@ -206,6 +218,9 @@ function runName(name: string): RunName {
   return result.name;
 }
 
+/** A run name the derivation tests below share. */
+const TRIAGE = runName("triage");
+
 describe("where a run's files live", () => {
   it("keeps every run under one runtime path, so one ignore line covers them all", () => {
     expect(runtimeRoot("/repo")).toBe("/repo/.awcli/run");
@@ -216,5 +231,96 @@ describe("where a run's files live", () => {
     expect(runLockPath("/repo", runName("triage"))).not.toBe(
       runLockPath("/repo", runName("release-notes")),
     );
+  });
+});
+
+/**
+ * The slot rules and the names they derive, beside the module that owns them.
+ *
+ * These assertions were written in the workspace suite, which is where the slot's *consequences*
+ * live — a working copy per slot, a branch per slot. The rules themselves are this module's, and
+ * the reason to move them is coverage rather than tidiness: left there,
+ * `verify-workspace-gate.sh` mutated `run-identity.ts` and was killed only by the workspace suite,
+ * so AWCLI-14 reworking that file for reuse would have taken the slot rules' only coverage with it,
+ * without a line of `run-identity.ts` changing and with the gate still green.
+ *
+ * Not "every module pairs with a test file of its own name", which is what this said: `context.ts`
+ * has no `context.test.ts` (it is covered by `frozen-context.test.ts` and
+ * `test/contract/unbuilt-disclosure.test.ts`), and `process-probe.ts` and `workspace.ts` each have
+ * several. The gate argument stands on its own and does not need the convention.
+ */
+describe("the branch and the path a run and slot imply", () => {
+  /**
+   * The determinism criterion. A timestamp, a uuid or a counter anywhere near either of these
+   * would make a resumed run unable to find what it made (BR-036) and would leave one branch per
+   * iteration behind.
+   */
+  it("names the same branch and path for the same run and slot, every time", () => {
+    const first = workspaceBranch(TRIAGE, slotName("reviewer"));
+    const again = workspaceBranch(runName("triage"), slotName("reviewer"));
+    expect(first).toBe(again);
+    // Against a literal as well as against itself: two calls in one process agree even when both
+    // are derived from the clock, and the literal is what rules that out.
+    expect(first).toBe("awcli/triage/reviewer");
+    expect(worktreePath("/repo", TRIAGE, slotName("reviewer"))).toBe(
+      "/repo/.awcli/run/worktrees/triage/reviewer",
+    );
+    expect(worktreePath("/repo", TRIAGE, slotName("reviewer"))).toBe(
+      worktreePath("/repo", runName("triage"), slotName("reviewer")),
+    );
+  });
+
+  it("gives every slot its own branch and its own directory", () => {
+    expect(workspaceBranch(TRIAGE, slotName("one"))).not.toBe(
+      workspaceBranch(TRIAGE, slotName("two")),
+    );
+    expect(worktreePath("/repo", TRIAGE, slotName("one"))).not.toBe(
+      worktreePath("/repo", TRIAGE, slotName("two")),
+    );
+    expect(worktreePath("/repo", TRIAGE, DEFAULT_SLOT)).not.toBe(
+      worktreePath("/repo", runName("release-notes"), DEFAULT_SLOT),
+    );
+  });
+});
+
+describe("a slot name is validated, never sanitised", () => {
+  it.each([
+    ["../../etc", "traversal"],
+    ["..", "traversal"],
+    ["a/b", "illegal-characters"],
+    [".hidden", "illegal-characters"],
+    ["trailing.", "illegal-characters"],
+    ["Reviewer", "not-lowercase"],
+    ["nightly.lock", "git-reserved-suffix"],
+    ["", "empty"],
+    ["x".repeat(65), "too-long"],
+  ] as const)("refuses %j as a slot", (name, problem) => {
+    const result = validateSlotName(name);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.problem).toBe(problem);
+    expect(result.message.length).toBeGreaterThan(20);
+  });
+
+  it("accepts what a workflow would sensibly call a slot", () => {
+    expect(validateSlotName("reviewer").ok).toBe(true);
+    expect(validateSlotName("agent-1").ok).toBe(true);
+    expect(validateSlotName("a").ok).toBe(true);
+    expect(validateSlotName(DEFAULT_SLOT).ok).toBe(true);
+  });
+
+  it("does not echo a rejected slot's control characters back to the terminal", () => {
+    const hostile = "reviewer\u001b[2Jgone";
+    const result = validateSlotName(hostile);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).not.toContain("\u001b");
+    expect(result.name).not.toContain("\u001b");
+    // Still recognisable enough to act on, minus what a terminal would act on — on `name` rather
+    // than on `message`, because the two slot reasons that used to open by quoting the name no
+    // longer do: their only caller (`acquireWorkspace`'s `invalidSlot`) already opens by quoting it,
+    // and the pair read `... as a slot in the "nightly" run: "Reviewer" must be lowercase:`. The
+    // sanitised name is the channel that carries it; the wrapper is what prints it.
+    expect(result.name).toContain("reviewer");
   });
 });

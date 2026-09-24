@@ -155,7 +155,7 @@ generated ignore entry is a single line written once (BR-030).
 
 | Command | Purpose | Key options | Refusals |
 |---|---|---|---|
-| `awcli run <name-or-path>` | Run a workflow | `--repo`, `--iterations`, `--max-duration`, `--name`, `--fresh`, `--dry-run`, `--arg k=v`, `--reset-state`, `--live` | BR-001…010, BR-035 |
+| `awcli run <name-or-path>` | Run a workflow | `--repo`, `--iterations`, `--max-duration`, `--name`, `--fresh`, `--dry-run`, `--arg k=v`, `--reset-state`, `--live-checkout` | BR-001…010, BR-035 |
 | `awcli create <name>` | Scaffold a workflow | `--project`, `--template` | Name already exists |
 | `awcli init` | Write `.awcli/` into a repository, including all five required profile fields — `commands.test`, `commands.build`, `commands.lint`, `paths.docs`, `paths.standards` (BR-006) | — | BR-002 |
 | `awcli clean` | Release leftovers; collect branches | `--run`, `--branches` | Never touches unmerged commits (BR-036) |
@@ -213,7 +213,7 @@ text, `usage` possibly unknown (ADR-0004).
 |---|---|
 | `AgentDriver` | `start(prompt, target, opts) → AgentHandle`; `AgentHandle.output(): AsyncIterable<string>`; `wait(): Promise<Exit>`; `kill(): Promise<void>` |
 | `ExecTarget` | `exec(cmd, opts) → Promise<ExecResult>`; `available(): Promise<boolean>`; `dispose(): Promise<void>` |
-| `Workspace` | `acquire(run, slot) → Promise<WorkspaceHandle>`; `WorkspaceHandle.dir`, `.branch`, `.head()`, `.dirty()`; `release(preserve: true)` |
+| `Workspace` | `acquireWorkspace(stack, request) → Promise<WorkspaceOutcome>` — a free function, not a port object: it registers its own release on the `DisposalStack` it is handed (ADR-0001, disposition `preserve`), so there is no `release(preserve: true)` to call and the release takes no argument and is inert on disk. `WorkspaceRequest`: `{ repositoryPath, runName, slot?, choice, git? }`. `WorkspaceOutcome`: `{ ok: true, workspace: WorkspaceHandle }` \| `WorkspaceRefusal` `{ ok: false, kind, detail?, run, slot, message }` — a condition the operator can fix is refused rather than thrown, and the refusal channel is declared surface: `kind` is one of eleven — `invalid-slot`, `live-checkout-not-consented`, `git-unavailable`, `git-not-started`, `live-checkout-already-held`, `not-a-repository`, `no-commit`, `no-working-tree`, `detached-head`, `branch-exists`, `occupied` — with `detail` carrying the finer answer behind `occupied` and `branch-exists`. `WorkspaceHandle.dir`, `.branch`, `.slot`, `.isolation`, `.head()`, `.dirty()` |
 | `Store` | `loadState(run)`, `saveState(run, data)` (atomic), `appendRecord(run, entry)`, `acquireLock(run)`, `reclaimIfStale(run)`, `logStream(run, agent)` |
 | `Clock` | `now()`, `elapsed(since)`, `deadline(duration)` |
 
@@ -337,6 +337,8 @@ text, `usage` possibly unknown (ADR-0004).
 - **Acceptance Criteria:**
   - [ ] *The default protects my checkout* / *Working on the live checkout requires asking for it*
   - [ ] *Parallel agents never share a working copy*
+  - [ ] *A second agent is refused my live checkout rather than sharing it*
+  - [ ] *A git that cannot be started is refused with the reason, not with install advice*
   - [ ] *Resuming a run reattaches the branch it already had*
   - [ ] *Resuming restores the work and says what it inherited*
   - [ ] *Starting fresh discards state and working copies together*
@@ -380,7 +382,8 @@ text, `usage` possibly unknown (ADR-0004).
 - **Summary:** [AWCLI] Resolve workflows project-first then global, scaffold new ones, and pass invocation arguments through
 - **Story Points:** 3
 - **Dependencies:** WB-3
-- **Contracts:** `awcli create`; `ctx.args`
+- **Contracts:** `awcli create`; `ctx.args`; `awcli run --live-checkout` (the operator's own flags on
+  `run`, which are consumed rather than forwarded — added by the 2026-08-28 `--live-checkout` amendment)
 - **Acceptance Criteria:**
   - [ ] *A project's own workflow shadows the shared one* / *The shared workflow is used when the project has none*
   - [ ] *An explicit path is always honoured*
@@ -470,8 +473,8 @@ with them; no ticket estimate changed.
 
 | Type | Path | Purpose |
 |---|---|---|
-| bdd | design/agentic-workflow-cli-bdd.feature | 78 scenarios, every rule tagged — 59 approved, 19 pending re-approval |
-| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 31 approved, 9 pending re-approval |
+| bdd | design/agentic-workflow-cli-bdd.feature | 80 scenarios, every rule tagged — 59 approved, 21 pending re-approval |
+| rules | design/agentic-workflow-cli-rules.md | 40 business rules — 29 approved, 11 pending re-approval |
 | context | context/agentic-workflow-cli-prd-draft.md | Source PRD (13 P0 / 7 P1 / 5 P2) |
 | context | context/agentic-workflow-cli-grill-brief.md | 13 architecture decisions and their rationale |
 | flows | design/agentic-workflow-cli-flows.md | 7 diagrams |

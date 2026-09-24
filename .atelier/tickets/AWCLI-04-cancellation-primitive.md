@@ -53,4 +53,8 @@ with the stale-lock reclamation in AWCLI-07. Two approved scenarios pin the dist
 ## Dependencies
 
 **Blocked by:** AWCLI-03
-**Blocks:** AWCLI-12, AWCLI-16
+**Blocks:** AWCLI-11, AWCLI-12, AWCLI-16
+
+AWCLI-11 was missing from this line while naming AWCLI-04 as a blocker itself — the same omission
+as AWCLI-01's, found the same way, by `verify-spec-invariants.sh` check 13a computing this line from
+the other direction instead of trusting it.

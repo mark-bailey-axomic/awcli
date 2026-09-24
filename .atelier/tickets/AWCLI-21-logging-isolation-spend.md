@@ -24,6 +24,10 @@ an operator assumes containment they did not get.
 - Keep the terminal readable under parallel fan-out: progress and summaries, not interleaved
   streams.
 - State the isolation actually in effect for every agent call — workspace axis and execution axis.
+- State the run's own workspace choice in the run's output, not only per agent call: an operator who
+  asked for their live checkout sees that they got it, and one who did not sees that they did not
+  (BR-014, BR-015). This is the sentence `WorkspaceIsolation.description` already carries and that
+  nothing yet prints.
 - Report spend per iteration and per run, marking unknown values as unknown.
 - Warn when a configured spend threshold is crossed, and warn at the start of the run when the
   threshold cannot be measured at all.
@@ -55,13 +59,26 @@ an operator assumes containment they did not get.
 - [ ] A command's result, a commit and the run's arguments each log without being restated by
       hand — asserted against the contract's own types, not against a hand-built object.
 - [ ] Values matching known secret shapes are absent from logs.
+- [ ] The run's output states the workspace choice it resolved to, in both directions — this is the
+      fourth step of the scenario `Working on the live checkout requires asking for it`, which
+      AWCLI-13 carries and cannot tick without this ticket and AWCLI-20.
 - [ ] All tests pass, format check clean, type check clean.
 
 ## Out of Scope
 
 - Enforcing a budget by stopping a run — deferred past v1.
+- Resolving the workspace choice, and parsing the flag that asks for it — AWCLI-13 and AWCLI-20
+  respectively. This ticket states what was resolved and never decides it (see the constraint
+  above: isolation is reported from what actually happened).
 
 ## Dependencies
 
-**Blocked by:** AWCLI-07, AWCLI-08, AWCLI-15
+**Blocked by:** AWCLI-07, AWCLI-08, AWCLI-13, AWCLI-15
 **Blocks:** None
+
+AWCLI-13 is the edge this ticket gained with the requirement and criterion for stating the
+run's workspace choice: `WorkspaceIsolation` and the sentence it carries are AWCLI-13's, and a
+requirement to print them is not workable before they exist. Added by the 2026-08-28
+`--live-checkout` amendment, which gave AWCLI-20 all three of requirement, criterion and edge and
+this ticket only the first two — the same omission it was written to correct, one ticket over. No
+wave moves: this ticket is already wave 5 and AWCLI-13 is wave 3.
